@@ -1,0 +1,8 @@
+[package]
+name = "sensme-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "32-bit Windows helper: runs Sony's MMLib11.dll (Music Center) over PCM from stdin"
+
+[dependencies]

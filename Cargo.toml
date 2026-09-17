@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/flint-core", "crates/flint", "crates/sensme-helper"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/superwilso/flint"
+
+# Dependency-free, like cinder-installer: this is a tool people run against their music library and
+# their player, and every crate added is one more thing they have to trust. The standard library
+# covers files, processes and pipes; FLAC metadata and the SMFMF chunk format are small enough to own.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# The lossless check runs an FFT over every track; size-optimised code makes it several times slower.
+[profile.release.package.flint-core]
+opt-level = 3

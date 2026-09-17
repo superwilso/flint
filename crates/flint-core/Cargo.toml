@@ -1,0 +1,8 @@
+[package]
+name = "flint-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Flint's library: FLAC metadata, the SMFMF (SensMe) chunk format, and the analysis pipeline"
+
+[dependencies]

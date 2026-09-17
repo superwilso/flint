@@ -1,0 +1,9 @@
+[package]
+name = "flint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Copy a music library to a Sony NW-A50-series Walkman, with SensMe analysis and without touching the PC's files"
+
+[dependencies]
+flint-core = { path = "../flint-core" }

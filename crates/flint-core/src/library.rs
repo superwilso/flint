@@ -16,6 +16,7 @@ use std::time::Instant;
 use crate::cache::{self, Cache, Entry};
 use crate::engine::Engine;
 use crate::lossless::{self, Measurement};
+use crate::musiccenter;
 use crate::smfmf;
 
 pub const EXTENSIONS: [&str; 2] = ["flac", "mp3"];
@@ -88,6 +89,9 @@ pub enum Event {
         cached: usize,
         queued: usize,
         skipped: usize,
+        /// Tracks whose analysis was already inside the file (Music Center wrote one), taken as it
+        /// stands rather than computed again.
+        adopted: usize,
     },
     Analysed {
         done: usize,
@@ -109,6 +113,9 @@ pub struct Report {
     pub total: usize,
     pub cached: usize,
     pub analysed: usize,
+    /// Results taken out of the files themselves — see [`crate::musiccenter`]. These cost no
+    /// engine run, no decode and no FFmpeg, which is the whole point of looking.
+    pub adopted: usize,
     pub failed: usize,
     pub skipped: usize,
     pub seconds: f64,
@@ -142,7 +149,33 @@ pub fn scan(
                 cache.alias(&key, &label, size, mtime);
                 report.cached += 1;
             }
-            Ok(Some(key)) => queue.push((path, key, size, mtime)),
+            Ok(Some(key)) => {
+                // THE ANALYSIS MAY ALREADY BE IN THE FILE. Sony's Music Center writes it there, in
+                // the containers Flint writes, so a library it has been over needs no engine at all
+                // — and without this every one of those tracks would be decoded and analysed again
+                // to arrive back at bytes the file was already carrying.
+                match musiccenter::in_file(&path) {
+                    Ok(Some(found)) => {
+                        let (small, _dropped) = musiccenter::compact(&found);
+                        let bpm = smfmf::summarise(&small).ok().and_then(|s| s.bpm);
+                        let entry = Entry {
+                            key: key.clone(),
+                            size,
+                            mtime,
+                            engine: musiccenter::IN_FILE.to_string(),
+                            bpm,
+                            bytes: small.len(),
+                            path: label,
+                        };
+                        match cache.put(entry, &small) {
+                            Ok(()) => report.adopted += 1,
+                            // Its own result is unusable, so fall back to analysing it.
+                            Err(_) => queue.push((path, key, size, mtime)),
+                        }
+                    }
+                    _ => queue.push((path, key, size, mtime)),
+                }
+            }
             _ => report.skipped += 1,
         }
     }
@@ -151,6 +184,7 @@ pub fn scan(
         cached: report.cached,
         queued: queue.len(),
         skipped: report.skipped,
+        adopted: report.adopted,
     });
     let queued = queue.len();
     if queued == 0 {

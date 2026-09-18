@@ -9,6 +9,7 @@
 //! flint tag-copy <src> <dst> [--smfmf result.smfmf]                 copy with SensMe data (FLAC, MP3)
 //! flint sync <library> --to <volume> [--to <volume>] [--apply]   copy the library to the player
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
+//! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
 //! ```
 
 use std::fs::{self, File};
@@ -16,7 +17,10 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use flint_core::{apply, cache, engine, engine::Engine, flac, id3, library, lossless, smfmf, space, sync};
+use flint_core::{
+    apply, cache, engine, engine::Engine, flac, id3, library, lossless, musiccenter, smfmf, space,
+    sync,
+};
 
 const USAGE: &str = "\
 usage:
@@ -25,7 +29,8 @@ usage:
   flint analyse <track> [--out result.smfmf] [--param id=value]...
   flint tag-copy <src.flac|src.mp3> <dst> [--smfmf result.smfmf] [--param id=value]...
   flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme]
-  flint inspect <file.flac | file.mp3 | result.smfmf>";
+  flint inspect <file.flac | file.mp3 | result.smfmf>
+  flint import [--from <Music Center data folder>] [--cache dir]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -36,6 +41,7 @@ fn main() -> ExitCode {
         Some("analyse" | "analyze") => analyse(&args[1..]),
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
+        Some("import") => import(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -62,6 +68,7 @@ struct Opts {
     playlists: Option<PathBuf>,
     apply: bool,
     no_sensme: bool,
+    from: Option<PathBuf>,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -79,6 +86,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         playlists: None,
         apply: false,
         no_sensme: false,
+        from: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -92,6 +100,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--to" => o.to.push(value("--to")?.into()),
             "--gb" => o.gb.push(value("--gb")?.parse().map_err(|_| "--gb needs a number".to_string())?),
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
+            "--from" => o.from = Some(value("--from")?.into()),
             "--apply" => o.apply = true,
             "--no-sensme" => o.no_sensme = true,
             "--verbose" => o.verbose = true,
@@ -188,6 +197,55 @@ fn cached_result(track: &Path, dir: Option<&Path>) -> Option<Vec<u8>> {
     c.blob(&key).ok()
 }
 
+/// Take the analysis Sony's Music Center has already done and put it in Flint's cache.
+///
+/// Nothing is written to Music Center's files or to the music library: this reads Music Center's own
+/// per-track cache and keys each result against the audio it belongs to, so a later `scan` or `sync`
+/// finds it and never runs the engine for that track. The compacting is where the size goes: what
+/// Flint keeps is the part the player actually reads.
+fn import(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    if !o.pos.is_empty() {
+        return Err(USAGE.into());
+    }
+    let mc = match o.from.clone().or_else(musiccenter::data_dir) {
+        Some(d) => d,
+        None => {
+            return Err("Music Center for PC was not found. Point at its data folder with \
+                        --from \"%APPDATA%\\Sony\\Music Center\"."
+                .to_string())
+        }
+    };
+    if !mc.is_dir() {
+        return Err(format!("{}: not a folder", mc.display()));
+    }
+    let dir = o.cache.clone().unwrap_or_else(cache::default_dir);
+    let mut c = cache::Cache::open(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    println!("reading {}  (cache {})", mc.display(), dir.display());
+    let mut saved: u64 = 0;
+    let report = musiccenter::import(&mc, &mut c, |path, was, now| {
+        saved += (was - now) as u64;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        println!("  {was:>8} -> {now:<6} bytes  {name}");
+    })
+    .map_err(|e| e.to_string())?;
+    c.save().map_err(|e| e.to_string())?;
+    println!(
+        "{} analyses in Music Center's cache: {} imported, {} already known, {} whose track could not be found",
+        report.cached, report.imported, report.already, report.missing,
+    );
+    if report.cached > report.mapped {
+        println!(
+            "  {} could not be matched to a file — Music Center's own index did not name one",
+            report.cached - report.mapped
+        );
+    }
+    if saved > 0 {
+        println!("  {} of chunks the player never reads were left behind", space::human(saved));
+    }
+    Ok(())
+}
+
 fn scan(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let [root] = o.pos.as_slice() else { return Err(USAGE.into()) };
@@ -207,8 +265,11 @@ fn scan(args: &[String]) -> Result<(), String> {
     };
     println!("scanning {}  (cache {}, {} jobs)", root, dir.display(), jobs);
     let report = library::scan(Path::new(root), &mut c, engine.as_ref(), jobs, |ev| match ev {
-        library::Event::Planned { total, cached, queued, skipped } => {
+        library::Event::Planned { total, cached, queued, skipped, adopted } => {
             println!("{total} tracks: {cached} already analysed, {queued} to analyse, {skipped} skipped");
+            if *adopted > 0 {
+                println!("  {adopted} carried Sony's analysis already — taken from the files, not re-run");
+            }
         }
         library::Event::Analysed { done, queued, path, ms, bpm } => {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -221,8 +282,8 @@ fn scan(args: &[String]) -> Result<(), String> {
     })
     .map_err(|e| e.to_string())?;
     println!(
-        "done in {:.0} s: {} analysed, {} cached, {} failed, {} skipped",
-        report.seconds, report.analysed, report.cached, report.failed, report.skipped
+        "done in {:.0} s: {} analysed, {} taken from the files, {} cached, {} failed, {} skipped",
+        report.seconds, report.analysed, report.adopted, report.cached, report.failed, report.skipped
     );
     Ok(())
 }
@@ -444,12 +505,39 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         return Err("give at least one destination: --to E:\\ (add a second --to for the card)".into());
     }
     let cache_dir = o.cache.clone().unwrap_or_else(cache::default_dir);
-    let analysis = cache::Cache::open(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
+    let mut analysis =
+        cache::Cache::open(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
 
     println!("reading {}", library.display());
     let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
     let source_bytes: u64 = source.iter().map(|f| f.size).sum();
     println!("  {} tracks, {}", source.len(), space::human(source_bytes));
+
+    // ANALYSIS THAT IS ALREADY IN THE FILES. Someone who runs Sony's Music Center has tags in their
+    // library already, and may never run `flint scan` at all — so the tags are taken here, before
+    // the plan decides which copies can carry one. Reading them costs a metadata read per file that
+    // the cache does not already know, and no decode.
+    if !o.no_sensme {
+        let paths: Vec<PathBuf> = source
+            .iter()
+            .map(|f| library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR)))
+            .collect();
+        match musiccenter::adopt_all(&paths, &mut analysis, |_| {}) {
+            Ok((0, _)) => {}
+            Ok((n, saved)) => {
+                analysis.save().map_err(|e| e.to_string())?;
+                println!(
+                    "  {n} already carried Sony's analysis — taken from the files{}",
+                    if saved > 0 {
+                        format!(", {} of chunks the player never reads left behind", space::human(saved))
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+            Err(e) => eprintln!("flint: reading existing SensMe tags: {e}"),
+        }
+    }
 
     let mut volumes = Vec::new();
     let mut scans = Vec::new();

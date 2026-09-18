@@ -23,6 +23,21 @@ differently:
 Flint does not include Sony's engine. SensMe analysis needs Music Center for PC installed on the same
 Windows machine; everything else in Flint works without it.
 
+### If you already use Music Center
+
+Then the analysis is done and Flint will not do it again:
+
+* **Tags already inside your files** are taken as they stand. `flint scan` and `flint sync` read
+  them, and say how many they found. No decode, no engine run.
+* **Music Center's own cache** — it analyses far more tracks than it writes tags for — comes in with
+  `flint import`. It reads `%APPDATA%\Sony\Music Center`, writes nothing back, and keys each result
+  against the audio it belongs to.
+* Either way the copy on the Walkman carries only the part the player reads, so a Music Center tag
+  that had grown to a megabyte arrives as about 6 KB.
+
+A feature-by-feature comparison with Music Center, including what Flint deliberately does not do and
+what is still missing, is in [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
+
 ## Copying a library to the player
 
 ```
@@ -30,6 +45,10 @@ flint scan "D:\\Music"                              analyse once, into Flint's c
 flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists"     a dry run
 flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply
 ```
+
+Cover art and lyrics (`.jpg`, `.png`, `.lrc`) sitting in an album's folder travel with it. They are
+copied, never swept: deleting artwork another tool put on the player is not a call a sync should
+make.
 
 Albums are the unit that moves, and an album is never split across the internal memory and the card.
 Albums that share a playlist stay together, so no playlist spans two volumes, and an album already on
@@ -79,7 +98,7 @@ retagged or moved file is not decoded twice.
 
 | Crate | What it is |
 |---|---|
-| `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, and the decode → engine pipeline |
+| `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, the decode → engine pipeline, and reading analysis Music Center has already done |
 | `flint` | The command-line tool |
 | `sensme-helper` | A 32-bit Windows helper that loads `MMLib11.dll` (the engine is 32-bit, Flint is not) |
 

@@ -69,6 +69,13 @@ pub enum Update {
     Progress(Option<f32>),
     /// A plan was made and shown, so COPY may be offered.
     Planned,
+    /// What the library turned out to hold. The window draws it under the folder's name.
+    Library(crate::LibraryFacts),
+    /// What a destination holds, and what this plan would add to it. Sent twice per volume: once
+    /// when it has been read, and again once the plan has decided what goes where. These numbers
+    /// were always worked out here — until the window had meters, they only ever reached the user
+    /// as a sentence in the log.
+    Volume(usize, crate::VolumeFacts),
 }
 
 /// Run `job`. Returns the last word for the status line, or the reason it stopped.
@@ -108,6 +115,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         source.retain(|f| !f.is_sidecar());
     }
     let bytes: u64 = source.iter().map(|f| f.size).sum();
+    emit(Update::Library(crate::LibraryFacts { files: source.len(), bytes }));
     emit(Update::Say(format!("{} files, {}", source.len(), space::human(bytes))));
 
     // Analysis already inside the files — see `musiccenter`. Taken before the plan decides which
@@ -152,6 +160,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
                 }
             },
         };
+        emit(Update::Volume(i, crate::VolumeFacts { on_device, budget, to_copy: 0, albums: 0 }));
         emit(Update::Log(format!(
             "{} holds {} in {} files, budget {}",
             root.display(),
@@ -194,11 +203,17 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     )));
     for (i, v) in volumes.iter().enumerate() {
         let albums = plan.assignments.values().filter(|&&a| a == i).count();
-        emit(Update::Log(format!(
-            "{}: {albums} albums, {} to copy",
-            v.root.display(),
-            space::human(plan.bytes_to_copy(i))
-        )));
+        let to_copy = plan.bytes_to_copy(i);
+        emit(Update::Volume(
+            i,
+            crate::VolumeFacts {
+                on_device: scans[i].files.values().map(|(size, _)| size).sum(),
+                budget: v.budget_bytes,
+                to_copy,
+                albums,
+            },
+        ));
+        emit(Update::Log(format!("{}: {albums} albums, {} to copy", v.root.display(), space::human(to_copy))));
     }
     if !plan.skipped.is_empty() {
         emit(Update::Log(format!("no room for {} albums: {}", plan.skipped.len(), plan.skipped.join(", "))));
@@ -459,13 +474,27 @@ mod tests {
 
         let mut planned = false;
         let mut lines = Vec::new();
+        let mut library_facts = None;
+        let mut volume_facts = None;
         let word = run(Job::Plan, &s, &cancel, &mut |u| match u {
             Update::Planned => planned = true,
             Update::Say(l) | Update::Log(l) => lines.push(l),
+            Update::Library(f) => library_facts = Some(f),
+            Update::Volume(i, f) => volume_facts = Some((i, f)),
             Update::Progress(_) => {}
         })
         .unwrap();
         assert!(planned, "a plan that shows something must enable COPY");
+        // The meters are drawn from these, so a plan that does not report them draws empty
+        // troughs over a real transfer.
+        let lib = library_facts.expect("the window is told what the library holds");
+        assert_eq!(lib.files, 3, "one FLAC, one MP3 and the cover");
+        assert!(lib.bytes > 0);
+        let (index, vol) = volume_facts.expect("the window is told what the volume holds");
+        assert_eq!(index, 0);
+        assert!(vol.budget > 0, "a volume with no budget draws as full");
+        assert_eq!(vol.to_copy, lib.bytes, "everything in the library is going to the one volume");
+        assert_eq!(vol.albums, 1);
         assert!(word.contains("Nothing has been written"), "{word}");
         assert_eq!(fs::read_dir(&volume).unwrap().count(), 0, "PLAN wrote to the volume");
         assert!(lines.iter().any(|l| l.contains("would copy")), "{lines:#?}");

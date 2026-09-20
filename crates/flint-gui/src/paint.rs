@@ -38,15 +38,21 @@ pub struct Theme {
     pub band_dim: u32,
     pub panel: u32,
     pub panel_border: u32,
+    /// The outline of a card with nothing in it yet, and of the empty log pane.
+    pub empty_border: u32,
     pub text: u32,
+    pub heading: u32,
     pub dim: u32,
     pub placeholder: u32,
     pub accent: u32,
     pub accent_text: u32,
     pub accent_down: u32,
+    /// What a volume already holds, in a meter. Graphite: it is real, and it is not this copy.
+    pub meter_have: u32,
     pub button: u32,
     pub button_border: u32,
     pub button_text: u32,
+    pub check: u32,
     pub disabled: u32,
     pub disabled_text: u32,
     pub trough: u32,
@@ -59,24 +65,28 @@ pub struct Theme {
 impl Theme {
     pub const fn light() -> Theme {
         Theme {
-            bg: rgb(0xF6, 0xF6, 0xF8),
+            bg: rgb(0xF2, 0xF3, 0xF6),
             band: rgb(0x1A, 0x18, 0x18),
             band_text: rgb(0xF2, 0xEF, 0xEC),
-            band_dim: rgb(0x9A, 0x94, 0x90),
+            band_dim: rgb(0x8E, 0x88, 0x84),
             panel: rgb(0xFF, 0xFF, 0xFF),
-            panel_border: rgb(0xDF, 0xDF, 0xE6),
-            text: rgb(0x1A, 0x1A, 0x1E),
-            dim: rgb(0x6C, 0x6C, 0x74),
-            placeholder: rgb(0x9A, 0x9A, 0xA4),
+            panel_border: rgb(0xE3, 0xE4, 0xEA),
+            empty_border: rgb(0xD8, 0xD9, 0xE1),
+            text: rgb(0x19, 0x1A, 0x1E),
+            heading: rgb(0x3A, 0x3B, 0x44),
+            dim: rgb(0x5F, 0x60, 0x69),
+            placeholder: rgb(0x9A, 0x9C, 0xA6),
             accent: rgb(0xE0, 0x55, 0x1B),
             accent_text: rgb(0xFF, 0xFF, 0xFF),
             accent_down: rgb(0xB8, 0x44, 0x15),
-            button: rgb(0xEE, 0xEE, 0xF2),
-            button_border: rgb(0xD2, 0xD2, 0xDA),
-            button_text: rgb(0x1A, 0x1A, 0x1E),
+            meter_have: rgb(0x3E, 0x3D, 0x45),
+            button: rgb(0xEC, 0xEC, 0xF1),
+            button_border: rgb(0xD3, 0xD4, 0xDC),
+            button_text: rgb(0x19, 0x1A, 0x1E),
+            check: rgb(0x2A, 0x2A, 0x31),
             disabled: rgb(0xF0, 0xF0, 0xF3),
-            disabled_text: rgb(0xB0, 0xB0, 0xB8),
-            trough: rgb(0xE2, 0xE2, 0xE8),
+            disabled_text: rgb(0xAF, 0xB0, 0xBA),
+            trough: rgb(0xE4, 0xE5, 0xEB),
             log_bg: rgb(0x1A, 0x18, 0x18),
             log_border: rgb(0x2A, 0x27, 0x27),
             log_text: rgb(0xCF, 0xCB, 0xC7),
@@ -98,11 +108,17 @@ impl Default for Theme {
 pub enum Face {
     /// 20 px, semibold — the product name.
     Title,
-    /// 12 px — the strapline, and the captions.
+    /// 22 px semibold — a number the user came here for. The largest thing on the window after
+    /// the wordmark, because "how much" is what a transfer is about.
+    Figure,
+    /// 15 px — a path. One notch above the body text because it is the content of the window,
+    /// not a description of it.
+    Path,
+    /// 12 px — the strapline, the captions and the quiet prose.
     Small,
     /// 14 px — everything else.
     Body,
-    /// 14 px semibold — a button.
+    /// 14 px semibold — a button, a section heading, a card's name.
     Strong,
     /// 12 px monospaced — the log.
     Mono,
@@ -113,6 +129,8 @@ impl Face {
     pub fn px(self) -> i32 {
         match self {
             Face::Title => 20,
+            Face::Figure => 22,
+            Face::Path => 15,
             Face::Small => 12,
             Face::Body => 14,
             Face::Strong => 14,
@@ -121,7 +139,7 @@ impl Face {
     }
 
     pub fn bold(self) -> bool {
-        matches!(self, Face::Title | Face::Strong)
+        matches!(self, Face::Title | Face::Strong | Face::Figure)
     }
 
     pub fn mono(self) -> bool {
@@ -149,6 +167,9 @@ impl Face {
 pub enum Align {
     Left,
     Center,
+    /// Right-aligned, for the figures a meter is read against: numbers line up on their last
+    /// digit or they cannot be compared at a glance.
+    Right,
 }
 
 /// One drawing operation. Everything the window is made of is one of these three.
@@ -227,6 +248,100 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
             Kind::Panel => {
                 out.push(Cmd::Rect { rect: r, fill: Some(t.panel), border: Some(t.panel_border), radius: 6 })
             }
+            // A card with a volume in it is a filled panel; one without is an outline on the page
+            // background. An empty slot should look empty — a white panel with a placeholder in it
+            // reads as something that failed to load.
+            Kind::Card { filled } => out.push(Cmd::Rect {
+                rect: r,
+                fill: Some(if *filled { t.panel } else { t.bg }),
+                border: Some(if *filled { t.panel_border } else { t.empty_border }),
+                radius: 8,
+            }),
+            Kind::Version => out.push(Cmd::Text {
+                rect: r,
+                text: wid.text.clone(),
+                color: t.band_dim,
+                face: Face::Small,
+                align: Align::Right,
+            }),
+            Kind::Heading => out.push(Cmd::Text {
+                rect: r,
+                text: wid.text.clone(),
+                color: t.heading,
+                face: Face::Strong,
+                align: Align::Left,
+            }),
+            Kind::Caption => out.push(Cmd::Text {
+                rect: r,
+                text: wid.text.clone(),
+                color: t.text,
+                face: Face::Strong,
+                align: Align::Left,
+            }),
+            Kind::Hint => out.push(Cmd::Text {
+                rect: r,
+                text: elide_end(&wid.text, Face::Small, r.w),
+                color: t.dim,
+                face: Face::Small,
+                align: Align::Left,
+            }),
+            Kind::Detail => out.push(Cmd::Text {
+                rect: r,
+                text: elide_end(&wid.text, Face::Small, r.w),
+                color: t.dim,
+                face: Face::Small,
+                align: Align::Right,
+            }),
+            Kind::Figure { warm } => out.push(Cmd::Text {
+                rect: r,
+                text: elide_end(&wid.text, Face::Figure, r.w),
+                color: if *warm { t.accent } else { t.text },
+                face: Face::Figure,
+                align: Align::Left,
+            }),
+            // Three lengths on one bar: what is on the volume already, what this copy would add,
+            // and what would still be free. The accent is the middle one — the only part of the
+            // picture this window is about to create.
+            Kind::Meter { have, add, known } => {
+                out.push(Cmd::Rect { rect: r, fill: Some(t.trough), border: None, radius: 3 });
+                if *known {
+                    let have_w = (r.w as f32 * have.clamp(0.0, 1.0)) as i32;
+                    let add_w = (r.w as f32 * add.clamp(0.0, 1.0)) as i32;
+                    if have_w > 0 {
+                        out.push(Cmd::Rect {
+                            rect: Rect::new(r.x, r.y, have_w, r.h),
+                            fill: Some(t.meter_have),
+                            border: None,
+                            radius: 3,
+                        });
+                    }
+                    if add_w > 0 {
+                        out.push(Cmd::Rect {
+                            rect: Rect::new(r.x + have_w, r.y, add_w, r.h),
+                            fill: Some(t.accent),
+                            border: None,
+                            radius: 3,
+                        });
+                    }
+                }
+            }
+            // Outlined, never filled: these change nothing on the player, and a row of filled
+            // buttons next to the transfer's own would say they are the same kind of thing.
+            Kind::Tool { enabled } => {
+                out.push(Cmd::Rect {
+                    rect: r,
+                    fill: None,
+                    border: Some(if *enabled { t.button_border } else { t.disabled }),
+                    radius: 5,
+                });
+                out.push(Cmd::Text {
+                    rect: r,
+                    text: elide_end(&wid.text, Face::Body, r.w - 12),
+                    color: if *enabled { t.button_text } else { t.disabled_text },
+                    face: Face::Body,
+                    align: Align::Center,
+                });
+            }
             Kind::Rule => {
                 out.push(Cmd::Rect { rect: Rect::new(r.x, r.y, r.w, 1), fill: Some(t.rule), border: None, radius: 0 })
             }
@@ -239,9 +354,9 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
             }),
             Kind::Value { placeholder } => out.push(Cmd::Text {
                 rect: r,
-                text: elide_start(&wid.text, Face::Body, r.w),
+                text: elide_start(&wid.text, Face::Path, r.w),
                 color: if *placeholder { t.placeholder } else { t.text },
-                face: Face::Body,
+                face: Face::Path,
                 align: Align::Left,
             }),
             Kind::Button { primary, enabled } => {
@@ -265,7 +380,7 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
                 // A switch that `hit()` refuses must also LOOK refused. The pair to the disabled
                 // button: a live-looking control that ignores the click is the same defect as a
                 // dead-looking one that acts.
-                let ink = if *enabled { t.accent } else { t.disabled_text };
+                let ink = if *enabled { t.check } else { t.disabled_text };
                 out.push(Cmd::Rect {
                     rect: b,
                     fill: Some(if *on { ink } else { t.panel }),
@@ -475,7 +590,9 @@ mod tests {
             }
             (trough, fill)
         };
-        assert_eq!(trough_and_fill(&m), (1, 0));
+        // At rest there is no bar at all: a trough with nothing in it is a control that controls
+        // nothing, and the room it was holding belongs to the log.
+        assert_eq!(trough_and_fill(&m), (0, 0));
         m.phase = Phase::Working;
         m.progress = Some(0.5);
         assert_eq!(trough_and_fill(&m), (1, 1));

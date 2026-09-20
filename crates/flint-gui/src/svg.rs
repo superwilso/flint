@@ -93,6 +93,7 @@ pub fn draw(cmds: &[Cmd], w: i32, h: i32) -> String {
                 let (x, anchor) = match align {
                     Align::Left => (rect.x, "start"),
                     Align::Center => (rect.x + rect.w / 2, "middle"),
+                    Align::Right => (rect.right(), "end"),
                 };
                 // Centre on the rect: the backends both centre vertically, and `dominant-baseline`
                 // is the SVG way of saying so.

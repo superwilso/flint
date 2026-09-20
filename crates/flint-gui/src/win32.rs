@@ -344,6 +344,7 @@ unsafe fn draw(hdc: Hdc, state: &State, cmd: &Cmd) {
             // over `paint::elide_*`, for the case where the real face is wider than the estimate.
             const DT_LEFT: u32 = 0x0000;
             const DT_CENTER: u32 = 0x0001;
+            const DT_RIGHT: u32 = 0x0002;
             const DT_VCENTER: u32 = 0x0004;
             const DT_SINGLELINE: u32 = 0x0020;
             const DT_END_ELLIPSIS: u32 = 0x8000;
@@ -352,7 +353,11 @@ unsafe fn draw(hdc: Hdc, state: &State, cmd: &Cmd) {
                 | DT_SINGLELINE
                 | DT_END_ELLIPSIS
                 | DT_NOPREFIX
-                | if *align == Align::Center { DT_CENTER } else { DT_LEFT };
+                | match align {
+                    Align::Center => DT_CENTER,
+                    Align::Right => DT_RIGHT,
+                    Align::Left => DT_LEFT,
+                };
             #[link(name = "user32")]
             extern "system" {
                 fn DrawTextW(hdc: Hdc, text: *const u16, count: i32, r: *mut RectW, format: u32) -> i32;
@@ -472,6 +477,12 @@ fn drain(state: &mut State) {
             Update::Log(line) => state.model.log.push(line),
             Update::Progress(p) => state.model.progress = p,
             Update::Planned => state.model.planned = true,
+            Update::Library(facts) => state.model.source = Some(facts),
+            Update::Volume(i, facts) => {
+                if let Some(slot) = state.model.dest.get_mut(i) {
+                    *slot = Some(facts);
+                }
+            }
         }
     }
     // The log is unbounded otherwise: a library of 40,000 tracks would hold 40,000 strings for the
@@ -593,6 +604,12 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                             state.model.phase = Phase::Working;
                             state.model.progress = None;
                             state.model.log.clear();
+                            // Starting anything spends the shown plan. `Plan` puts it back when it
+                            // finishes (`Update::Planned`); a COPY that has been carried out does
+                            // not, so the window asks to be shown the new state of the player
+                            // rather than offering to copy the same plan a second time. The meter
+                            // numbers stay: they are what the job now running is doing.
+                            state.model.planned = false;
                         }
                     });
                     start(hwnd, job, settings, shared);

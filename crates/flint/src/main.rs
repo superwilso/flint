@@ -672,7 +672,8 @@ fn gui() -> Result<(), String> {
 /// The states worth drawing. Named rather than free-form so the same five pictures come out of
 /// every build, which is what makes a diff between two of them mean something.
 fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
-    use flint_gui::{Model, Phase};
+    use flint_gui::{LibraryFacts, Model, Phase, VolumeFacts};
+    const GB: u64 = 1024 * 1024 * 1024;
     let mut m = Model::new();
     let ready = |m: &mut Model| {
         m.library = Some(PathBuf::from("D:\\Music"));
@@ -680,15 +681,33 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         m.volumes[1] = Some(PathBuf::from("F:\\"));
         m.playlists = Some(PathBuf::from("D:\\Music\\Playlists"));
     };
+    // The numbers a real plan sends back, so the preview shows the meters as they will look
+    // rather than as empty troughs.
+    let measured = |m: &mut Model| {
+        m.source = Some(LibraryFacts { files: 3184, bytes: 214 * GB + 614 * GB / 1024 });
+        m.dest[0] = Some(VolumeFacts {
+            on_device: 12 * GB + 410 * GB / 1024,
+            budget: 51 * GB + 717 * GB / 1024,
+            to_copy: 39 * GB + 205 * GB / 1024,
+            albums: 96,
+        });
+        m.dest[1] = Some(VolumeFacts {
+            on_device: 0,
+            budget: 116 * GB + 307 * GB / 1024,
+            to_copy: 74 * GB + 922 * GB / 1024,
+            albums: 154,
+        });
+    };
     match state {
         "fresh" => {}
         "ready" => ready(&mut m),
         "planned" => {
             ready(&mut m);
+            measured(&mut m);
             m.planned = true;
             m.log = [
                 "reading D:\\Music",
-                "3,184 files, 214.6 GB",
+                "3,184 files, 215 GB",
                 "412 already carried Sony's analysis — taken from the files, 391.2 MB of unread chunks left behind",
                 "E:\\ holds 12.4 GB in 214 files, budget 51.7 GB",
                 "F:\\ holds 0 B in 0 files, budget 116.3 GB",
@@ -708,6 +727,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         }
         "working" => {
             ready(&mut m);
+            measured(&mut m);
             m.phase = Phase::Working;
             m.progress = Some(0.41);
             m.log = [
@@ -725,6 +745,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         }
         "done" => {
             ready(&mut m);
+            measured(&mut m);
             m.log = [
                 "[2189/2190] Wu-Tang Clan - Enter the Wu-Tang/11 Tearz.flac  +SensMe",
                 "[2190/2190] Wu-Tang Clan - Enter the Wu-Tang/12 Wu-Tang - 7th Chamber Pt II.flac  +SensMe",

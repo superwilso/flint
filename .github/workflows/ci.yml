@@ -23,8 +23,14 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --all -- --check
+      # CORRECTNESS AND SUSPICIOUS, not `-D warnings` — the same policy as Cinder's `ci.yml`.
+      # The toolchain here is `stable`, which moves: `-D warnings` means a Rust release can turn
+      # this red on a day nothing in the repository changed, over a style preference. It did,
+      # immediately, on the first run of this file (`chunks_exact_to_as_chunks`, new in 1.98,
+      # against code that had not been touched). These two groups are the ones that mean "this is
+      # a bug"; everything else still prints, and is still worth reading.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious
       - name: Test
         run: cargo test --workspace
       # The window is Win32, so Linux cannot run it — but it CAN draw it. The preview is the

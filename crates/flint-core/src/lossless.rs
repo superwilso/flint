@@ -220,8 +220,11 @@ impl Analyser {
     fn frame(&mut self, frame: &[u8]) {
         let scale = 1.0 / (f32::from(self.info.channels) * 2_147_483_648.0);
         let mut sum = 0.0f32;
-        for s in frame.chunks_exact(4) {
-            let v = i32::from_le_bytes(s.try_into().expect("4"));
+        // `as_chunks` rather than `chunks_exact(4)`: it hands back `&[[u8; 4]]`, so the array is
+        // the right length by type and the `try_into().expect("4")` this used to carry is gone.
+        let (samples, _tail) = frame.as_chunks::<4>();
+        for s in samples {
+            let v = i32::from_le_bytes(*s);
             self.or_bits |= v as u32;
             sum += v as f32;
         }

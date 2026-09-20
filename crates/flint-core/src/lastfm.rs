@@ -281,10 +281,7 @@ impl Client {
                 return Ok(root);
             }
             let (code, message) = match root.child("error") {
-                Some(node) => (
-                    node.attr("code").unwrap_or("?").to_string(),
-                    node.text.trim().to_string(),
-                ),
+                Some(node) => (node.attr("code").unwrap_or("?").to_string(), node.text.trim().to_string()),
                 None => ("?".into(), format!("HTTP {}", response.status)),
             };
             if code == RATE_LIMITED && attempt < RETRIES {
@@ -346,11 +343,7 @@ impl Client {
                 if artist.is_empty() || title.is_empty() {
                     continue;
                 }
-                let when = track
-                    .child("date")
-                    .and_then(|d| d.attr("uts"))
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0);
+                let when = track.child("date").and_then(|d| d.attr("uts")).and_then(|v| v.parse().ok()).unwrap_or(0);
                 loved.push(Loved { artist, title, when });
             }
             progress(page, pages, loved.len());
@@ -461,9 +454,8 @@ mod tests {
             ("sk".to_string(), "SESSION".to_string()),
         ];
         // api_key KEY artist Sigur Rós method track.love sk SESSION track Hoppípolla + SECRET
-        let expected = crate::md5::hex(
-            "api_keyKEYartistSigur Rósmethodtrack.loveskSESSIONtrackHoppípollaSECRET".as_bytes(),
-        );
+        let expected =
+            crate::md5::hex("api_keyKEYartistSigur Rósmethodtrack.loveskSESSIONtrackHoppípollaSECRET".as_bytes());
         assert_eq!(sign(&params, "SECRET"), expected);
     }
 

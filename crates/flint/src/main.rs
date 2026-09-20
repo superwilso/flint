@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use flint_core::{
-    apply, cache, engine, engine::Engine, flac, id3, lastfm, library, likes, lossless, musiccenter, scrobblelog,
-    smfmf, space, sync,
+    apply, cache, engine, engine::Engine, flac, id3, lastfm, library, likes, lossless, musiccenter, scrobblelog, smfmf,
+    space, sync,
 };
 
 const USAGE: &str = "\
@@ -791,11 +791,8 @@ fn gui_preview(args: &[String]) -> Result<(), String> {
     let [out] = o.pos.as_slice() else { return Err(USAGE.into()) };
     let state = o.state.as_deref().unwrap_or("planned");
     let m = preview_model(state)?;
-    let theme = if o.dark.unwrap_or(false) {
-        flint_gui::paint::Theme::dark()
-    } else {
-        flint_gui::paint::Theme::light()
-    };
+    let theme =
+        if o.dark.unwrap_or(false) { flint_gui::paint::Theme::dark() } else { flint_gui::paint::Theme::light() };
     let svg = flint_gui::svg::render(&m, flint_gui::W, flint_gui::H, &theme);
     fs::write(out, svg).map_err(|e| format!("{out}: {e}"))?;
     println!("{out}  ({state}, {}x{})", flint_gui::W, flint_gui::H);
@@ -838,8 +835,14 @@ fn lastfm_cmd(args: &[String]) -> Result<(), String> {
             let creds = lastfm::Credentials::load();
             println!("credentials: {}", lastfm::Credentials::path().display());
             println!("  api key    {}", if creds.api_key.is_empty() { "—".into() } else { masked(&creds.api_key) });
-            println!("  api secret {}", if creds.api_secret.is_empty() { "—".into() } else { masked(&creds.api_secret) });
-            println!("  session    {}", if creds.session_key.is_empty() { "—".into() } else { masked(&creds.session_key) });
+            println!(
+                "  api secret {}",
+                if creds.api_secret.is_empty() { "—".into() } else { masked(&creds.api_secret) }
+            );
+            println!(
+                "  session    {}",
+                if creds.session_key.is_empty() { "—".into() } else { masked(&creds.session_key) }
+            );
             println!("  username   {}", if creds.username.is_empty() { "—" } else { &creds.username });
             if !creds.is_ready() {
                 println!("\nnot ready yet:");
@@ -1012,10 +1015,9 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
                 println!("  Last.fm page {page}/{pages} ({so_far} so far)");
             }
         }) {
-            Ok(loved) => likes::Source::from_tracks(
-                "lastfm",
-                loved.into_iter().map(|l| likes::Track::new(&l.artist, &l.title)),
-            ),
+            Ok(loved) => {
+                likes::Source::from_tracks("lastfm", loved.into_iter().map(|l| likes::Track::new(&l.artist, &l.title)))
+            }
             Err(e) => likes::Source::missing("lastfm", &format!("{e}")),
         },
     };
@@ -1095,8 +1097,7 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
             let mut seen = 0usize;
             let index = likes::index_volume(volume, |n| seen = n + 1);
             let rows = likes::playlist_rows(&plan.liked, &index);
-            likes::write_playlist(volume, &rows)
-                .map_err(|e| format!("{}: {e}", volume.playlist_path().display()))?;
+            likes::write_playlist(volume, &rows).map_err(|e| format!("{}: {e}", volume.playlist_path().display()))?;
             println!(
                 "{}: {} of {} liked track(s) found among {} file(s) — {}",
                 volume.label,
@@ -1113,10 +1114,7 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
     // hold once it merges, and recording the old one would make the push look like an unlike.
     let mut next = likes::State { last_sync: now_unix(), liked: plan.liked.clone(), ..likes::State::default() };
     if device.available {
-        next.snapshots.insert(
-            "device".into(),
-            if pushed { plan.liked.clone() } else { device.tracks.clone() },
-        );
+        next.snapshots.insert("device".into(), if pushed { plan.liked.clone() } else { device.tracks.clone() });
     } else if let Some(old) = state.snapshots.get("device") {
         next.snapshots.insert("device".into(), old.clone());
     }
@@ -1131,10 +1129,7 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
 }
 
 fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// Enough of a secret to recognise, not enough to use.

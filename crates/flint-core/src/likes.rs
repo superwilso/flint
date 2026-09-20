@@ -91,8 +91,19 @@ pub mod keys {
     ];
 
     const FEAT_MARKERS: &[&str] = &[
-        "(feat.", "(feat ", "[feat.", "[feat ", " feat. ", " feat ", " ft. ", " ft ", " featuring ",
-        "(ft.", "(ft ", "(featuring", "[featuring",
+        "(feat.",
+        "(feat ",
+        "[feat.",
+        "[feat ",
+        " feat. ",
+        " feat ",
+        " ft. ",
+        " ft ",
+        " featuring ",
+        "(ft.",
+        "(ft ",
+        "(featuring",
+        "[featuring",
     ];
 
     const ARTIST_SPLITS: &[&str] = &[" & ", ", ", "; ", " and ", " vs. ", " vs ", " x ", " / ", "/"];
@@ -624,7 +635,10 @@ mod tests {
 
     #[test]
     fn the_key_folds_what_cinder_folds() {
-        assert_eq!(keys::key("Amy Winehouse", "Love Is A Losing Game"), keys::key("amy winehouse", "love is a losing game"));
+        assert_eq!(
+            keys::key("Amy Winehouse", "Love Is A Losing Game"),
+            keys::key("amy winehouse", "love is a losing game")
+        );
         // Re-issue suffixes and feat. credits fold; a different recording does not.
         assert_eq!(keys::key("Bowie", "Heroes (2017 Remaster)"), keys::key("Bowie", "Heroes"));
         assert_eq!(keys::key("Little Simz feat. Cleo Sol", "Woman"), keys::key("Little Simz", "Woman"));
@@ -648,14 +662,18 @@ mod tests {
         assert_eq!(plan.liked.len(), 2);
         assert_eq!(plan.device_add.len(), 1, "the Last.fm track goes to the player");
         assert_eq!(plan.lastfm_love.len(), 1, "the player's track goes to Last.fm");
-        assert!(plan.device_remove.is_empty() && plan.lastfm_unlove.is_empty(), "nothing is ever removed on a first run");
+        assert!(
+            plan.device_remove.is_empty() && plan.lastfm_unlove.is_empty(),
+            "nothing is ever removed on a first run"
+        );
     }
 
     #[test]
     fn a_removal_propagates_once_there_is_a_snapshot() {
         // Both knew about Kerala last time; the player no longer has it, so it was unliked there.
         let state = state_with(&[("Bonobo", "Kerala")], &[("Bonobo", "Kerala")], &[("Bonobo", "Kerala")]);
-        let plan = plan(&state, &source("device", &[]), &source("lastfm", &[("Bonobo", "Kerala")]), Conflict::default());
+        let plan =
+            plan(&state, &source("device", &[]), &source("lastfm", &[("Bonobo", "Kerala")]), Conflict::default());
         assert!(plan.liked.is_empty());
         assert_eq!(plan.lastfm_unlove.len(), 1);
         assert!(plan.device_add.is_empty(), "it must not be pushed back to the player it was removed on");
@@ -679,11 +697,16 @@ mod tests {
     fn a_pending_import_makes_the_player_additive_only() {
         // Flint pushed Atlas last run; Cinder has not merged it yet, so the device export still
         // shows the old list. That must not read as "Atlas was unliked".
-        let state = state_with(&[("Bonobo", "Kerala")], &[("Bonobo", "Kerala"), ("Bicep", "Atlas")], &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]);
+        let state = state_with(
+            &[("Bonobo", "Kerala")],
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+        );
         let mut device = source("device", &[("Bonobo", "Kerala")]);
         device.additive_only = true;
         device.note = "an import is still waiting to be merged — additive only".into();
-        let plan = plan(&state, &device, &source("lastfm", &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]), Conflict::default());
+        let plan =
+            plan(&state, &device, &source("lastfm", &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]), Conflict::default());
         assert_eq!(plan.liked.len(), 2);
         assert!(plan.lastfm_unlove.is_empty(), "the pending push must not come back as an unlove");
         assert_eq!(plan.device_add.len(), 1, "Atlas is still owed to the player");
@@ -726,10 +749,8 @@ mod tests {
 
     #[test]
     fn the_playlist_holds_only_what_this_volume_has() {
-        let liked: BTreeMap<String, Track> = [Track::new("Bicep", "Atlas"), Track::new("Bonobo", "Kerala")]
-            .into_iter()
-            .map(|t| (t.key(), t))
-            .collect();
+        let liked: BTreeMap<String, Track> =
+            [Track::new("Bicep", "Atlas"), Track::new("Bonobo", "Kerala")].into_iter().map(|t| (t.key(), t)).collect();
         // The index knows one of them, spelled differently — the fold has to bridge that.
         let index: BTreeMap<String, String> =
             [(keys::key("Bicep", "Atlas (2021 Remaster)"), "Bicep - Isles/01 Atlas.flac".to_string())]

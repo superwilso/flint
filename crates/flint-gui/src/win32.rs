@@ -309,8 +309,7 @@ fn set_caption_dark(hwnd: Hwnd, dark: bool) {
         if proc.is_null() {
             return;
         }
-        let set: unsafe extern "system" fn(Hwnd, u32, *const c_void, u32) -> i32 =
-            std::mem::transmute(proc);
+        let set: unsafe extern "system" fn(Hwnd, u32, *const c_void, u32) -> i32 = std::mem::transmute(proc);
         let on: i32 = i32::from(dark);
         let p: *const c_void = (&on as *const i32).cast();
         set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, p, 4);

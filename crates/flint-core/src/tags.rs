@@ -116,10 +116,16 @@ fn decode_utf16(bytes: &[u8], force_big_endian: Option<bool>) -> String {
             _ => (false, bytes),
         },
     };
-    let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|pair| if big_endian { u16::from_be_bytes([pair[0], pair[1]]) } else { u16::from_le_bytes([pair[0], pair[1]]) })
-        .collect();
+    let units: Vec<u16> =
+        body.chunks_exact(2)
+            .map(|pair| {
+                if big_endian {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect();
     String::from_utf16_lossy(&units)
 }
 

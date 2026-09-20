@@ -488,9 +488,8 @@ mod tests {
         let (l, d) = (super::Theme::light(), super::Theme::dark());
         assert_eq!(l.accent, d.accent);
         assert_eq!(l.accent_down, d.accent_down);
-        let lum = |c: u32| {
-            (super::r_of(c) as u32 * 299 + super::g_of(c) as u32 * 587 + super::b_of(c) as u32 * 114) / 1000
-        };
+        let lum =
+            |c: u32| (super::r_of(c) as u32 * 299 + super::g_of(c) as u32 * 587 + super::b_of(c) as u32 * 114) / 1000;
         assert!(lum(l.bg) > 200, "the light page is light");
         assert!(lum(d.bg) < 60, "the dark page is dark");
         // Text has to land on the right side of its own background in both.

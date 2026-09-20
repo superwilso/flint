@@ -79,9 +79,7 @@ pub fn get_form(url: &str, fields: &[(String, String)]) -> Result<Response, Erro
 /// `https://host/path` → (host, path). Only https, because the only endpoint is Last.fm's and a
 /// plain-http fallback would send a session key in clear.
 fn split_url(url: &str) -> Result<(String, String), Error> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| Error(format!("{url}: only https URLs are supported")))?;
+    let rest = url.strip_prefix("https://").ok_or_else(|| Error(format!("{url}: only https URLs are supported")))?;
     match rest.find('/') {
         Some(cut) => Ok((rest[..cut].to_string(), rest[cut..].to_string())),
         None => Ok((rest.to_string(), "/".to_string())),
@@ -255,13 +253,7 @@ mod windows_impl {
                 let start = raw.len();
                 raw.resize(start + available as usize, 0);
                 let mut read: u32 = 0;
-                if WinHttpReadData(
-                    request.0,
-                    raw[start..].as_mut_ptr().cast::<c_void>(),
-                    available,
-                    &mut read,
-                ) == 0
-                {
+                if WinHttpReadData(request.0, raw[start..].as_mut_ptr().cast::<c_void>(), available, &mut read) == 0 {
                     return Err(Error(format!("could not read the response (error {})", GetLastError())));
                 }
                 raw.truncate(start + read as usize);
@@ -349,7 +341,10 @@ mod tests {
 
     #[test]
     fn urls_split_into_host_and_path() {
-        assert_eq!(split_url("https://ws.audioscrobbler.com/2.0/").unwrap(), ("ws.audioscrobbler.com".into(), "/2.0/".into()));
+        assert_eq!(
+            split_url("https://ws.audioscrobbler.com/2.0/").unwrap(),
+            ("ws.audioscrobbler.com".into(), "/2.0/".into())
+        );
         assert_eq!(split_url("https://example.com").unwrap(), ("example.com".into(), "/".into()));
         assert!(split_url("http://example.com").is_err(), "plain http would put a session key in clear");
     }

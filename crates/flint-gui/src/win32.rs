@@ -193,6 +193,28 @@ extern "system" {
     fn CoInitialize(reserved: *mut c_void) -> i32;
 }
 
+#[link(name = "advapi32")]
+extern "system" {
+    fn RegGetValueW(
+        key: *mut c_void,
+        subkey: *const u16,
+        value: *const u16,
+        flags: u32,
+        kind: *mut u32,
+        data: *mut c_void,
+        size: *mut u32,
+    ) -> i32;
+}
+
+// DWM is loaded by hand rather than linked: the dark title bar attribute does not exist before
+// Windows 10 1809, and a missing export in the import table stops the whole program from starting.
+// A window with a light caption on an old build is a blemish; one that will not launch is not.
+#[link(name = "kernel32")]
+extern "system" {
+    fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+}
+
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WM_DESTROY: u32 = 0x0002;
@@ -222,6 +244,15 @@ const MB_ICONERROR: u32 = 0x0010;
 const BIF_RETURNONLYFSDIRS: u32 = 0x0001;
 const BIF_NEWDIALOGSTYLE: u32 = 0x0040;
 const DPI_AWARENESS_PER_MONITOR_V2: isize = -4;
+/// Sent when Windows changes a system-wide setting; `lparam` names which one. Light/dark arrives
+/// as `"ImmersiveColorSet"`.
+const WM_SETTINGCHANGE: u32 = 0x001A;
+const HKEY_CURRENT_USER: *mut c_void = 0x8000_0001u32 as usize as *mut c_void;
+const RRF_RT_REG_DWORD: u32 = 0x0000_0018;
+/// `DWMWA_USE_IMMERSIVE_DARK_MODE`. 20 since Windows 10 20H1; 19 on 1809/1903/1909, where the same
+/// call with 20 is silently ignored — so both are sent and the one that applies wins.
+const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD: u32 = 19;
 
 /// GDI wants `0x00BBGGRR`; [`crate::paint`] speaks `0xRRGGBB`. The whole of the conversion.
 fn colorref(c: u32) -> u32 {
@@ -230,6 +261,61 @@ fn colorref(c: u32) -> u32 {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Does Windows itself want dark applications? The one place that answers it is the personalisation
+/// key, which is also what File Explorer and the Settings app read. `AppsUseLightTheme` is 0 for
+/// dark and 1 for light, and the value is ABSENT on a machine that has never chosen — which is the
+/// light default, so every failure here reads as light.
+fn system_prefers_dark() -> bool {
+    const SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+    let subkey = wide(SUBKEY);
+    let value = wide("AppsUseLightTheme");
+    let mut data: u32 = 1;
+    let mut size: u32 = std::mem::size_of::<u32>() as u32;
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut data as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    rc == 0 && data == 0
+}
+
+/// The theme to paint with: what the person asked for on the command line, or what Windows wants.
+fn theme_for(pref: Option<bool>) -> Theme {
+    if pref.unwrap_or_else(system_prefers_dark) {
+        Theme::dark()
+    } else {
+        Theme::light()
+    }
+}
+
+/// Ask DWM for a dark title bar. Best-effort in every direction: the DLL may not be there, the
+/// attribute may not exist, and the call may simply do nothing. The window is correct either way.
+fn set_caption_dark(hwnd: Hwnd, dark: bool) {
+    unsafe {
+        let name = wide("dwmapi.dll");
+        let dll = LoadLibraryW(name.as_ptr());
+        if dll.is_null() {
+            return;
+        }
+        let proc = GetProcAddress(dll, b"DwmSetWindowAttribute\0".as_ptr());
+        if proc.is_null() {
+            return;
+        }
+        let set: unsafe extern "system" fn(Hwnd, u32, *const c_void, u32) -> i32 =
+            std::mem::transmute(proc);
+        let on: i32 = i32::from(dark);
+        let p: *const c_void = (&on as *const i32).cast();
+        set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, p, 4);
+        set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, p, 4);
+    }
 }
 
 // ── the window's state ─────────────────────────────────────────────────────────────────────────
@@ -246,6 +332,8 @@ struct Shared {
 struct State {
     model: Model,
     theme: Theme,
+    /// `Some(true)`/`Some(false)` when `--dark`/`--light` was asked for, `None` to follow Windows.
+    theme_pref: Option<bool>,
     /// Logical (96-DPI) size; the DPI scale is applied at paint time.
     size: (i32, i32),
     dpi: u32,
@@ -515,6 +603,39 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
             InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
+        WM_SETTINGCHANGE => {
+            // Windows sends this for every system setting, so check it is ours before re-reading
+            // the registry: `lparam` points at a wide string naming the change.
+            let mut ours = false;
+            if l != 0 {
+                let p = l as *const u16;
+                let mut n = 0isize;
+                let mut name = String::new();
+                while n < 64 && *p.offset(n) != 0 {
+                    name.push(char::from_u32(*p.offset(n) as u32).unwrap_or('?'));
+                    n += 1;
+                }
+                ours = name == "ImmersiveColorSet";
+            }
+            if ours {
+                let changed = STATE.with(|st| {
+                    let mut b = st.borrow_mut();
+                    let Some(state) = b.as_mut() else { return None };
+                    let dark = state.theme_pref.unwrap_or_else(system_prefers_dark);
+                    let next = if dark { Theme::dark() } else { Theme::light() };
+                    if next.bg == state.theme.bg {
+                        return None;
+                    }
+                    state.theme = next;
+                    Some(dark)
+                });
+                if let Some(dark) = changed {
+                    set_caption_dark(hwnd, dark);
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
+                }
+            }
+            0
+        }
         WM_GETMINMAXINFO => {
             let mmi = l as *mut MinMaxInfo;
             STATE.with(|st| {
@@ -698,6 +819,12 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
 
 /// Open the window and run until it closes.
 pub fn run() -> Result<(), String> {
+    run_with(None)
+}
+
+/// `pref` is `Some(true)` for dark, `Some(false)` for light, `None` to follow Windows — and to keep
+/// following it, because the window re-reads the setting on `WM_SETTINGCHANGE`.
+pub fn run_with(pref: Option<bool>) -> Result<(), String> {
     unsafe {
         // Per-monitor v2 so the window is sharp on a scaled display; failing is not fatal, it just
         // means Windows stretches the 96-DPI rendering, which is blurry but usable.
@@ -758,7 +885,8 @@ pub fn run() -> Result<(), String> {
         STATE.with(|st| {
             *st.borrow_mut() = Some(State {
                 model: Model::new(),
-                theme: Theme::light(),
+                theme: theme_for(pref),
+                theme_pref: pref,
                 size: (W, H),
                 dpi,
                 hot: None,
@@ -774,6 +902,7 @@ pub fn run() -> Result<(), String> {
         });
 
         SetWindowTextW(hwnd, title.as_ptr());
+        set_caption_dark(hwnd, pref.unwrap_or_else(system_prefers_dark));
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
 

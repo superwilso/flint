@@ -93,6 +93,43 @@ impl Theme {
             rule: rgb(0xDF, 0xDF, 0xE6),
         }
     }
+
+    /// The same window after dark. Not an inversion: the light theme's band is already near-black,
+    /// so inverting it would leave the title bar lighter than the body it sits over. The band goes
+    /// DEEPER than the page instead, the greys stay warm (they share their hue with the ember, and
+    /// a neutral grey next to it reads blue), and the ember itself does not move — it means "the
+    /// next thing to do" in both themes, and a colour that changes with the theme cannot carry a
+    /// meaning.
+    pub const fn dark() -> Theme {
+        Theme {
+            bg: rgb(0x1B, 0x1A, 0x19),
+            band: rgb(0x0E, 0x0D, 0x0D),
+            band_text: rgb(0xF2, 0xEF, 0xEC),
+            band_dim: rgb(0x8E, 0x88, 0x84),
+            panel: rgb(0x23, 0x21, 0x20),
+            panel_border: rgb(0x33, 0x2F, 0x2D),
+            empty_border: rgb(0x3D, 0x39, 0x36),
+            text: rgb(0xED, 0xE9, 0xE5),
+            heading: rgb(0xCF, 0xC9, 0xC3),
+            dim: rgb(0x9A, 0x93, 0x8D),
+            placeholder: rgb(0x85, 0x7E, 0x77),
+            accent: rgb(0xE0, 0x55, 0x1B),
+            accent_text: rgb(0xFF, 0xFF, 0xFF),
+            accent_down: rgb(0xB8, 0x44, 0x15),
+            meter_have: rgb(0x7A, 0x73, 0x6C),
+            button: rgb(0x2B, 0x28, 0x26),
+            button_border: rgb(0x3D, 0x39, 0x36),
+            button_text: rgb(0xED, 0xE9, 0xE5),
+            check: rgb(0xE0, 0xDB, 0xD5),
+            disabled: rgb(0x20, 0x1E, 0x1D),
+            disabled_text: rgb(0x5A, 0x54, 0x4F),
+            trough: rgb(0x2E, 0x2B, 0x29),
+            log_bg: rgb(0x12, 0x11, 0x10),
+            log_border: rgb(0x2A, 0x27, 0x25),
+            log_text: rgb(0xCF, 0xCB, 0xC7),
+            rule: rgb(0x30, 0x2C, 0x2A),
+        }
+    }
 }
 
 impl Default for Theme {
@@ -443,6 +480,25 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
 
 #[cfg(test)]
 mod tests {
+    /// The accent means "the next thing to do", so it cannot depend on the theme — and the two
+    /// themes have to actually differ, or `--dark` is a no-op nobody would notice until Windows
+    /// switched on its own.
+    #[test]
+    fn dark_keeps_the_accent_and_flips_the_page() {
+        let (l, d) = (super::Theme::light(), super::Theme::dark());
+        assert_eq!(l.accent, d.accent);
+        assert_eq!(l.accent_down, d.accent_down);
+        let lum = |c: u32| {
+            (super::r_of(c) as u32 * 299 + super::g_of(c) as u32 * 587 + super::b_of(c) as u32 * 114) / 1000
+        };
+        assert!(lum(l.bg) > 200, "the light page is light");
+        assert!(lum(d.bg) < 60, "the dark page is dark");
+        // Text has to land on the right side of its own background in both.
+        assert!(lum(l.text) < lum(l.bg));
+        assert!(lum(d.text) > lum(d.bg));
+        assert!(lum(d.dim) > lum(d.bg) + 40, "dim text stays readable on the dark page");
+    }
+
     use super::*;
     use crate::{Id, Job, Phase, H, W};
 

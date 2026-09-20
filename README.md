@@ -51,6 +51,12 @@ Choose a music folder and the player's drive, press **Show what would happen** �
 — and then **Copy to the player**. Copy is only ever offered for a plan you have already been
 shown, and changing any setting takes it away again until you look at the new one.
 
+One control at a time is in Flint's orange, and it is always the next thing to do: the folder
+first, then the drive, then the plan, then the copy. Each destination carries a bar of its own
+capacity — what is on it already in graphite, what this copy would add in orange, and what would
+still be free — because "will it fit" is the question a 16 GB player asks of a library that does
+not. The same orange marks the bytes about to be written, and nothing else.
+
 It draws its own window with no toolkit and no dependencies, the same approach as Cinder's
 installer, and everything it does goes through the same code the commands below do. The layout is
 plain Rust with no Windows in it, which is why the picture above can be drawn anywhere:

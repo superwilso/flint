@@ -30,8 +30,8 @@ usage:
   flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme]
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
-  flint gui
-  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done]";
+  flint gui [--dark | --light]
+  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done] [--dark]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,12 +43,12 @@ fn main() -> ExitCode {
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("import") => import(&args[1..]),
-        Some("gui") | Some("--gui") => gui(),
+        Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
         Some("gui-preview") => gui_preview(&args[1..]),
         // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
         // the only thing that can be shown, so show it. Anywhere else, with no arguments, the
         // usage is exactly what is wanted.
-        None if cfg!(windows) => gui(),
+        None if cfg!(windows) => gui(None),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -77,6 +77,8 @@ struct Opts {
     no_sensme: bool,
     from: Option<PathBuf>,
     state: Option<String>,
+    /// `--dark` / `--light`; `None` means follow Windows.
+    dark: Option<bool>,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -96,6 +98,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         no_sensme: false,
         from: None,
         state: None,
+        dark: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -111,6 +114,8 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
             "--from" => o.from = Some(value("--from")?.into()),
             "--state" => o.state = Some(value("--state")?),
+            "--dark" => o.dark = Some(true),
+            "--light" => o.dark = Some(false),
             "--apply" => o.apply = true,
             "--no-sensme" => o.no_sensme = true,
             "--verbose" => o.verbose = true,
@@ -658,12 +663,12 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
 /// Open the window. On anything but Windows this says so rather than pretending: the window is
 /// Win32, and `gui-preview` is how it is looked at anywhere else.
 #[cfg(windows)]
-fn gui() -> Result<(), String> {
-    flint_gui::win32::run()
+fn gui(dark: Option<bool>) -> Result<(), String> {
+    flint_gui::win32::run_with(dark)
 }
 
 #[cfg(not(windows))]
-fn gui() -> Result<(), String> {
+fn gui(_dark: Option<bool>) -> Result<(), String> {
     Err("the window is Windows-only. Every command works here; \
          `flint gui-preview out.svg` draws a picture of the window."
         .into())
@@ -770,7 +775,12 @@ fn gui_preview(args: &[String]) -> Result<(), String> {
     let [out] = o.pos.as_slice() else { return Err(USAGE.into()) };
     let state = o.state.as_deref().unwrap_or("planned");
     let m = preview_model(state)?;
-    let svg = flint_gui::svg::render(&m, flint_gui::W, flint_gui::H, &flint_gui::paint::Theme::light());
+    let theme = if o.dark.unwrap_or(false) {
+        flint_gui::paint::Theme::dark()
+    } else {
+        flint_gui::paint::Theme::light()
+    };
+    let svg = flint_gui::svg::render(&m, flint_gui::W, flint_gui::H, &theme);
     fs::write(out, svg).map_err(|e| format!("{out}: {e}"))?;
     println!("{out}  ({state}, {}x{})", flint_gui::W, flint_gui::H);
     Ok(())

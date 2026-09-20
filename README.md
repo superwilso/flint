@@ -57,12 +57,21 @@ capacity — what is on it already in graphite, what this copy would add in oran
 still be free — because "will it fit" is the question a 16 GB player asks of a library that does
 not. The same orange marks the bytes about to be written, and nothing else.
 
+It follows Windows' own light/dark setting, and changes with it while it is open — the orange does
+not move between the two, because it means "the next thing to do" and a colour that changed with the
+theme could not carry a meaning:
+
+![Flint's window after dark](docs/window-dark.svg)
+
+`flint gui --dark` or `--light` overrides the system setting for one run.
+
 It draws its own window with no toolkit and no dependencies, the same approach as Cinder's
 installer, and everything it does goes through the same code the commands below do. The layout is
-plain Rust with no Windows in it, which is why the picture above can be drawn anywhere:
+plain Rust with no Windows in it, which is why the pictures above can be drawn anywhere:
 
 ```
 flint gui-preview window.svg --state planned     # or fresh, ready, working, done
+flint gui-preview window-dark.svg --state planned --dark
 ```
 
 ## Copying a library to the player

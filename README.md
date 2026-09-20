@@ -5,7 +5,10 @@ copy a music library onto the player, keep likes and scrobbles in step, and give
 **SensMe** mood and tempo data — without touching the files on your PC.
 
 **Status: early rewrite.** Flint replaces the Python `Sony-sync` tool, which remains the working
-version until Flint reaches it. Nothing here is released yet.
+version until Flint reaches it. No release has been cut yet; `.github/workflows/release.yml` builds
+one from a `v*` tag — `flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside
+it, and `flint-linux-x64` — with SHA-256 sums inlined into the release page and a Sigstore build
+attestation for each file.
 
 ## SensMe, without the bloat
 
@@ -23,6 +26,39 @@ differently:
 Flint does not include Sony's engine. SensMe analysis needs Music Center for PC installed on the same
 Windows machine; everything else in Flint works without it.
 
+### If you already use Music Center
+
+Then the analysis is done and Flint will not do it again:
+
+* **Tags already inside your files** are taken as they stand. `flint scan` and `flint sync` read
+  them, and say how many they found. No decode, no engine run.
+* **Music Center's own cache** — it analyses far more tracks than it writes tags for — comes in with
+  `flint import`. It reads `%APPDATA%\Sony\Music Center`, writes nothing back, and keys each result
+  against the audio it belongs to.
+* Either way the copy on the Walkman carries only the part the player reads, so a Music Center tag
+  that had grown to a megabyte arrives as about 6 KB.
+
+A feature-by-feature comparison with Music Center, including what Flint deliberately does not do and
+what is still missing, is in [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
+
+## The window
+
+On Windows, `flint` with no arguments opens one:
+
+![Flint's window](docs/window.svg)
+
+Choose a music folder and the player's drive, press **Show what would happen** — nothing is written
+— and then **Copy to the player**. Copy is only ever offered for a plan you have already been
+shown, and changing any setting takes it away again until you look at the new one.
+
+It draws its own window with no toolkit and no dependencies, the same approach as Cinder's
+installer, and everything it does goes through the same code the commands below do. The layout is
+plain Rust with no Windows in it, which is why the picture above can be drawn anywhere:
+
+```
+flint gui-preview window.svg --state planned     # or fresh, ready, working, done
+```
+
 ## Copying a library to the player
 
 ```
@@ -30,6 +66,10 @@ flint scan "D:\\Music"                              analyse once, into Flint's c
 flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists"     a dry run
 flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply
 ```
+
+Cover art and lyrics (`.jpg`, `.png`, `.lrc`) sitting in an album's folder travel with it. They are
+copied, never swept: deleting artwork another tool put on the player is not a call a sync should
+make.
 
 Albums are the unit that moves, and an album is never split across the internal memory and the card.
 Albums that share a playlist stay together, so no playlist spans two volumes, and an album already on
@@ -79,7 +119,7 @@ retagged or moved file is not decoded twice.
 
 | Crate | What it is |
 |---|---|
-| `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, and the decode → engine pipeline |
+| `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, the decode → engine pipeline, and reading analysis Music Center has already done |
 | `flint` | The command-line tool |
 | `sensme-helper` | A 32-bit Windows helper that loads `MMLib11.dll` (the engine is 32-bit, Flint is not) |
 

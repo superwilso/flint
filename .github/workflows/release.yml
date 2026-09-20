@@ -1,0 +1,137 @@
+name: release
+
+# Builds the executables and attaches them to a GitHub release.
+#
+# Flint has no dependencies and nothing is vendored, so unlike Cinder's release there is no
+# committed payload to verify — everything published here is built from the tagged source in this
+# run. What ships:
+#
+#   flint-windows-x64.exe    the tool and its window. This is the one most people want.
+#   sensme-helper-x86.exe    32-bit, because Sony's MMLib11.dll is 32-bit COM. It is NOT optional
+#                            for analysis: flint runs it as a child process. It ships beside
+#                            flint.exe and is found in the same folder.
+#   flint-linux-x64          everything but the window and the analysis, which need Windows.
+#
+# Sony's MMLib11.dll is never built, shipped or downloaded by any of this. Flint runs the copy
+# already on the machine, from a Music Center install the user chose to have.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      # The gate runs here too. A tag is not a reason to publish something that does not pass.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: |
+          cargo build --release -p flint
+          cargo build --release -p sensme-helper --target i686-pc-windows-msvc
+
+      - name: Stage artifacts
+        run: |
+          Copy-Item target/release/flint.exe flint-windows-x64.exe
+          Copy-Item target/i686-pc-windows-msvc/release/sensme-helper.exe sensme-helper-x86.exe
+          Get-ChildItem flint-windows-x64.exe, sensme-helper-x86.exe
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            flint-windows-x64.exe
+            sensme-helper-x86.exe
+          if-no-files-found: error
+
+  # Everything except the window and the analysis engine: the scan, the plan, the copy, the
+  # manifests, the tag writing and `flint check` all work here. Published rather than left
+  # implicit, because "cross-platform except the Windows parts" is only a claim if there is a
+  # binary to test it with.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --workspace
+      - name: Build
+        run: cargo build --release -p flint
+      - name: Stage artifact
+        run: |
+          cp target/release/flint flint-linux-x64
+          ls -l flint-linux-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: flint-linux-x64
+          if-no-files-found: error
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    # Job-level permissions REPLACE the workflow's, so contents: write is restated. id-token lets
+    # the job ask GitHub's OIDC issuer for the short-lived identity Sigstore signs with;
+    # attestations lets it store the result against this repository.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: List what is being published, with checksums
+        run: |
+          ls -lR dist
+          # A published binary nobody can verify is a binary nobody should run.
+          ( cd dist && sha256sum -- * | tee SHA256SUMS )
+
+      # BUILD PROVENANCE. SHA256SUMS proves a download matches what this job published; it cannot
+      # prove this workflow, from this commit, produced it — anyone able to replace a file could
+      # replace the sums beside it. An attestation is signed through Sigstore with the run's own
+      # OIDC identity (repository, workflow file, commit), so it can be checked with
+      # `gh attestation verify <file> -R superwilso/flint` and cannot be minted outside a run.
+      - name: Attest build provenance for every published file
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      # The sums are INLINED INTO THE RELEASE PAGE, not merely attached. Verifying a download
+      # against a checksum file fetched from beside it is close to circular: whoever could swap one
+      # could swap the other. The release body is the rendered record of what the workflow built,
+      # so that is where the hashes belong. `SHA256SUMS` stays attached as a copy for
+      # `sha256sum -c`. `tools/render_release_notes.sh` is the same renderer, so the body can be
+      # previewed locally instead of being discovered after publication.
+      - name: Compose the release notes, with the checksums inlined
+        run: tools/render_release_notes.sh dist/SHA256SUMS RELEASE_BODY.md
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          # NOT a draft: "automated" has to mean the artefacts are actually reachable at the end.
+          # A tag with a suffix (v1.2.3-rc1) still ships, but marked pre-release.
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body_path: RELEASE_BODY.md

@@ -96,6 +96,57 @@ old file or the new one. Every volume carries `flint-manifest.tsv`, recording wh
 from — without it, a SensMe-tagged copy is larger than its source and would be copied again on every
 run, for ever.
 
+## Scrobbles and liked songs
+
+The Walkman has no WiFi, so it cannot reach Last.fm itself. It writes files instead, and Flint
+carries them:
+
+```
+flint lastfm key <api-key> <api-secret>     once — https://www.last.fm/api/account/create
+flint lastfm login <your-username>          once — the password is exchanged for a session key
+flint lastfm status                         what is configured, and whether Last.fm answers
+
+flint scrobble E:\                          what would be sent
+flint scrobble E:\ --apply                  send it
+
+flint likes E:\ F:\                         what would change, both directions
+flint likes E:\ F:\ --apply --playlist      do it, and write Liked Songs.m3u8
+```
+
+**Scrobbles.** Cinder appends an Audioscrobbler/1.1 `.scrobbler.log` at the root of the player's
+storage. `flint scrobble` reads it, sends the plays fifty at a time, and removes from the file only
+the rows Last.fm actually **accepted** — anything it refused stays, with the reason printed, and so
+does any row this version cannot parse. Skipped-track rows are never sent: Last.fm has no call that
+would take them.
+
+**Liked songs.** Cinder exports `cinder_loved.tsv` whenever the liked set changes and reads
+`cinder_liked_import.tsv` back. `flint likes` merges that with Last.fm's loved tracks and pushes the
+result both ways.
+
+It is a sync, not a merge, which means it has a memory: `likes-state.tsv` beside the scan cache
+records what each side looked like after the last run. Without it, a track that is on Last.fm and
+not on the player is ambiguous — just loved over there, or just unliked over here? — and guessing
+deletes a hand-curated list. From that one rule the rest follows:
+
+* the **first run is additive**: everything on both sides is kept, nothing is removed anywhere;
+* **an unplugged player proves nothing** — a source that cannot be read this run causes no removals;
+* while the player has an import **it has not merged yet**, its own export is still the old list, so
+  it is treated as additive only and the pending push does not come back as an unlove;
+* a track that changed on both sides **keeps the like**.
+
+Matching is by artist and title, folded the same way Cinder folds them on the device: case, curly
+punctuation, `feat.` credits and re-issue suffixes (`- 2011 Remaster`, `(Deluxe Edition)`) come out,
+while anything that marks a *different recording* — live, remix, acoustic, demo — stays distinct.
+
+`--playlist` also writes `Liked Songs.m3u8` into each volume's music folder, holding only that
+volume's own tracks. It is off by default because it reads the tags of every file on the player over
+USB; the hearts on the device need no such thing.
+
+Everything here goes out over **the system's own TLS** — WinHTTP on Windows, the same stack every
+other program on the machine uses, with its proxy settings and its certificate store. Flint adds no
+crates for it, and your password is never written down: `login` exchanges it for a session key, and
+that key is what lands in `lastfm.conf` (revoke it at last.fm/settings/applications).
+
 ## Checking for fake FLACs
 
 `flint check` looks for FLACs that are not the lossless audio they claim to be. It needs FFmpeg, and

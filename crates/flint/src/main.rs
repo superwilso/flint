@@ -10,6 +10,9 @@
 //! flint sync <library> --to <volume> [--to <volume>] [--apply]   copy the library to the player
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
 //! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
+//! flint lastfm key|login|status                                   the Last.fm account, once
+//! flint scrobble <volume> [--apply]                               send the plays in .scrobbler.log
+//! flint likes <volume> [--apply] [--playlist]                     liked songs: player <-> Last.fm
 //! flint gui                                                       open the window (Windows)
 //! flint gui-preview <out.svg> [--state name]                      draw the window to an SVG, anywhere
 //! ```
@@ -19,7 +22,10 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use flint_core::{apply, cache, engine, engine::Engine, flac, id3, library, lossless, musiccenter, smfmf, space, sync};
+use flint_core::{
+    apply, cache, engine, engine::Engine, flac, id3, lastfm, library, likes, lossless, musiccenter, scrobblelog,
+    smfmf, space, sync,
+};
 
 const USAGE: &str = "\
 usage:
@@ -30,6 +36,9 @@ usage:
   flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme]
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
+  flint lastfm key <api-key> <api-secret> | login <username> | status
+  flint scrobble <volume> [<volume>...] [--apply]
+  flint likes <volume> [<volume>...] [--apply] [--playlist]
   flint gui [--dark | --light]
   flint gui-preview <out.svg> [--state fresh|ready|planned|working|done] [--dark]";
 
@@ -43,6 +52,9 @@ fn main() -> ExitCode {
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("import") => import(&args[1..]),
+        Some("lastfm") => lastfm_cmd(&args[1..]),
+        Some("scrobble") => scrobble_cmd(&args[1..]),
+        Some("likes") => likes_cmd(&args[1..]),
         Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
         Some("gui-preview") => gui_preview(&args[1..]),
         // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
@@ -79,6 +91,8 @@ struct Opts {
     state: Option<String>,
     /// `--dark` / `--light`; `None` means follow Windows.
     dark: Option<bool>,
+    /// `--playlist`: also write `Liked Songs.m3u8`, which costs a tag read per file on the player.
+    playlist: bool,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -99,6 +113,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         from: None,
         state: None,
         dark: None,
+        playlist: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -114,6 +129,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
             "--from" => o.from = Some(value("--from")?.into()),
             "--state" => o.state = Some(value("--state")?),
+            "--playlist" => o.playlist = true,
             "--dark" => o.dark = Some(true),
             "--light" => o.dark = Some(false),
             "--apply" => o.apply = true,
@@ -784,4 +800,440 @@ fn gui_preview(args: &[String]) -> Result<(), String> {
     fs::write(out, svg).map_err(|e| format!("{out}: {e}"))?;
     println!("{out}  ({state}, {}x{})", flint_gui::W, flint_gui::H);
     Ok(())
+}
+
+// ── Last.fm: credentials, plays and likes ──────────────────────────────────────────────────────
+
+/// `flint lastfm key|login|status …` — everything about the account, and nothing that syncs.
+fn lastfm_cmd(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("key") => {
+            let [api_key, api_secret] = &args[1..] else {
+                return Err("usage: flint lastfm key <api-key> <api-secret>\n\
+                            create a key at https://www.last.fm/api/account/create"
+                    .into());
+            };
+            let mut creds = lastfm::Credentials::load();
+            creds.api_key = api_key.trim().to_string();
+            creds.api_secret = api_secret.trim().to_string();
+            let path = creds.save().map_err(|e| format!("could not save the credentials: {e}"))?;
+            println!("saved to {}", path.display());
+            println!("next: flint lastfm login <your last.fm username>");
+            Ok(())
+        }
+        Some("login") => {
+            let [username] = &args[1..] else { return Err("usage: flint lastfm login <username>".into()) };
+            let mut client = lastfm::Client::new(lastfm::Credentials::load()).map_err(|e| e.to_string())?;
+            let password = read_password(&format!("Last.fm password for {username}: "))?;
+            if password.is_empty() {
+                return Err("no password given — nothing sent".into());
+            }
+            let (name, _) = client.authenticate(username.trim(), &password).map_err(|e| e.to_string())?;
+            let path = client.creds.save().map_err(|e| format!("could not save the session: {e}"))?;
+            println!("signed in as {name}; session key saved to {}", path.display());
+            println!("the password was not stored — revoke the session at https://www.last.fm/settings/applications");
+            Ok(())
+        }
+        Some("status") => {
+            let creds = lastfm::Credentials::load();
+            println!("credentials: {}", lastfm::Credentials::path().display());
+            println!("  api key    {}", if creds.api_key.is_empty() { "—".into() } else { masked(&creds.api_key) });
+            println!("  api secret {}", if creds.api_secret.is_empty() { "—".into() } else { masked(&creds.api_secret) });
+            println!("  session    {}", if creds.session_key.is_empty() { "—".into() } else { masked(&creds.session_key) });
+            println!("  username   {}", if creds.username.is_empty() { "—" } else { &creds.username });
+            if !creds.is_ready() {
+                println!("\nnot ready yet:");
+                if creds.api_key.is_empty() || creds.api_secret.is_empty() {
+                    println!("  flint lastfm key <api-key> <api-secret>     (https://www.last.fm/api/account/create)");
+                }
+                if creds.session_key.is_empty() {
+                    println!("  flint lastfm login <username>");
+                }
+                return Ok(());
+            }
+            // Ready means it should answer. Asking is the only way to know the key still works.
+            let mut client = lastfm::Client::new(creds).map_err(|e| e.to_string())?;
+            match client.loved_tracks(|_, _, _| {}) {
+                Ok(loved) => println!("\nLast.fm answers: {} loved track(s)", thousands(loved.len() as u64)),
+                Err(e) => println!("\nLast.fm did not answer: {e}"),
+            }
+            Ok(())
+        }
+        _ => Err("usage: flint lastfm key <api-key> <api-secret> | login <username> | status".into()),
+    }
+}
+
+/// `flint scrobble <volume>… [--apply]` — the plays the player recorded, sent to Last.fm.
+fn scrobble_cmd(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    let roots: Vec<PathBuf> = if o.pos.is_empty() { o.to.clone() } else { o.pos.iter().map(PathBuf::from).collect() };
+    if roots.is_empty() {
+        return Err("give the player's drive: flint scrobble E:\\ [--apply]".into());
+    }
+
+    let mut found = Vec::new();
+    for root in &roots {
+        let path = root.join(".scrobbler.log");
+        if !path.is_file() {
+            println!("{}: no .scrobbler.log", root.display());
+            continue;
+        }
+        let body = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let log = scrobblelog::parse(&body);
+        let plays = log.plays_to_send();
+        println!(
+            "{}: {} play(s) to send{}{}",
+            path.display(),
+            thousands(plays.len() as u64),
+            if log.entries.len() > log.plays().count() {
+                format!(", {} skipped-track row(s) left alone", log.entries.len() - log.plays().count())
+            } else {
+                String::new()
+            },
+            if log.unreadable.is_empty() {
+                String::new()
+            } else {
+                format!(", {} row(s) this version cannot read (kept)", log.unreadable.len())
+            }
+        );
+        for (line, _, why) in &log.unreadable {
+            println!("    line {line}: {why}");
+        }
+        for entry in plays.iter().take(3) {
+            println!("    {} — {}", entry.artist, entry.track);
+        }
+        if plays.len() > 3 {
+            println!("    …and {} more", thousands(plays.len() as u64 - 3));
+        }
+        found.push((path, log, plays));
+    }
+
+    let total: usize = found.iter().map(|(_, _, plays)| plays.len()).sum();
+    if total == 0 {
+        println!("nothing to send.");
+        return Ok(());
+    }
+    if !o.apply {
+        println!("\nnothing was sent. Add --apply to scrobble {} play(s).", thousands(total as u64));
+        return Ok(());
+    }
+
+    let mut client = lastfm::Client::new(lastfm::Credentials::load()).map_err(|e| e.to_string())?;
+    for (path, log, plays) in &found {
+        let mut accepted_rows: Vec<scrobblelog::Entry> = Vec::new();
+        let (mut accepted, mut ignored) = (0usize, 0usize);
+        for batch in plays.chunks(lastfm::BATCH) {
+            match client.scrobble(batch) {
+                Ok(result) => {
+                    accepted += result.accepted;
+                    ignored += result.ignored;
+                    let refused: std::collections::HashSet<_> =
+                        result.rejected.iter().map(|(entry, _)| entry.identity()).collect();
+                    for (entry, why) in &result.rejected {
+                        println!("    kept: {} — {} ({why})", entry.artist, entry.track);
+                    }
+                    // Only what Last.fm took comes out of the file.
+                    accepted_rows.extend(batch.iter().filter(|e| !refused.contains(&e.identity())).cloned());
+                }
+                Err(e) => {
+                    // Stop at the first batch that fails: the file is rewritten with whatever was
+                    // accepted so far, so nothing is lost and a re-run carries on where this left off.
+                    println!("    stopped: {e}");
+                    break;
+                }
+            }
+        }
+        println!("{}: {} accepted, {} ignored by Last.fm", path.display(), thousands(accepted as u64), ignored);
+        if accepted_rows.is_empty() {
+            continue;
+        }
+        let rewritten = scrobblelog::rewrite(log, &accepted_rows);
+        write_atomic(path, &rewritten).map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("    {} row(s) removed from the log", thousands(accepted_rows.len() as u64));
+    }
+    Ok(())
+}
+
+/// `flint likes <volume>… [--apply]` — the player's liked songs and Last.fm's loved tracks, kept
+/// in step in both directions.
+fn likes_cmd(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    let roots: Vec<PathBuf> = if o.pos.is_empty() { o.to.clone() } else { o.pos.iter().map(PathBuf::from).collect() };
+    if roots.is_empty() {
+        return Err("give the player's drive: flint likes E:\\ [--to F:\\] [--apply]".into());
+    }
+    let volumes: Vec<likes::Volume> = roots
+        .iter()
+        .enumerate()
+        .map(|(i, root)| likes::Volume::new(root.clone(), if i == 0 { "internal" } else { "card" }))
+        .collect();
+
+    // ── the player ──
+    let present: Vec<&likes::Volume> = volumes.iter().filter(|v| v.present()).collect();
+    let device = if present.is_empty() {
+        likes::Source::missing("device", "the player is not connected — nothing read, nothing removed")
+    } else {
+        let mut tracks = Vec::new();
+        for volume in &present {
+            tracks.extend(likes::read_loved(volume));
+        }
+        let mut source = likes::Source::from_tracks("device", tracks);
+        if present.iter().any(|v| v.import_pending()) {
+            source.additive_only = true;
+            source.note = "an earlier push is still waiting for the player to merge it — additive only".into();
+        }
+        source
+    };
+    println!(
+        "player: {}",
+        if device.available {
+            format!("{} liked track(s)", thousands(device.tracks.len() as u64))
+        } else {
+            "not connected".into()
+        }
+    );
+
+    // ── Last.fm ──
+    // An account that is not set up yet is a source that is NOT AVAILABLE, not a reason to stop:
+    // the run still shows what the player holds and what a first sync would do. Only the merge
+    // rules care, and they already know that an absent source proves nothing.
+    let mut not_configured = String::new();
+    let mut client = match lastfm::Client::new(lastfm::Credentials::load()) {
+        Ok(client) => Some(client),
+        Err(why) => {
+            not_configured = why.to_string();
+            None
+        }
+    };
+    let lastfm_source = match client.as_mut() {
+        None => likes::Source::missing("lastfm", &not_configured),
+        Some(client) => match client.loved_tracks(|page, pages, so_far| {
+            if pages > 1 {
+                println!("  Last.fm page {page}/{pages} ({so_far} so far)");
+            }
+        }) {
+            Ok(loved) => likes::Source::from_tracks(
+                "lastfm",
+                loved.into_iter().map(|l| likes::Track::new(&l.artist, &l.title)),
+            ),
+            Err(e) => likes::Source::missing("lastfm", &format!("{e}")),
+        },
+    };
+    println!(
+        "Last.fm: {}",
+        if lastfm_source.available {
+            format!("{} loved track(s)", thousands(lastfm_source.tracks.len() as u64))
+        } else {
+            lastfm_source.note.clone()
+        }
+    );
+
+    let state_path = likes::State::path();
+    let state = likes::State::load(&state_path);
+    let plan = likes::plan(&state, &device, &lastfm_source, likes::Conflict::default());
+    for note in &plan.notes {
+        println!("  note: {note}");
+    }
+    println!(
+        "\nmerged: {} liked track(s)\n  to the player:  {} to add, {} to remove\n  to Last.fm:     {} to love, {} to unlove",
+        thousands(plan.liked.len() as u64),
+        plan.device_add.len(),
+        plan.device_remove.len(),
+        plan.lastfm_love.len(),
+        plan.lastfm_unlove.len()
+    );
+    for track in plan.lastfm_love.iter().take(3) {
+        println!("    love   {} — {}", track.artist, track.title);
+    }
+    for track in plan.lastfm_unlove.iter().take(3) {
+        println!("    unlove {} — {}", track.artist, track.title);
+    }
+
+    if !o.apply {
+        println!("\nnothing was written. Add --apply to make these changes.");
+        return Ok(());
+    }
+    if !device.available && !lastfm_source.available {
+        return Err("neither side could be read — nothing to do".into());
+    }
+
+    // ── writes, Last.fm first: it is the side that can refuse ──
+    let (mut loved_ok, mut unloved_ok) = (0usize, 0usize);
+    if let Some(client) = client.as_mut() {
+        for track in &plan.lastfm_love {
+            match client.love(&track.artist, &track.title) {
+                Ok(()) => loved_ok += 1,
+                Err(e) => println!("    love failed for {} — {}: {e}", track.artist, track.title),
+            }
+        }
+        for track in &plan.lastfm_unlove {
+            match client.unlove(&track.artist, &track.title) {
+                Ok(()) => unloved_ok += 1,
+                Err(e) => println!("    unlove failed for {} — {}: {e}", track.artist, track.title),
+            }
+        }
+    }
+    if lastfm_source.available {
+        println!("Last.fm: {loved_ok} loved, {unloved_ok} unloved");
+    }
+
+    // ── the player: the whole list, to the internal volume (where cinder_liked.conf lives) ──
+    let mut pushed = false;
+    if let Some(volume) = present.first() {
+        let tracks: Vec<likes::Track> = plan.liked.values().cloned().collect();
+        likes::write_import(volume, &tracks).map_err(|e| format!("{}: {e}", volume.import_path().display()))?;
+        println!("player: {} track(s) written to {}", thousands(tracks.len() as u64), volume.import_path().display());
+        println!("        Cinder merges it on the next start and renames it .done");
+        pushed = true;
+    }
+
+    // ── the playlist, per volume: what works on ANY Cinder build, hearts or no hearts ──
+    // Skipped unless asked for: it means reading the tags of every file on the player over USB,
+    // and the hearts themselves need no paths at all.
+    if o.playlist {
+        for volume in &present {
+            let mut seen = 0usize;
+            let index = likes::index_volume(volume, |n| seen = n + 1);
+            let rows = likes::playlist_rows(&plan.liked, &index);
+            likes::write_playlist(volume, &rows)
+                .map_err(|e| format!("{}: {e}", volume.playlist_path().display()))?;
+            println!(
+                "{}: {} of {} liked track(s) found among {} file(s) — {}",
+                volume.label,
+                rows.len(),
+                plan.liked.len(),
+                thousands(seen as u64),
+                volume.playlist_path().display()
+            );
+        }
+    }
+
+    // ── remember what each side looked like, for the next run ──
+    // The device's snapshot is the list we just pushed, not the one we read: that IS what it will
+    // hold once it merges, and recording the old one would make the push look like an unlike.
+    let mut next = likes::State { last_sync: now_unix(), liked: plan.liked.clone(), ..likes::State::default() };
+    if device.available {
+        next.snapshots.insert(
+            "device".into(),
+            if pushed { plan.liked.clone() } else { device.tracks.clone() },
+        );
+    } else if let Some(old) = state.snapshots.get("device") {
+        next.snapshots.insert("device".into(), old.clone());
+    }
+    if lastfm_source.available {
+        next.snapshots.insert("lastfm".into(), plan.liked.clone());
+    } else if let Some(old) = state.snapshots.get("lastfm") {
+        next.snapshots.insert("lastfm".into(), old.clone());
+    }
+    next.save(&state_path).map_err(|e| format!("{}: {e}", state_path.display()))?;
+    println!("state: {}", state_path.display());
+    Ok(())
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Enough of a secret to recognise, not enough to use.
+fn masked(value: &str) -> String {
+    if value.len() <= 8 {
+        return "*".repeat(value.len());
+    }
+    format!("{}…{}", &value[..4], &value[value.len() - 4..])
+}
+
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("log.tmp");
+    fs::write(&tmp, body)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::remove_file(path).ok();
+            fs::rename(&tmp, path)
+        }
+    }
+}
+
+/// Read a password without echoing it. Windows turns the console's echo off; everywhere else
+/// `stty` does. If neither works the prompt says so rather than quietly showing the password.
+fn read_password(prompt: &str) -> Result<String, String> {
+    use std::io::{BufRead, Write};
+    print!("{prompt}");
+    std::io::stdout().flush().ok();
+    let quiet = echo_off();
+    let mut line = String::new();
+    let read = std::io::stdin().lock().read_line(&mut line);
+    if quiet {
+        echo_on();
+        println!();
+    }
+    read.map_err(|e| format!("could not read the password: {e}"))?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+#[cfg(windows)]
+fn echo_off() -> bool {
+    windows_console::set_echo(false)
+}
+
+#[cfg(windows)]
+fn echo_on() {
+    windows_console::set_echo(true);
+}
+
+#[cfg(windows)]
+mod windows_console {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(handle: *mut c_void, mode: u32) -> i32;
+    }
+
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const ENABLE_ECHO_INPUT: u32 = 0x0004;
+
+    pub fn set_echo(on: bool) -> bool {
+        unsafe {
+            let handle = GetStdHandle(STD_INPUT_HANDLE);
+            let mut mode = 0u32;
+            if GetConsoleMode(handle, &mut mode) == 0 {
+                return false; // not a console (piped input) — nothing to hide
+            }
+            let next = if on { mode | ENABLE_ECHO_INPUT } else { mode & !ENABLE_ECHO_INPUT };
+            SetConsoleMode(handle, next) != 0
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn echo_off() -> bool {
+    std::process::Command::new("stty")
+        .arg("-echo")
+        .stdin(std::process::Stdio::inherit())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn echo_on() {
+    let _ = std::process::Command::new("stty").arg("echo").stdin(std::process::Stdio::inherit()).status();
 }

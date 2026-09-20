@@ -488,6 +488,14 @@ mod tests {
                 "\n",
                 r#"{"title":"no id here","filePath":"C:\\Music\\x.flac"}"#,
                 "\n",
+                // A line whose backslashes were NOT escaped — not JSON, and not something NeDB
+                // would ever write. `\M` and `\0` are read as escapes, so the value collapses to
+                // `C:Music01 x.flac`, which no longer has the shape of a path. The contract is
+                // that this maps to NOTHING rather than to a wrong path, and it is worth pinning:
+                // a test fixture that made this mistake is what turned the Windows runner red
+                // while every Linux run stayed green.
+                r#"{"_id":"ddd","filePath":"C:\Music\01 x.flac"}"#,
+                "\n",
                 "not json at all\n",
             ),
         )
@@ -497,6 +505,7 @@ mod tests {
         assert_eq!(map["aaa"], PathBuf::from(r"C:\Music\ACDC\01 Back in Black.flac"));
         assert_eq!(map["bbb"], PathBuf::from("D:/Music/Air/01 La Femme d'argent.mp3"));
         assert!(!map.contains_key("ccc"));
+        assert!(!map.contains_key("ddd"), "an unescaped path must map to nothing, not to a guess");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -533,9 +542,16 @@ mod tests {
         let mut fat = engine_result();
         fat.extend(chunk(b"BLOB", &vec![0u8; 50_000]));
         fs::write(audio.join("smfmf.bin"), &fat).unwrap();
+        // THE PATH IS JSON-ESCAPED, because NeDB writes these lines with `JSON.stringify` and a
+        // Windows path is full of backslashes. Interpolating one raw produces a line that is not
+        // JSON, and `read_json_string` then eats every `\U`, `\A`, `\T` as an escape and hands back
+        // `C:UsersRUNNER~1AppData…` — which stops looking like a path, so nothing maps and the
+        // import silently finds nothing. That is exactly how this failed on the Windows runner
+        // while passing here, where `temp_dir()` has no backslashes in it to get wrong.
+        let as_json_writes_it = track.display().to_string().replace('\\', "\\\\");
         fs::write(
             dir.join("db").join("tracks.db"),
-            format!("{{\"_id\":\"xyz\",\"filePath\":\"{}\"}}\n", track.display()),
+            format!("{{\"_id\":\"xyz\",\"filePath\":\"{as_json_writes_it}\"}}\n"),
         )
         .unwrap();
 

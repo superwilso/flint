@@ -7,3 +7,4 @@ description = "Copy a music library to a Sony NW-A50-series Walkman, with SensMe
 
 [dependencies]
 flint-core = { path = "../flint-core" }
+flint-gui = { path = "../flint-gui" }

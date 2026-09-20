@@ -42,6 +42,10 @@ pub const MTIME_TOLERANCE_SECONDS: i64 = 2;
 /// Playlists another tool owns (likesync writes these); never swept.
 pub const MANAGED_PLAYLISTS: [&str; 2] = ["liked songs.m3u8", "liked songs.m3u"];
 pub const MANIFEST_NAME: &str = "flint-manifest.tsv";
+/// Headroom left free on each volume, so a full filesystem never stops the player writing its own
+/// database. Sony-sync keeps the same kind of margin. A volume filled to the last byte is also one
+/// that cannot be tidied up afterwards.
+pub const HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 
 fn has_ext(rel: &str, exts: &[&str]) -> bool {
     rel.rsplit_once('.').is_some_and(|(_, e)| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
@@ -460,6 +464,46 @@ pub fn scan_volume(root: &Path) -> io::Result<DeviceScan> {
         }
     }
     Ok(scan)
+}
+
+/// Read a folder of `.m3u`/`.m3u8` files into the map [`plan`] wants: playlist name -> the
+/// library-relative paths it names.
+///
+/// Lines that do not resolve to a file inside `library` are dropped rather than failing the read:
+/// a playlist exported from another tool routinely names tracks that are not in this library, and
+/// refusing the whole file over one of them would make the feature unusable. A playlist that ends
+/// up naming nothing is not returned at all.
+pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String, Vec<String>>> {
+    let mut out = BTreeMap::new();
+    let library = fs::canonicalize(library).unwrap_or_else(|_| library.to_path_buf());
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !has_ext(&name, &PLAYLIST_EXT) {
+            continue;
+        }
+        let text = match fs::read_to_string(entry.path()) {
+            Ok(t) => t,
+            Err(e) => return Err(io::Error::new(e.kind(), format!("{name}: {e}"))),
+        };
+        let mut tracks = Vec::new();
+        for line in text.lines() {
+            let line = line.trim().trim_matches('"');
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let candidate = Path::new(line);
+            let full = if candidate.is_absolute() { candidate.to_path_buf() } else { library.join(candidate) };
+            let full = fs::canonicalize(&full).unwrap_or(full);
+            if let Ok(rel) = full.strip_prefix(&library) {
+                tracks.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        if !tracks.is_empty() {
+            out.insert(name, tracks);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

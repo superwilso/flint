@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="640" viewBox="0 0 900 640" font-kerning="normal">
+<!-- Written by `flint gui-preview`. Every rectangle and colour here is what the Windows window paints; the glyphs are whatever your viewer substitutes for Segoe UI. -->
+<rect x="0" y="0" width="900" height="640" fill="#f6f6f8"/>
+<rect x="0" y="0" width="900" height="64" fill="#1a1818"/>
+<rect x="0" y="61" width="900" height="3" fill="#e0551b"/>
+<text x="20" y="27" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="20" font-weight="600" fill="#f2efec" text-anchor="start" dominant-baseline="central">Flint 0.1.0</text>
+<text x="20" y="47" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a9490" text-anchor="start" dominant-baseline="central">Put a music library on a Sony Walkman — with SensMe, without the bloat</text>
+<rect x="20.5" y="84.5" width="859" height="185" rx="6" fill="#ffffff" stroke="#dfdfe6" stroke-width="1"/>
+<text x="34" y="109" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#6c6c74" text-anchor="start" dominant-baseline="central">Music library</text>
+<text x="184" y="109" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#1a1a1e" text-anchor="start" dominant-baseline="central">D:\Music</text>
+<rect x="774.5" y="94.5" width="91" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="820" y="109" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Choose…</text>
+<text x="34" y="143" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#6c6c74" text-anchor="start" dominant-baseline="central">Player</text>
+<text x="184" y="143" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#1a1a1e" text-anchor="start" dominant-baseline="central">E:\</text>
+<rect x="702.5" y="128.5" width="63" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="734" y="143" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Clear</text>
+<rect x="774.5" y="128.5" width="91" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="820" y="143" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Choose…</text>
+<text x="34" y="177" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#6c6c74" text-anchor="start" dominant-baseline="central">Memory card</text>
+<text x="184" y="177" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#1a1a1e" text-anchor="start" dominant-baseline="central">F:\</text>
+<rect x="702.5" y="162.5" width="63" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="734" y="177" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Clear</text>
+<rect x="774.5" y="162.5" width="91" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="820" y="177" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Choose…</text>
+<text x="34" y="211" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#6c6c74" text-anchor="start" dominant-baseline="central">Playlists</text>
+<text x="184" y="211" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#1a1a1e" text-anchor="start" dominant-baseline="central">D:\Music\Playlists</text>
+<rect x="702.5" y="196.5" width="63" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="734" y="211" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Clear</text>
+<rect x="774.5" y="196.5" width="91" height="29" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="820" y="211" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Choose…</text>
+<rect x="34.5" y="245.5" width="15" height="15" rx="3" fill="#e0551b" stroke="#e0551b" stroke-width="1"/>
+<polyline points="38,253 41,256 46,250" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="58" y="253" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#1a1a1e" text-anchor="start" dominant-baseline="central">Write SensMe tags into the copies</text>
+<rect x="374.5" y="245.5" width="15" height="15" rx="3" fill="#e0551b" stroke="#e0551b" stroke-width="1"/>
+<polyline points="378,253 381,256 386,250" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="398" y="253" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#1a1a1e" text-anchor="start" dominant-baseline="central">Copy cover art and lyrics too</text>
+<rect x="20.5" y="290.5" width="209" height="35" rx="5" fill="#e0551b" stroke="#e0551b" stroke-width="1"/>
+<text x="125" y="308" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle" dominant-baseline="central">Show what would happen</text>
+<rect x="240.5" y="290.5" width="169" height="35" rx="5" fill="#e0551b" stroke="#e0551b" stroke-width="1"/>
+<text x="325" y="308" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle" dominant-baseline="central">Copy to the player</text>
+<rect x="20.5" y="334.5" width="149" height="35" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="95" y="352" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Analyse library</text>
+<rect x="180.5" y="334.5" width="179" height="35" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="270" y="352" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Import Music Center</text>
+<rect x="370.5" y="334.5" width="129" height="35" rx="5" fill="#eeeef2" stroke="#d2d2da" stroke-width="1"/>
+<text x="435" y="352" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#1a1a1e" text-anchor="middle" dominant-baseline="central">Check FLACs</text>
+<rect x="20" y="390" width="860" height="8" rx="4" fill="#e2e2e8"/>
+<text x="20" y="414" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#6c6c74" text-anchor="start" dominant-baseline="central">Nothing has been written. 2,190 files would be copied — press Copy to the player.</text>
+<rect x="20.5" y="434.5" width="859" height="185" rx="6" fill="#1a1818" stroke="#2a2727" stroke-width="1"/>
+<text x="30" y="451" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">F:\ holds 0 B in 0 files, budget 116.3 GB</text>
+<text x="30" y="469" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">4 playlists</text>
+<text x="30" y="487" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">E:\: 96 albums, 39.2 GB to copy</text>
+<text x="30" y="505" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">F:\: 154 albums, 74.9 GB to copy</text>
+<text x="30" y="523" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would remove  E:\Bonobo - Migration/03 Break Apart.flac</text>
+<text x="30" y="541" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Aphex Twin - Selected Ambient Works 85-92/01 Xtal.flac  +SensMe</text>
+<text x="30" y="559" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Aphex Twin - Selected Ambient Works 85-92/02 Tha.flac  +SensMe</text>
+<text x="30" y="577" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Bicep - Isles/01 Atlas.flac  +SensMe</text>
+<text x="30" y="595" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">…and 2,187 more</text>
+</svg>

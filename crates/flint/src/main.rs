@@ -10,6 +10,8 @@
 //! flint sync <library> --to <volume> [--to <volume>] [--apply]   copy the library to the player
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
 //! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
+//! flint gui                                                       open the window (Windows)
+//! flint gui-preview <out.svg> [--state name]                      draw the window to an SVG, anywhere
 //! ```
 
 use std::fs::{self, File};
@@ -17,10 +19,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use flint_core::{
-    apply, cache, engine, engine::Engine, flac, id3, library, lossless, musiccenter, smfmf, space,
-    sync,
-};
+use flint_core::{apply, cache, engine, engine::Engine, flac, id3, library, lossless, musiccenter, smfmf, space, sync};
 
 const USAGE: &str = "\
 usage:
@@ -30,7 +29,9 @@ usage:
   flint tag-copy <src.flac|src.mp3> <dst> [--smfmf result.smfmf] [--param id=value]...
   flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme]
   flint inspect <file.flac | file.mp3 | result.smfmf>
-  flint import [--from <Music Center data folder>] [--cache dir]";
+  flint import [--from <Music Center data folder>] [--cache dir]
+  flint gui
+  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,6 +43,12 @@ fn main() -> ExitCode {
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
         Some("import") => import(&args[1..]),
+        Some("gui") | Some("--gui") => gui(),
+        Some("gui-preview") => gui_preview(&args[1..]),
+        // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
+        // the only thing that can be shown, so show it. Anywhere else, with no arguments, the
+        // usage is exactly what is wanted.
+        None if cfg!(windows) => gui(),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -69,6 +76,7 @@ struct Opts {
     apply: bool,
     no_sensme: bool,
     from: Option<PathBuf>,
+    state: Option<String>,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -87,6 +95,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         apply: false,
         no_sensme: false,
         from: None,
+        state: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -101,6 +110,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--gb" => o.gb.push(value("--gb")?.parse().map_err(|_| "--gb needs a number".to_string())?),
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
             "--from" => o.from = Some(value("--from")?.into()),
+            "--state" => o.state = Some(value("--state")?),
             "--apply" => o.apply = true,
             "--no-sensme" => o.no_sensme = true,
             "--verbose" => o.verbose = true,
@@ -493,10 +503,6 @@ fn print_spectrum(m: &lossless::Measurement) {
     }
 }
 
-/// Headroom left free on each volume, so a full filesystem never stops the player writing its own
-/// database. Sony-sync keeps the same kind of margin.
-const HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
-
 fn sync_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let [library] = o.pos.as_slice() else { return Err(USAGE.into()) };
@@ -505,8 +511,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         return Err("give at least one destination: --to E:\\ (add a second --to for the card)".into());
     }
     let cache_dir = o.cache.clone().unwrap_or_else(cache::default_dir);
-    let mut analysis =
-        cache::Cache::open(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
+    let mut analysis = cache::Cache::open(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
 
     println!("reading {}", library.display());
     let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
@@ -518,10 +523,8 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     // the plan decides which copies can carry one. Reading them costs a metadata read per file that
     // the cache does not already know, and no decode.
     if !o.no_sensme {
-        let paths: Vec<PathBuf> = source
-            .iter()
-            .map(|f| library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR)))
-            .collect();
+        let paths: Vec<PathBuf> =
+            source.iter().map(|f| library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR))).collect();
         match musiccenter::adopt_all(&paths, &mut analysis, |_| {}) {
             Ok((0, _)) => {}
             Ok((n, saved)) => {
@@ -550,7 +553,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         let budget_bytes = match o.gb.get(i) {
             Some(gb) => (gb * 1024.0 * 1024.0 * 1024.0) as u64,
             None => match space::free_bytes(root) {
-                Some(free) => (free + on_device).saturating_sub(HEADROOM_BYTES),
+                Some(free) => (free + on_device).saturating_sub(sync::HEADROOM_BYTES),
                 None => return Err(format!("could not read the free space on {}; give it as --gb N", root.display())),
             },
         };
@@ -567,7 +570,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     }
 
     let playlists = match &o.playlists {
-        Some(dir) => read_playlists(dir, library)?,
+        Some(dir) => sync::read_playlists(dir, library).map_err(|e| format!("{}: {e}", dir.display()))?,
         None => std::collections::BTreeMap::new(),
     };
     if !playlists.is_empty() {
@@ -650,34 +653,104 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Playlists as `name -> library-relative track paths`. Lines that do not point into the library are
-/// dropped, the way Sony-sync drops them.
-fn read_playlists(dir: &Path, library: &Path) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
-    let mut out = std::collections::BTreeMap::new();
-    let library = fs::canonicalize(library).unwrap_or_else(|_| library.to_path_buf());
-    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !sync::PLAYLIST_EXT.iter().any(|e| name.to_lowercase().ends_with(&format!(".{e}"))) {
-            continue;
+// ── the window ─────────────────────────────────────────────────────────────────────────────────
+
+/// Open the window. On anything but Windows this says so rather than pretending: the window is
+/// Win32, and `gui-preview` is how it is looked at anywhere else.
+#[cfg(windows)]
+fn gui() -> Result<(), String> {
+    flint_gui::win32::run()
+}
+
+#[cfg(not(windows))]
+fn gui() -> Result<(), String> {
+    Err("the window is Windows-only. Every command works here; \
+         `flint gui-preview out.svg` draws a picture of the window."
+        .into())
+}
+
+/// The states worth drawing. Named rather than free-form so the same five pictures come out of
+/// every build, which is what makes a diff between two of them mean something.
+fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
+    use flint_gui::{Model, Phase};
+    let mut m = Model::new();
+    let ready = |m: &mut Model| {
+        m.library = Some(PathBuf::from("D:\\Music"));
+        m.volumes[0] = Some(PathBuf::from("E:\\"));
+        m.volumes[1] = Some(PathBuf::from("F:\\"));
+        m.playlists = Some(PathBuf::from("D:\\Music\\Playlists"));
+    };
+    match state {
+        "fresh" => {}
+        "ready" => ready(&mut m),
+        "planned" => {
+            ready(&mut m);
+            m.planned = true;
+            m.log = [
+                "reading D:\\Music",
+                "3,184 files, 214.6 GB",
+                "412 already carried Sony's analysis — taken from the files, 391.2 MB of unread chunks left behind",
+                "E:\\ holds 12.4 GB in 214 files, budget 51.7 GB",
+                "F:\\ holds 0 B in 0 files, budget 116.3 GB",
+                "4 playlists",
+                "E:\\: 96 albums, 39.2 GB to copy",
+                "F:\\: 154 albums, 74.9 GB to copy",
+                "would remove  E:\\Bonobo - Migration/03 Break Apart.flac",
+                "would copy    Aphex Twin - Selected Ambient Works 85-92/01 Xtal.flac  +SensMe",
+                "would copy    Aphex Twin - Selected Ambient Works 85-92/02 Tha.flac  +SensMe",
+                "would copy    Bicep - Isles/01 Atlas.flac  +SensMe",
+                "…and 2,187 more",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            m.status = "Nothing has been written. 2,190 files would be copied — press Copy to the player.".into();
         }
-        let text = fs::read_to_string(entry.path()).map_err(|e| format!("{name}: {e}"))?;
-        let mut tracks = Vec::new();
-        for line in text.lines() {
-            let line = line.trim().trim_matches('"');
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let candidate = Path::new(line);
-            let full = if candidate.is_absolute() { candidate.to_path_buf() } else { library.join(candidate) };
-            let full = fs::canonicalize(&full).unwrap_or(full);
-            if let Ok(rel) = full.strip_prefix(&library) {
-                tracks.push(rel.to_string_lossy().replace('\\', "/"));
-            }
+        "working" => {
+            ready(&mut m);
+            m.phase = Phase::Working;
+            m.progress = Some(0.41);
+            m.log = [
+                "removed E:\\Bonobo - Migration/03 Break Apart.flac",
+                "[896/2190] Bicep - Isles/01 Atlas.flac  +SensMe",
+                "[897/2190] Bicep - Isles/02 Cazenove.flac  +SensMe",
+                "[898/2190] Bicep - Isles/03 Apricots.flac  +SensMe",
+                "[899/2190] Bicep - Isles/cover.jpg",
+                "[900/2190] Bonobo - Fragments/01 Polyghost.flac  +SensMe",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            m.status = "[900/2190] Bonobo - Fragments/01 Polyghost.flac  +SensMe".into();
         }
-        if !tracks.is_empty() {
-            out.insert(name, tracks);
+        "done" => {
+            ready(&mut m);
+            m.log = [
+                "[2189/2190] Wu-Tang Clan - Enter the Wu-Tang/11 Tearz.flac  +SensMe",
+                "[2190/2190] Wu-Tang Clan - Enter the Wu-Tang/12 Wu-Tang - 7th Chamber Pt II.flac  +SensMe",
+                "playlist Late night.m3u8 (64 tracks)",
+                "playlist Running.m3u8 (31 tracks)",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            m.progress = Some(1.0);
+            m.status = "Copied 2,190 files (114.1 GB), 2,043 tagged, 1 removed, 4 playlists written.".into();
         }
+        other => return Err(format!("unknown state {other}; one of fresh, ready, planned, working, done")),
     }
-    Ok(out)
+    Ok(m)
+}
+
+/// Draw the window to an SVG. This is how the window is designed and reviewed on a machine with no
+/// Windows, and it is the same command list the window paints — see `flint-gui/src/svg.rs`.
+fn gui_preview(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    let [out] = o.pos.as_slice() else { return Err(USAGE.into()) };
+    let state = o.state.as_deref().unwrap_or("planned");
+    let m = preview_model(state)?;
+    let svg = flint_gui::svg::render(&m, flint_gui::W, flint_gui::H, &flint_gui::paint::Theme::light());
+    fs::write(out, svg).map_err(|e| format!("{out}: {e}"))?;
+    println!("{out}  ({state}, {}x{})", flint_gui::W, flint_gui::H);
+    Ok(())
 }

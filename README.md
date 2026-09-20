@@ -5,7 +5,10 @@ copy a music library onto the player, keep likes and scrobbles in step, and give
 **SensMe** mood and tempo data — without touching the files on your PC.
 
 **Status: early rewrite.** Flint replaces the Python `Sony-sync` tool, which remains the working
-version until Flint reaches it. Nothing here is released yet.
+version until Flint reaches it. No release has been cut yet; `.github/workflows/release.yml` builds
+one from a `v*` tag — `flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside
+it, and `flint-linux-x64` — with SHA-256 sums inlined into the release page and a Sigstore build
+attestation for each file.
 
 ## SensMe, without the bloat
 
@@ -37,6 +40,24 @@ Then the analysis is done and Flint will not do it again:
 
 A feature-by-feature comparison with Music Center, including what Flint deliberately does not do and
 what is still missing, is in [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
+
+## The window
+
+On Windows, `flint` with no arguments opens one:
+
+![Flint's window](docs/window.svg)
+
+Choose a music folder and the player's drive, press **Show what would happen** — nothing is written
+— and then **Copy to the player**. Copy is only ever offered for a plan you have already been
+shown, and changing any setting takes it away again until you look at the new one.
+
+It draws its own window with no toolkit and no dependencies, the same approach as Cinder's
+installer, and everything it does goes through the same code the commands below do. The layout is
+plain Rust with no Windows in it, which is why the picture above can be drawn anywhere:
+
+```
+flint gui-preview window.svg --state planned     # or fresh, ready, working, done
+```
 
 ## Copying a library to the player
 

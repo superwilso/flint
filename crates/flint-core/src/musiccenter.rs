@@ -78,8 +78,7 @@ pub fn compact(bytes: &[u8]) -> (Vec<u8>, Vec<String>) {
     let Ok(chunks) = smfmf::parse(bytes) else {
         return (bytes.to_vec(), Vec::new());
     };
-    let (keep, drop): (Vec<_>, Vec<_>) =
-        chunks.into_iter().partition(|c| smfmf::KNOWN.contains(&&c.fourcc));
+    let (keep, drop): (Vec<_>, Vec<_>) = chunks.into_iter().partition(|c| smfmf::KNOWN.contains(&&c.fourcc));
     if drop.is_empty() {
         return (bytes.to_vec(), Vec::new());
     }
@@ -244,8 +243,7 @@ fn looks_like_track_path(s: &str) -> bool {
     if !(windows_drive || unc_or_posix) {
         return false;
     }
-    s.rsplit_once('.')
-        .is_some_and(|(_, e)| TRACK_EXT.iter().any(|x| x.eq_ignore_ascii_case(e)))
+    s.rsplit_once('.').is_some_and(|(_, e)| TRACK_EXT.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
 /// What an import found.
@@ -352,15 +350,7 @@ pub fn adopt_all(
         saved += (found.len() - small.len()) as u64;
         let bpm = smfmf::summarise(&small).ok().and_then(|s| s.bpm);
         cache.put(
-            crate::cache::Entry {
-                key,
-                size,
-                mtime,
-                engine: IN_FILE.to_string(),
-                bpm,
-                bytes: small.len(),
-                path: label,
-            },
+            crate::cache::Entry { key, size, mtime, engine: IN_FILE.to_string(), bpm, bytes: small.len(), path: label },
             &small,
         )?;
         adopted += 1;
@@ -383,13 +373,7 @@ mod tests {
     use crate::smfmf::{Chunk, HEADER_LEN};
 
     fn chunk(name: &[u8; 4], payload: &[u8]) -> Vec<u8> {
-        smfmf::encode(&[Chunk {
-            fourcc: *name,
-            family: *b"STAE",
-            vendor: *b"MMLW",
-            version: 0x0100_8000,
-            payload,
-        }])
+        smfmf::encode(&[Chunk { fourcc: *name, family: *b"STAE", vendor: *b"MMLW", version: 0x0100_8000, payload }])
     }
 
     fn engine_result() -> Vec<u8> {
@@ -433,10 +417,7 @@ mod tests {
     fn write_flac(path: &Path) {
         let mut info = vec![0x11u8; 34];
         info[18..34].copy_from_slice(&[0xA5; 16]); // the decoded-audio MD5 the cache keys on
-        let blocks = [
-            flac::Block { kind: 0, data: info },
-            flac::Block { kind: 1, data: vec![0; 256] },
-        ];
+        let blocks = [flac::Block { kind: 0, data: info }, flac::Block { kind: 1, data: vec![0; 256] }];
         let mut bytes = flac::encode_metadata(&[], &blocks).unwrap();
         bytes.extend_from_slice(&[0xFF, 0xF8, 0x69, 0x18, 0x00, 0x00, 0x00, 0x00]);
         fs::write(path, bytes).unwrap();
@@ -445,14 +426,7 @@ mod tests {
     /// An MP3 with an ID3v2.3 tag and one frame header, which is what the readers need to see.
     fn write_mp3(path: &Path) {
         let tag = id3::encode_tag(
-            &id3::Tag {
-                major: 3,
-                revision: 0,
-                flags: 0,
-                extended: Vec::new(),
-                frames: Vec::new(),
-                total_len: 0,
-            },
+            &id3::Tag { major: 3, revision: 0, flags: 0, extended: Vec::new(), frames: Vec::new(), total_len: 0 },
             None,
         )
         .unwrap();
@@ -567,8 +541,7 @@ mod tests {
 
         let mut cache = crate::cache::Cache::open(&dir.join("flint-cache")).unwrap();
         let mut seen = Vec::new();
-        let report = import(&dir, &mut cache, |p, was, now| seen.push((p.to_path_buf(), was, now)))
-            .unwrap();
+        let report = import(&dir, &mut cache, |p, was, now| seen.push((p.to_path_buf(), was, now))).unwrap();
         assert_eq!(report.cached, 1);
         assert_eq!(report.mapped, 1);
         assert_eq!(report.imported, 1);
@@ -601,8 +574,7 @@ mod tests {
         let mut cache = crate::cache::Cache::open(&dir.join("cache")).unwrap();
         let mut seen = Vec::new();
         let (n, saved) =
-            adopt_all(&[plain.clone(), tagged.clone()], &mut cache, |p| seen.push(p.to_path_buf()))
-                .unwrap();
+            adopt_all(&[plain.clone(), tagged.clone()], &mut cache, |p| seen.push(p.to_path_buf())).unwrap();
         assert_eq!(n, 1, "only the file that had one");
         assert_eq!(seen, vec![tagged.clone()]);
         assert!(saved >= 20_000, "the unread chunk was left behind: {saved}");

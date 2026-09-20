@@ -17,6 +17,7 @@ a claim.
 
 | | Music Center | Flint | Verdict |
 |---|---|---|---|
+| A window to do it in | Yes | Yes — `flint` with no arguments on Windows (`crates/flint-gui`) | Parity |
 | Copy a library to the player | Drag and drop, or a sync | `flint sync <library> --to E:\ [--to F:\]` | **Parity** |
 | Internal memory **and** a card | Two destinations, chosen by hand per album | Planned: an album is never split, albums that share a playlist stay on one volume, and an album already on a volume stays there | **Flint ahead** — a 4,000-track library is not a drag-and-drop job |
 | Space management | Shows free space | Each volume gets what is free less 512 MB of headroom, or `--gb N` | Parity |
@@ -65,12 +66,20 @@ about getting music onto a Walkman:
 
 ## 5. The gaps worth closing, in order
 
-1. **A window.** The single biggest difference for anyone who does not live in a terminal, and the
-   only reason to reach for Music Center for the transfer itself. The design is already decided:
-   Cinder's installer draws a real Win32 window with no toolkit and no dependencies
-   (`installer/src/gui.rs`, 1,624 lines), and the same layer fits a two-pane "library → player"
-   view with the plan in the middle. Until it exists, `flint sync` without `--apply` is the preview
-   and the terminal is the UI.
+1. ~~**A window.**~~ **Done** — `crates/flint-gui`, and `flint` with no arguments on Windows opens
+   it. It is a real Win32 window with no toolkit and no dependencies, the same approach as Cinder's
+   installer, but owner-drawn throughout rather than built from stock controls: one `layout()`
+   decides where everything is, and both the painting and the hit test read it, so a control cannot
+   be drawn in one place and clicked in another.
+
+   Everything it does goes through the same `flint-core` the commands do — there is one
+   implementation of a sync, and `crates/flint-gui/src/job.rs` is where the window calls it. Copy is
+   only ever offered for a plan the user has already been shown, and changing any input takes it
+   away again.
+
+   It is drawn on Linux too, as SVG: `flint gui-preview out.svg --state planned` writes the same
+   command list the window paints, which is how it is designed and reviewed on a machine with no
+   Windows, and CI draws all five states on every push.
 2. **Convert on transfer.** A 64 GB card holds about 150 FLAC albums or 600 at AAC 256. Music Center
    does this and it is the one transfer feature Flint genuinely lacks. FFmpeg is already a
    dependency of `scan` and `check`; the work is a per-format rule (`--convert flac=aac:256`), the

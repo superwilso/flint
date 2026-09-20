@@ -230,7 +230,9 @@ impl Analyser {
         self.fill += 1;
         if self.fill == self.mono.len() {
             self.fill = 0;
-            if self.frame_index.is_multiple_of(self.stride) && (self.frames.len() / self.bands) < 2 * MAX_FRAMES as usize {
+            if self.frame_index.is_multiple_of(self.stride)
+                && (self.frames.len() / self.bands) < 2 * MAX_FRAMES as usize
+            {
                 self.fft.power(&self.mono, &mut self.power);
                 let start = self.frames.len();
                 self.frames.resize(start + self.bands, 0.0);

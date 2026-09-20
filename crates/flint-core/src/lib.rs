@@ -7,6 +7,7 @@ pub mod flac;
 pub mod id3;
 pub mod library;
 pub mod lossless;
+pub mod musiccenter;
 pub mod smfmf;
 pub mod space;
 pub mod sync;

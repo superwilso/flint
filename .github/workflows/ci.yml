@@ -1,0 +1,68 @@
+name: ci
+
+# Every push and every pull request. Flint has no dependencies, so this is the whole gate: it
+# builds, it tests, and it builds the two Windows binaries a release ships — because a release
+# that discovers on tag day that the 32-bit helper no longer compiles is a release that does not
+# happen.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      # CORRECTNESS AND SUSPICIOUS, not `-D warnings` — the same policy as Cinder's `ci.yml`.
+      # The toolchain here is `stable`, which moves: `-D warnings` means a Rust release can turn
+      # this red on a day nothing in the repository changed, over a style preference. It did,
+      # immediately, on the first run of this file (`chunks_exact_to_as_chunks`, new in 1.98,
+      # against code that had not been touched). These two groups are the ones that mean "this is
+      # a bug"; everything else still prints, and is still worth reading.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious
+      - name: Test
+        run: cargo test --workspace
+      # The window is Win32, so Linux cannot run it — but it CAN draw it. The preview is the
+      # regression test with eyes: if a change moves a button, the SVG says so. Rendering all five
+      # states here means a layout that panics or draws off the window fails on the pull request
+      # rather than on someone's desktop.
+      - name: Draw the window
+        run: |
+          cargo build -p flint
+          for state in fresh ready planned working done; do
+              ./target/debug/flint gui-preview "gui-$state.svg" --state "$state"
+          done
+          ls -l gui-*.svg
+      - uses: actions/upload-artifact@v7
+        with:
+          name: window-preview
+          path: gui-*.svg
+          if-no-files-found: error
+
+  # The Windows side, on every push rather than only on a tag: the window and the 32-bit helper
+  # are the two things this repository cannot test on Linux, so they are the two most likely to
+  # break unnoticed.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+      - name: Test
+        run: cargo test --workspace
+      - name: Build flint (x64, with the window)
+        run: cargo build --release -p flint
+      - name: Build the 32-bit SensMe helper
+        run: cargo build --release -p sensme-helper --target i686-pc-windows-msvc

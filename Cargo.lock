@@ -7,11 +7,19 @@ name = "flint"
 version = "0.1.0"
 dependencies = [
  "flint-core",
+ "flint-gui",
 ]
 
 [[package]]
 name = "flint-core"
 version = "0.1.0"
+
+[[package]]
+name = "flint-gui"
+version = "0.1.0"
+dependencies = [
+ "flint-core",
+]
 
 [[package]]
 name = "sensme-helper"

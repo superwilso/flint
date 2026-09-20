@@ -1,0 +1,9 @@
+[package]
+name = "flint-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Flint's window: a dependency-free Win32 front end over flint-core, and an SVG preview of it"
+
+[dependencies]
+flint-core = { path = "../flint-core" }

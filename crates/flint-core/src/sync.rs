@@ -26,11 +26,26 @@ use crate::cache::{clean, write_atomic};
 
 pub const AUDIO_EXT: [&str; 6] = ["flac", "wav", "mp3", "m4a", "aac", "alac"];
 pub const PLAYLIST_EXT: [&str; 2] = ["m3u", "m3u8"];
+/// What travels WITH an album rather than being an album: cover art, and lyrics.
+///
+/// Sony's Music Center transfers artwork, and Cinder reads `.lrc` beside the track it belongs to —
+/// neither reaches the player if only audio is copied, which is what Flint did until now. A sidecar
+/// only travels with an ALBUM that holds music, so a library with a pictures folder in it does not
+/// turn into a photo transfer.
+///
+/// **A sidecar is never swept.** The sweep's rule is "anything the plan does not put there", and
+/// applying that to these would delete art and lyrics another tool put on the player — a
+/// destructive change to make on someone's behalf. They are copied, never removed.
+pub const SIDECAR_EXT: [&str; 4] = ["jpg", "jpeg", "png", "lrc"];
 /// FAT and exFAT keep timestamps to two seconds, so a copy's mtime can read older than its source's.
 pub const MTIME_TOLERANCE_SECONDS: i64 = 2;
 /// Playlists another tool owns (likesync writes these); never swept.
 pub const MANAGED_PLAYLISTS: [&str; 2] = ["liked songs.m3u8", "liked songs.m3u"];
 pub const MANIFEST_NAME: &str = "flint-manifest.tsv";
+/// Headroom left free on each volume, so a full filesystem never stops the player writing its own
+/// database. Sony-sync keeps the same kind of margin. A volume filled to the last byte is also one
+/// that cannot be tidied up afterwards.
+pub const HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 
 fn has_ext(rel: &str, exts: &[&str]) -> bool {
     rel.rsplit_once('.').is_some_and(|(_, e)| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
@@ -48,6 +63,17 @@ impl SourceFile {
     pub fn folder(&self) -> &str {
         self.rel.split_once('/').map_or(self.rel.as_str(), |(f, _)| f)
     }
+
+    /// Cover art or lyrics travelling with an album — see [`SIDECAR_EXT`].
+    pub fn is_sidecar(&self) -> bool {
+        has_ext(&self.rel, &SIDECAR_EXT)
+    }
+}
+
+/// Is this device-relative path a sidecar? The same question as [`SourceFile::is_sidecar`], for a
+/// path that came off the player rather than out of the library.
+pub fn is_sidecar_path(rel: &str) -> bool {
+    has_ext(rel, &SIDECAR_EXT)
 }
 
 /// A destination: the Walkman's internal memory, or its card.
@@ -290,12 +316,18 @@ pub fn plan(
 ) -> Plan {
     let mut files_by_folder: BTreeMap<String, Vec<&SourceFile>> = BTreeMap::new();
     let mut sizes: BTreeMap<String, u64> = BTreeMap::new();
+    // MUSIC decides whether a folder is an album and how big it is; a sidecar rides along with one.
+    // Sized separately so a folder of nothing but pictures is not an album that fills a volume.
+    let mut audio_bytes: BTreeMap<String, u64> = BTreeMap::new();
     for f in source {
         files_by_folder.entry(f.folder().to_string()).or_default().push(f);
         *sizes.entry(f.folder().to_string()).or_default() += f.size;
+        if !f.is_sidecar() {
+            *audio_bytes.entry(f.folder().to_string()).or_default() += f.size;
+        }
     }
-    // An album folder with no files never reaches the device; it is not an album.
-    sizes.retain(|_, size| *size > 0);
+    // An album folder with no music in it never reaches the device; it is not an album.
+    sizes.retain(|folder, _| audio_bytes.get(folder).is_some_and(|b| *b > 0));
     files_by_folder.retain(|f, _| sizes.contains_key(f));
 
     let mut playlist_folders: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -361,6 +393,11 @@ pub fn plan(
             if rel == MANIFEST_NAME {
                 continue;
             }
+            // Art and lyrics are copied, never removed: sweeping them would delete files another
+            // tool — or the owner — put on the player, which is not a decision a sync should make.
+            if is_sidecar_path(rel) {
+                continue;
+            }
             let folder = rel.split_once('/').map_or(rel.as_str(), |(f, _)| f);
             match out.assignments.get(folder) {
                 Some(&assigned) if assigned == v && file_volume.contains_key(rel.as_str()) => {}
@@ -398,7 +435,7 @@ pub fn scan_library(root: &Path) -> io::Result<Vec<SourceFile>> {
             let ft = entry.file_type()?;
             if ft.is_dir() {
                 stack.push((entry.path(), rel));
-            } else if ft.is_file() && has_ext(&rel, &AUDIO_EXT) {
+            } else if ft.is_file() && (has_ext(&rel, &AUDIO_EXT) || has_ext(&rel, &SIDECAR_EXT)) {
                 let meta = entry.metadata()?;
                 let mtime = meta
                     .modified()
@@ -427,6 +464,46 @@ pub fn scan_volume(root: &Path) -> io::Result<DeviceScan> {
         }
     }
     Ok(scan)
+}
+
+/// Read a folder of `.m3u`/`.m3u8` files into the map [`plan`] wants: playlist name -> the
+/// library-relative paths it names.
+///
+/// Lines that do not resolve to a file inside `library` are dropped rather than failing the read:
+/// a playlist exported from another tool routinely names tracks that are not in this library, and
+/// refusing the whole file over one of them would make the feature unusable. A playlist that ends
+/// up naming nothing is not returned at all.
+pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String, Vec<String>>> {
+    let mut out = BTreeMap::new();
+    let library = fs::canonicalize(library).unwrap_or_else(|_| library.to_path_buf());
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !has_ext(&name, &PLAYLIST_EXT) {
+            continue;
+        }
+        let text = match fs::read_to_string(entry.path()) {
+            Ok(t) => t,
+            Err(e) => return Err(io::Error::new(e.kind(), format!("{name}: {e}"))),
+        };
+        let mut tracks = Vec::new();
+        for line in text.lines() {
+            let line = line.trim().trim_matches('"');
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let candidate = Path::new(line);
+            let full = if candidate.is_absolute() { candidate.to_path_buf() } else { library.join(candidate) };
+            let full = fs::canonicalize(&full).unwrap_or(full);
+            if let Ok(rel) = full.strip_prefix(&library) {
+                tracks.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        if !tracks.is_empty() {
+            out.insert(name, tracks);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -555,19 +632,55 @@ mod tests {
     }
 
     #[test]
-    fn scanning_a_library_finds_audio_and_playlists() {
+    fn scanning_a_library_finds_audio_playlists_and_sidecars() {
         let d = std::env::temp_dir().join(format!("flint-sync-scan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("Artist/Album")).unwrap();
-        for f in ["Artist/Album/01.flac", "Artist/cover.jpg", "mix.m3u8"] {
+        for f in ["Artist/Album/01.flac", "Artist/Album/01.lrc", "Artist/cover.jpg", "mix.m3u8"] {
             fs::write(d.join(f), b"xx").unwrap();
         }
         let files = scan_library(&d).unwrap();
-        assert_eq!(files.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(), vec!["Artist/Album/01.flac"]);
+        assert_eq!(
+            files.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(),
+            vec!["Artist/Album/01.flac", "Artist/Album/01.lrc", "Artist/cover.jpg"],
+            "art and lyrics come too — Music Center transfers artwork, and Cinder reads .lrc",
+        );
+        assert!(!files[0].is_sidecar() && files[1].is_sidecar() && files[2].is_sidecar());
         assert_eq!(files[0].folder(), "Artist");
         let scan = scan_volume(&d).unwrap();
         assert_eq!(scan.playlists.iter().map(String::as_str).collect::<Vec<_>>(), vec!["mix.m3u8"]);
-        assert_eq!(scan.folder_files()["Artist"], vec!["Artist/Album/01.flac"]);
+        // `folder_files` groups out of a HashMap, so it has no order of its own to assert.
+        let mut on_volume = scan.folder_files()["Artist"].clone();
+        on_volume.sort_unstable();
+        assert_eq!(on_volume, vec!["Artist/Album/01.flac", "Artist/Album/01.lrc", "Artist/cover.jpg"]);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Art and lyrics go where their album goes, a folder with no music in it is not an album, and
+    /// a sidecar already on the player is left alone rather than swept.
+    #[test]
+    fn art_and_lyrics_travel_with_their_album_and_are_never_swept() {
+        let f = |rel: &str, size: u64| SourceFile { rel: rel.into(), size, mtime: 1 };
+        let source = vec![
+            f("Album/01.flac", 1_000_000),
+            f("Album/cover.jpg", 40_000),
+            f("Album/01.lrc", 2_000),
+            // Nothing but pictures: not an album, and must not be planned onto a volume.
+            f("Snapshots/holiday.jpg", 5_000_000),
+        ];
+        let volumes = vec![Volume { name: "internal".into(), root: "/int".into(), budget_bytes: 8_000_000 }];
+        // The player already holds a cover another tool put there.
+        let mut scan = DeviceScan::default();
+        scan.files.insert("Album/other-art.png".into(), (1234, 1));
+        scan.files.insert("Stale/gone.flac".into(), (999, 1));
+        let plan = plan(&source, &volumes, &[scan], &[Manifest::default()], &BTreeMap::new(), |_| String::new());
+
+        let copied: Vec<&str> = plan.copies.iter().map(|c| c.rel.as_str()).collect();
+        assert_eq!(copied, vec!["Album/01.flac", "Album/01.lrc", "Album/cover.jpg"]);
+        assert_eq!(plan.assignments.get("Album"), Some(&0));
+        assert!(!plan.assignments.contains_key("Snapshots"), "a folder of pictures is not an album");
+        // The stale sweep still removes the orphan track, and still leaves the art alone.
+        let stale: Vec<&str> = plan.stale_files.iter().map(|(_, r)| r.as_str()).collect();
+        assert_eq!(stale, vec!["Stale/gone.flac"]);
     }
 }

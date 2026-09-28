@@ -76,6 +76,13 @@ pub enum Update {
     /// were always worked out here — until the window had meters, they only ever reached the user
     /// as a sentence in the log.
     Volume(usize, crate::VolumeFacts),
+    /// A file the check flagged, for the Check page's table.
+    Finding(crate::CheckRow),
+    /// How many FLACs a finished check looked at. Sent once, after the findings, so the page can
+    /// clear the previous run's rows when a new one starts.
+    Checked(usize),
+    /// What "Read the player" found.
+    Player(Box<crate::PlayerFacts>),
 }
 
 /// Run `job`. Returns the last word for the status line, or the reason it stopped.
@@ -89,6 +96,7 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::Scan => scan_job(s, cancel, emit),
         Job::Import => import_job(s, emit),
         Job::Check => check_job(s, cancel, emit),
+        Job::ReadPlayer => read_player_job(s, emit),
     }
 }
 
@@ -404,7 +412,8 @@ fn check_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) ->
     store.save().map_err(|e| e.to_string())?;
 
     // The log gets every flagged file, because that list IS the answer; the terminal prints the
-    // same thing. A clean library prints nothing and says so in one line.
+    // same thing. A clean library prints nothing and says so in one line. The Check page gets the
+    // same list as rows: the first finding is the verdict, all of them together are the "why".
     let mut flagged = 0;
     for c in &checked {
         let findings = lossless::findings(&c.measurement);
@@ -414,12 +423,113 @@ fn check_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) ->
         flagged += 1;
         let labels: Vec<&str> = findings.iter().map(|f| f.label()).collect();
         emit(Update::Log(format!("{}  —  {}", short(&c.path), labels.join(", "))));
+        let file = c.path.strip_prefix(&s.library).unwrap_or(&c.path).display().to_string();
+        let why: Vec<String> = findings.iter().map(|f| f.to_string()).collect();
+        emit(Update::Finding(crate::CheckRow { verdict: labels[0].to_string(), file, why: why.join("; ") }));
     }
+    emit(Update::Checked(checked.len()));
     emit(Update::Progress(Some(1.0)));
     Ok(match flagged {
         0 => format!("Checked {} FLACs; none look like anything but the lossless audio they claim.", checked.len()),
         n => format!("Checked {} FLACs; {n} are worth a closer look — see the log.", checked.len()),
     })
+}
+
+/// Read what is on the player, for the On the player, Likes & plays and Palettes pages. Reads only:
+/// the manifests, the music folders, `.scrobbler.log`, `cinder_loved.tsv` and `cinder_palettes/`.
+fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    if s.volumes.is_empty() {
+        return Err("choose the player's drive first".into());
+    }
+    emit(Update::Progress(None));
+    let mut facts = crate::PlayerFacts { read: true, ..Default::default() };
+    for (i, root) in s.volumes.iter().enumerate() {
+        emit(Update::Say(format!("reading {}", root.display())));
+        let scan = sync::scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
+        let manifest = sync::Manifest::load(root);
+        facts.albums.extend(albums_on(i, &scan, &manifest));
+
+        let log = root.join(".scrobbler.log");
+        if let Ok(body) = std::fs::read_to_string(&log) {
+            let parsed = flint_core::scrobblelog::parse(&body);
+            facts.unreadable += parsed.unreadable.len();
+            facts.plays.extend(parsed.entries.iter().map(|e| crate::PlayRow {
+                when: e.timestamp,
+                track: e.track.clone(),
+                artist: e.artist.clone(),
+                kind: if e.is_play() { "PLAY".into() } else { "SKIP".into() },
+            }));
+        }
+        facts.likes += flint_core::likes::read_loved(&flint_core::likes::Volume::new(root, "")).len();
+
+        if let Ok(dir) = std::fs::read_dir(root.join("cinder_palettes")) {
+            for e in dir.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.to_ascii_lowercase().ends_with(".palette") {
+                    let bytes = e.metadata().map_or(0, |m| m.len());
+                    facts.palettes.push(crate::PaletteFile { volume: i, name, bytes });
+                }
+            }
+        }
+    }
+    facts.plays.sort_by_key(|p| std::cmp::Reverse(p.when));
+    facts.palettes.sort_by_key(|p| p.name.to_lowercase());
+    let summary = format!(
+        "{} albums on the player, {} plays in the log, {} songs liked",
+        crate::thousands(facts.albums.len()),
+        crate::thousands(facts.plays.len()),
+        crate::thousands(facts.likes)
+    );
+    emit(Update::Player(Box::new(facts)));
+    emit(Update::Progress(Some(1.0)));
+    Ok(summary)
+}
+
+/// The album folders on volume `v`: a file's folder is its album, and a folder is Flint's when any
+/// file in it is in the manifest.
+fn albums_on(v: usize, scan: &sync::DeviceScan, manifest: &sync::Manifest) -> Vec<crate::AlbumRow> {
+    use std::collections::BTreeMap;
+    struct Acc {
+        files: usize,
+        bytes: u64,
+        by_flint: bool,
+        formats: BTreeMap<String, usize>,
+    }
+    let mut folders: BTreeMap<String, Acc> = BTreeMap::new();
+    for (rel, (size, _)) in &scan.files {
+        if rel == sync::MANIFEST_NAME || sync::is_sidecar_path(rel) {
+            continue;
+        }
+        let folder = rel.rsplit_once('/').map_or(".", |(f, _)| f).to_string();
+        let ext = rel.rsplit_once('.').map_or("", |(_, e)| e).to_ascii_lowercase();
+        let format = match ext.as_str() {
+            "flac" => "FLAC",
+            "mp3" => "MP3",
+            "m4a" | "aac" | "mp4" => "AAC",
+            "wav" => "WAV",
+            "aif" | "aiff" => "AIFF",
+            "dsf" | "dff" => "DSD",
+            "ogg" | "opus" => "Ogg",
+            _ => "other",
+        };
+        let acc =
+            folders.entry(folder).or_insert(Acc { files: 0, bytes: 0, by_flint: false, formats: BTreeMap::new() });
+        acc.files += 1;
+        acc.bytes += size;
+        acc.by_flint |= manifest.records.contains_key(rel);
+        *acc.formats.entry(format.to_string()).or_default() += 1;
+    }
+    folders
+        .into_iter()
+        .map(|(folder, a)| crate::AlbumRow {
+            folder,
+            volume: v,
+            files: a.files,
+            bytes: a.bytes,
+            format: a.formats.into_iter().max_by_key(|(_, n)| *n).map(|(f, _)| f).unwrap_or_default(),
+            by_flint: a.by_flint,
+        })
+        .collect()
 }
 
 /// Where a library folder's own name says it is, for the window's title bar.
@@ -481,7 +591,7 @@ mod tests {
             Update::Say(l) | Update::Log(l) => lines.push(l),
             Update::Library(f) => library_facts = Some(f),
             Update::Volume(i, f) => volume_facts = Some((i, f)),
-            Update::Progress(_) => {}
+            Update::Progress(_) | Update::Finding(_) | Update::Checked(_) | Update::Player(_) => {}
         })
         .unwrap();
         assert!(planned, "a plan that shows something must enable COPY");
@@ -566,5 +676,73 @@ mod tests {
         assert!(word.contains("1 tracks") || word.contains("1 track"), "{word}");
         assert!(lines.iter().any(|l| l.contains("no engine")), "{lines:#?}");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// "Read the player" reads a real volume: albums grouped by folder and marked Flint's from the
+    /// manifest, plays newest first, likes, palettes — and writes nothing.
+    #[test]
+    fn reading_the_player_finds_albums_plays_likes_and_palettes() {
+        let vol = tmp("readplayer");
+        fs::create_dir_all(vol.join("MUSIC/A/One")).unwrap();
+        fs::create_dir_all(vol.join("MUSIC/B/Two")).unwrap();
+        fs::create_dir_all(vol.join("cinder_palettes")).unwrap();
+        fs::write(vol.join("MUSIC/A/One/01.flac"), b"fLaC....").unwrap();
+        fs::write(vol.join("MUSIC/A/One/02.flac"), b"fLaC....").unwrap();
+        fs::write(vol.join("MUSIC/B/Two/01.mp3"), b"ID3.....").unwrap();
+        fs::write(vol.join("cinder_palettes/moss.palette"), b"name=Moss\n").unwrap();
+        fs::write(vol.join("cinder_palettes/readme.txt"), b"not a palette").unwrap();
+        let mut man = sync::Manifest::default();
+        man.records.insert(
+            "MUSIC/A/One/01.flac".into(),
+            sync::Record { source_size: 8, source_mtime: 0, copy_size: 8, tag: String::new() },
+        );
+        man.save(&vol).unwrap();
+        fs::write(
+            vol.join(".scrobbler.log"),
+            "#AUDIOSCROBBLER/1.1\n#TZ/UNKNOWN\n#CLIENT/Cinder\n             A\tAl\tFirst\t1\t200\tL\t1700000000\t\n             A\tAl\tSecond\t2\t200\tS\t1700000300\t\n",
+        )
+        .unwrap();
+        fs::write(vol.join("cinder_loved.tsv"), "A\tFirst\n").unwrap();
+        let before: Vec<_> = walk(&vol);
+
+        let mut s = Settings::new(PathBuf::new());
+        s.volumes = vec![vol.clone()];
+        let mut facts = None;
+        let word = run(Job::ReadPlayer, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::Player(f) = u {
+                facts = Some(*f);
+            }
+        })
+        .unwrap();
+        let f = facts.expect("the job reports what it read");
+        assert!(f.read);
+        let folders: Vec<(&str, bool, &str)> =
+            f.albums.iter().map(|a| (a.folder.as_str(), a.by_flint, a.format.as_str())).collect();
+        assert_eq!(folders, vec![("MUSIC/A/One", true, "FLAC"), ("MUSIC/B/Two", false, "MP3")]);
+        assert_eq!(f.albums[0].files, 2);
+        assert_eq!(
+            f.plays.iter().map(|p| (p.track.as_str(), p.kind.as_str())).collect::<Vec<_>>(),
+            vec![("Second", "SKIP"), ("First", "PLAY")],
+            "newest first"
+        );
+        assert_eq!(f.likes, 1);
+        assert_eq!(f.palettes.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["moss.palette"]);
+        assert!(word.contains("2 albums"), "{word}");
+        assert_eq!(walk(&vol), before, "reading the player wrote to it");
+        let _ = fs::remove_dir_all(&vol);
+    }
+
+    fn walk(dir: &Path) -> Vec<(PathBuf, u64)> {
+        let mut out = Vec::new();
+        for e in fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push((p.clone(), fs::metadata(&p).unwrap().len()));
+            }
+        }
+        out.sort();
+        out
     }
 }

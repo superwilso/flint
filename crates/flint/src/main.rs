@@ -40,7 +40,7 @@ usage:
   flint scrobble <volume> [<volume>...] [--apply]
   flint likes <volume> [<volume>...] [--apply] [--playlist]
   flint gui [--dark | --light]
-  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done] [--dark]";
+  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|player|check|sensme|likes|palettes|settings] [--dark]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -779,7 +779,114 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
             m.progress = Some(1.0);
             m.status = "Copied 2,190 files (114.1 GB), 2,043 tagged, 1 removed, 4 playlists written.".into();
         }
-        other => return Err(format!("unknown state {other}; one of fresh, ready, planned, working, done")),
+        // The pages behind the other tabs, with the kind of data a real read produces. Titles and
+        // counts are placeholders, like every number in these previews.
+        "player" | "likes" | "palettes" => {
+            use flint_gui::{AlbumRow, PaletteFile, PlayRow, PlayerFacts, Tab};
+            ready(&mut m);
+            let album = |folder: &str, volume: usize, files: usize, gb10: u64, format: &str, by_flint: bool| AlbumRow {
+                folder: folder.into(),
+                volume,
+                files,
+                bytes: gb10 * GB / 10,
+                format: format.into(),
+                by_flint,
+            };
+            let play = |when: i64, track: &str, artist: &str, kind: &str| PlayRow {
+                when,
+                track: track.into(),
+                artist: artist.into(),
+                kind: kind.into(),
+            };
+            m.player = PlayerFacts {
+                read: true,
+                albums: vec![
+                    album("Aphex Twin/Selected Ambient Works 85-92", 1, 13, 6, "FLAC", true),
+                    album("Benjamin Francis Leftwich/After the Rain", 0, 10, 9, "FLAC", true),
+                    album("Bicep/Isles", 1, 12, 6, "FLAC", true),
+                    album("Bonobo/Fragments", 0, 12, 1, "AAC", true),
+                    album("Burial/Untrue", 1, 13, 5, "FLAC", false),
+                    album("Four Tet/Three", 1, 8, 4, "FLAC", true),
+                    album("Nick Drake/Pink Moon", 0, 11, 8, "FLAC", true),
+                    album("Radiohead/Kid A", 0, 10, 1, "MP3", false),
+                ],
+                plays: vec![
+                    play(1_790_151_240, "Atlas Hands", "Benjamin Francis Leftwich", "PLAY"),
+                    play(1_790_151_000, "Box of Stones", "Benjamin Francis Leftwich", "PLAY"),
+                    play(1_790_109_660, "Xtal", "Aphex Twin", "PLAY"),
+                    play(1_790_109_360, "Tha", "Aphex Twin", "PLAY"),
+                    play(1_790_096_520, "Atlas", "Bicep", "PLAY"),
+                    play(1_790_096_280, "Glue", "Bicep", "SKIP"),
+                    play(1_790_033_400, "Pink Moon", "Nick Drake", "PLAY"),
+                ],
+                unreadable: 0,
+                likes: 14,
+                palettes: vec![
+                    PaletteFile { volume: 0, name: "moss.palette".into(), bytes: 612 },
+                    PaletteFile { volume: 0, name: "paper.palette".into(), bytes: 804 },
+                    PaletteFile { volume: 0, name: "slate.palette".into(), bytes: 598 },
+                ],
+            };
+            m.status = "8 albums on the player, 7 plays in the log, 14 songs liked".into();
+            m.tab = match state {
+                "player" => Tab::Player,
+                "likes" => Tab::Likes,
+                _ => Tab::Palettes,
+            };
+        }
+        "check" => {
+            use flint_gui::{CheckRow, Tab};
+            ready(&mut m);
+            let row = |v: &str, f: &str, why: &str| CheckRow { verdict: v.into(), file: f.into(), why: why.into() };
+            m.findings = vec![
+                row("LOSSY", "Burial/Untrue/02 Archangel.flac", "content stops dead at 16.0 kHz, like a lossy encoder"),
+                row(
+                    "UPSAMPLED",
+                    "Nick Drake/Pink Moon/01 Pink Moon.flac",
+                    "nothing real above 22.1 kHz: resampled from a lower rate",
+                ),
+                row(
+                    "SUSPECT",
+                    "Radiohead/Kid A/04 How to Disappear Completely.flac",
+                    "content stops at 19.6 kHz: a high-bitrate lossy encoder, or the master",
+                ),
+                row(
+                    "PADDED",
+                    "Benjamin Francis Leftwich/After the Rain/07 Shine.flac",
+                    "24-bit file holding 16-bit samples",
+                ),
+                row("DAMAGED", "Four Tet/Three/06 Skater.flac", "FFmpeg reported 3 error line(s) decoding it"),
+            ];
+            m.checked = Some(3184);
+            m.status = "Checked 3,184 FLACs; 5 are worth a closer look.".into();
+            m.tab = Tab::Check;
+        }
+        "sensme" => {
+            ready(&mut m);
+            m.log = [
+                "found Music Center's engine",
+                "3,184 tracks: 2,701 already analysed, 27 taken from the files, 456 to do",
+                "[1/456] 01 Says.flac  104 BPM",
+                "[2/456] 02 Hammers.flac  121 BPM",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            m.status = "[2/456] 02 Hammers.flac  121 BPM".into();
+            m.tab = flint_gui::Tab::SensMe;
+        }
+        "settings" => {
+            ready(&mut m);
+            m.cache_dir = "C:\\Users\\you\\AppData\\Local\\flint".into();
+            m.lastfm = "Not set up".into();
+            m.tab = flint_gui::Tab::Settings;
+        }
+        other => {
+            return Err(format!(
+                "unknown state {other}; one of fresh, ready, planned, working, done, \
+                 player, check, sensme, likes, palettes, settings"
+            ))
+        }
     }
     Ok(m)
 }

@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::job::{self, Settings, Update};
 use crate::paint::{b_of, commands, g_of, r_of, Align, Cmd, Face, Theme};
-use crate::{click, hit, layout, set_path, Id, Job, Model, Phase, H, MIN_H, MIN_W, W};
+use crate::{click, hit, layout, set_path, Id, Job, Model, Phase, ThemePref, H, MIN_H, MIN_W, W};
 
 // ── the Win32 surface, declared rather than depended on ────────────────────────────────────────
 
@@ -296,6 +296,39 @@ fn theme_for(pref: Option<bool>) -> Theme {
     }
 }
 
+/// Dark or light, for this window now: `--dark`/`--light` for this run first, then Settings ▸
+/// Theme, then — for System — whatever Windows wants.
+fn wants_dark(state: &State) -> bool {
+    match (state.theme_pref, state.model.theme) {
+        (Some(d), _) => d,
+        (None, ThemePref::Dark) => true,
+        (None, ThemePref::Light) => false,
+        (None, ThemePref::System) => system_prefers_dark(),
+    }
+}
+
+/// Settings ▸ Theme changed: repaint in the new theme and match the title bar to it. A choice made
+/// in the window also replaces a `--dark`/`--light` given for this run — it is the newer word.
+fn apply_theme(hwnd: Hwnd) {
+    let dark = STATE.with(|st| {
+        let mut b = st.borrow_mut();
+        let state = b.as_mut()?;
+        state.theme_pref = None;
+        let dark = wants_dark(state);
+        state.theme = if dark { Theme::dark() } else { Theme::light() };
+        Some(dark)
+    });
+    if let Some(dark) = dark {
+        set_caption_dark(hwnd, dark);
+    }
+}
+
+/// Remember the folders, the switches and the theme. Best-effort: a window that cannot write its
+/// preferences still works, it just asks again next time.
+fn save_prefs(m: &Model) {
+    let _ = crate::prefs::save(m, &crate::prefs::path());
+}
+
 /// Ask DWM for a dark title bar. Best-effort in every direction: the DLL may not be there, the
 /// attribute may not exist, and the call may simply do nothing. The window is correct either way.
 fn set_caption_dark(hwnd: Hwnd, dark: bool) {
@@ -356,8 +389,14 @@ impl State {
         (v as i64 * 96 / self.dpi as i64) as i32
     }
 
-    fn settings(&mut self) -> Option<Settings> {
-        let library = self.model.library.clone()?;
+    /// What a job needs. `None` when it needs a library and there is none; "Read the player" is
+    /// the one job that does not, so it runs with an empty library path it never reads.
+    fn settings(&mut self, job: Job) -> Option<Settings> {
+        let library = match (&self.model.library, job) {
+            (Some(l), _) => l.clone(),
+            (None, Job::ReadPlayer) => PathBuf::new(),
+            (None, _) => return None,
+        };
         let mut s = Settings::new(library);
         s.volumes = self.model.volumes.iter().flatten().cloned().collect();
         s.playlists = self.model.playlists.clone();
@@ -570,6 +609,9 @@ fn drain(state: &mut State) {
                     *slot = Some(facts);
                 }
             }
+            Update::Finding(row) => state.model.findings.push(row),
+            Update::Checked(n) => state.model.checked = Some(n),
+            Update::Player(facts) => state.model.player = *facts,
         }
     }
     // The log is unbounded otherwise: a library of 40,000 tracks would hold 40,000 strings for the
@@ -620,7 +662,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                 let changed = STATE.with(|st| {
                     let mut b = st.borrow_mut();
                     let Some(state) = b.as_mut() else { return None };
-                    let dark = state.theme_pref.unwrap_or_else(system_prefers_dark);
+                    let dark = wants_dark(state);
                     let next = if dark { Theme::dark() } else { Theme::light() };
                     if next.bg == state.theme.bg {
                         return None;
@@ -654,6 +696,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
             let mut to_start: Option<(Job, Settings)> = None;
             let mut repaint = false;
             let mut stop = false;
+            let mut retheme = false;
             STATE.with(|st| {
                 let mut st = st.borrow_mut();
                 let Some(state) = st.as_mut() else { return };
@@ -675,11 +718,16 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                                 Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists => to_pick = Some(id),
                                 Id::Stop => stop = true,
                                 _ => {
+                                    let theme_before = state.model.theme;
                                     if let Some(job) = click(&mut state.model, id) {
-                                        if let Some(s) = state.settings() {
+                                        if let Some(s) = state.settings(job) {
                                             to_start = Some((job, s));
                                         }
                                     }
+                                    if state.model.theme != theme_before {
+                                        retheme = true;
+                                    }
+                                    save_prefs(&state.model);
                                     repaint = true;
                                 }
                             }
@@ -711,6 +759,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                     STATE.with(|st| {
                         if let Some(state) = st.borrow_mut().as_mut() {
                             set_path(&mut state.model, id, path);
+                            save_prefs(&state.model);
                         }
                     });
                 }
@@ -730,11 +779,18 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                             // rather than offering to copy the same plan a second time. The meter
                             // numbers stay: they are what the job now running is doing.
                             state.model.planned = false;
+                            // A new check replaces the last one's rows; they arrive as it finds them.
+                            if job == Job::Check {
+                                state.model.findings.clear();
+                            }
                         }
                     });
                     start(hwnd, job, settings, shared);
                 }
                 repaint = true;
+            }
+            if retheme {
+                apply_theme(hwnd);
             }
             if repaint {
                 InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -881,9 +937,30 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
             })
             .collect();
 
+        // The window opens where it was left: folders, switches and theme from `gui.conf`.
+        let mut model = Model::new();
+        crate::prefs::load(&mut model, &crate::prefs::path());
+        model.cache_dir = flint_core::cache::default_dir().display().to_string();
+        let creds = flint_core::lastfm::Credentials::load();
+        model.lastfm = if creds.is_ready() {
+            if creds.username.is_empty() {
+                "Signed in".into()
+            } else {
+                format!("Signed in as {}", creds.username)
+            }
+        } else if !creds.api_key.is_empty() {
+            "API key set, not signed in yet".into()
+        } else {
+            "Not set up".into()
+        };
+        let pref = pref.or(match model.theme {
+            ThemePref::Dark => Some(true),
+            ThemePref::Light => Some(false),
+            ThemePref::System => None,
+        });
         STATE.with(|st| {
             *st.borrow_mut() = Some(State {
-                model: Model::new(),
+                model,
                 theme: theme_for(pref),
                 theme_pref: pref,
                 size: (W, H),

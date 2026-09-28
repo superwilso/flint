@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 — 2026-09-28
+
 ### No terminal window
 
 `flint-windows-x64.exe` is now the window alone, built for the Windows subsystem, so it opens with

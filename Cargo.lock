@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "flint"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flint-core",
  "flint-gui",
@@ -12,15 +12,15 @@ dependencies = [
 
 [[package]]
 name = "flint-core"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "flint-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flint-core",
 ]
 
 [[package]]
 name = "sensme-helper"
-version = "0.2.0"
+version = "0.2.1"

@@ -27,7 +27,9 @@
 //! window will paint.
 
 pub mod job;
+pub mod pages;
 pub mod paint;
+pub mod prefs;
 pub mod svg;
 
 #[cfg(windows)]
@@ -97,6 +99,140 @@ pub enum Id {
     Check,
     /// Ask the running job to stop at the next file.
     Stop,
+    /// Show a page.
+    Tab(Tab),
+    /// Settings ▸ Theme.
+    Theme(ThemePref),
+    /// Read what is on the player: albums and who put them there, plays, likes, palettes.
+    ReadPlayer,
+}
+
+/// The window's pages, in the order the tabs are drawn — the same order in every page, so a tab
+/// never moves under the pointer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Tab {
+    #[default]
+    Sync,
+    Player,
+    Check,
+    SensMe,
+    Likes,
+    Palettes,
+    Settings,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 7] =
+        [Tab::Sync, Tab::Player, Tab::Check, Tab::SensMe, Tab::Likes, Tab::Palettes, Tab::Settings];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Sync => "Sync",
+            Tab::Player => "On the player",
+            Tab::Check => "Check",
+            Tab::SensMe => "SensMe",
+            Tab::Likes => "Likes & plays",
+            Tab::Palettes => "Palettes",
+            Tab::Settings => "Settings",
+        }
+    }
+}
+
+/// Settings ▸ Theme. System follows Windows, and keeps following it while the window is open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ThemePref {
+    Light,
+    Dark,
+    #[default]
+    System,
+}
+
+impl ThemePref {
+    pub const ALL: [ThemePref; 3] = [ThemePref::Light, ThemePref::Dark, ThemePref::System];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemePref::Light => "Light",
+            ThemePref::Dark => "Dark",
+            ThemePref::System => "System",
+        }
+    }
+
+    /// The word in `gui.conf`.
+    pub fn word(self) -> &'static str {
+        match self {
+            ThemePref::Light => "light",
+            ThemePref::Dark => "dark",
+            ThemePref::System => "system",
+        }
+    }
+
+    pub fn from_word(w: &str) -> ThemePref {
+        match w.trim() {
+            "light" => ThemePref::Light,
+            "dark" => ThemePref::Dark,
+            _ => ThemePref::System,
+        }
+    }
+}
+
+/// One file `flint check` had something to say about.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CheckRow {
+    /// LOSSY, SUSPECT, UPSAMPLED, PADDED, DAMAGED or UNSURE.
+    pub verdict: String,
+    /// The file, relative to the library.
+    pub file: String,
+    /// The evidence, in words: the cutoff, the zeroed bits, the error count.
+    pub why: String,
+}
+
+/// One album folder on the player.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AlbumRow {
+    /// The folder, relative to the volume.
+    pub folder: String,
+    /// Index into `Model::volumes`.
+    pub volume: usize,
+    pub files: usize,
+    pub bytes: u64,
+    /// FLAC, MP3, AAC… — the commonest audio format in the folder.
+    pub format: String,
+    /// At least one file in it is in that volume's `flint-manifest.tsv`.
+    pub by_flint: bool,
+}
+
+/// One row of the player's `.scrobbler.log`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PlayRow {
+    /// Unix time the play started.
+    pub when: i64,
+    pub track: String,
+    pub artist: String,
+    /// PLAY (listened) or SKIP.
+    pub kind: String,
+}
+
+/// A `.palette` file in a volume's `cinder_palettes` folder.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PaletteFile {
+    pub volume: usize,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// Everything "Read the player" found. `read` is false until it has run once.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct PlayerFacts {
+    pub read: bool,
+    pub albums: Vec<AlbumRow>,
+    /// Newest first.
+    pub plays: Vec<PlayRow>,
+    /// Log rows that could not be parsed. They are kept on the player; this only counts them.
+    pub unreadable: usize,
+    /// Songs liked on the player (`cinder_loved.tsv`).
+    pub likes: usize,
+    pub palettes: Vec<PaletteFile>,
 }
 
 /// What the window is doing. The controls that would start a second job are disabled while one is
@@ -116,6 +252,8 @@ pub enum Job {
     Scan,
     Import,
     Check,
+    /// Read the player: what is on it and who put it there, plays, likes, palettes. Writes nothing.
+    ReadPlayer,
 }
 
 /// What a destination volume is holding, and what this plan would add to it.
@@ -168,6 +306,20 @@ pub struct Model {
     pub source: Option<LibraryFacts>,
     /// What each destination holds and what the plan would add, in the same order as `volumes`.
     pub dest: [Option<VolumeFacts>; 2],
+    /// The page on show.
+    pub tab: Tab,
+    /// Settings ▸ Theme. Kept in `gui.conf` with the folders.
+    pub theme: ThemePref,
+    /// How many FLACs the last check looked at; `None` before one has run this session.
+    pub checked: Option<usize>,
+    /// What the last check found, one row per flagged file.
+    pub findings: Vec<CheckRow>,
+    /// What "Read the player" found.
+    pub player: PlayerFacts,
+    /// Settings ▸ Last.fm, in words: who is signed in, or how to sign in.
+    pub lastfm: String,
+    /// Where the analysis cache lives, for Settings.
+    pub cache_dir: String,
 }
 
 impl Model {
@@ -178,6 +330,7 @@ impl Model {
             sensme: true,
             extras: true,
             status: "Choose a music folder and a player volume.".into(),
+            lastfm: "Not set up".into(),
             ..Model::default()
         }
     }
@@ -297,6 +450,39 @@ pub enum Kind {
     LogLine,
     Status,
     Rule,
+    /// A page tab in the band. `count` is a small number after the name, or empty.
+    Tab {
+        active: bool,
+        count: String,
+    },
+    /// One segment of a segmented control (Settings ▸ Theme).
+    Segment {
+        on: bool,
+    },
+    /// A count with a word under it — a check verdict, a total. `tone` colours the number.
+    Stat {
+        tone: Tone,
+        caption: String,
+    },
+    /// One cell of a table row.
+    Cell {
+        tone: Tone,
+        strong: bool,
+        mono: bool,
+    },
+}
+
+/// What a number or a word is saying, which decides its colour. Never the accent: the accent on
+/// this window means bytes about to be written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tone {
+    Plain,
+    Dim,
+    /// Something is wrong with this file (LOSSY, DAMAGED).
+    Warn,
+    /// Worth a look, not necessarily wrong (SUSPECT, UPSAMPLED, PADDED, not put there by Flint).
+    Caution,
+    Ok,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -307,9 +493,9 @@ pub struct Widget {
     pub text: String,
 }
 
-const PAD: i32 = 22;
-const BTN_H: i32 = 30;
-const BAND_H: i32 = 64;
+pub(crate) const PAD: i32 = 22;
+pub(crate) const BTN_H: i32 = 30;
+pub(crate) const BAND_H: i32 = 64;
 const CHOOSE_W: i32 = 96;
 const CLEAR_W: i32 = 62;
 /// A destination's card: its inner padding, its height with a volume in it, and its height
@@ -347,6 +533,71 @@ pub fn thousands(n: usize) -> String {
     out
 }
 
+/// The band: the wordmark, the player it is working with, and the page tabs, right-aligned.
+fn band(m: &Model, w: i32, out: &mut Vec<Widget>) {
+    out.push(Widget { id: Id::None, rect: Rect::new(0, 0, w, BAND_H), kind: Kind::Band, text: String::new() });
+    out.push(Widget { id: Id::None, rect: Rect::new(PAD, 10, 120, 26), kind: Kind::Title, text: "Flint".into() });
+    let tabs = tab_rects(w);
+    let first_tab = tabs.first().map_or(w, |(_, r)| r.x);
+    out.push(Widget {
+        id: Id::None,
+        rect: Rect::new(PAD, 36, (first_tab - PAD - 12).max(40), 18),
+        kind: Kind::Subtitle,
+        text: device_line(m),
+    });
+    for (tab, rect) in tabs {
+        out.push(Widget {
+            id: Id::Tab(tab),
+            rect,
+            kind: Kind::Tab { active: m.tab == tab, count: tab_count(m, tab) },
+            text: tab.label().into(),
+        });
+    }
+}
+
+/// What the band says about the player: its drives, or that none is chosen yet.
+fn device_line(m: &Model) -> String {
+    let drives: Vec<String> = m.volumes.iter().flatten().map(|p| p.display().to_string()).collect();
+    match drives.len() {
+        0 => "No player chosen".into(),
+        1 => format!("Player · {}", drives[0]),
+        _ => format!("Player · {} and {}", drives[0], drives[1]),
+    }
+}
+
+/// The small number after a tab's name, when there is one worth showing.
+fn tab_count(m: &Model, tab: Tab) -> String {
+    match tab {
+        Tab::Check if !m.findings.is_empty() => thousands(m.findings.len()),
+        Tab::Player if m.player.read => thousands(m.player.albums.len()),
+        Tab::Likes if m.player.read => thousands(m.player.plays.len()),
+        Tab::Palettes if m.player.read && !m.player.palettes.is_empty() => thousands(m.player.palettes.len()),
+        _ => String::new(),
+    }
+}
+
+/// Tab geometry: 34 px tall, sized to the label, right-aligned in the band with 4 px between. Pure
+/// arithmetic on the label length — `paint::Face::advance` — so the hit test needs no fonts.
+pub fn tab_rects(w: i32) -> Vec<(Tab, Rect)> {
+    const GAP: i32 = 4;
+    // The label and 20 px of air; the tabs that can carry a count get room for three digits too,
+    // always, so a count arriving never moves a tab.
+    let counted = |t: Tab| matches!(t, Tab::Player | Tab::Check | Tab::Likes | Tab::Palettes);
+    let width = |t: Tab| {
+        (t.label().chars().count() as f32 * paint::Face::Strong.advance()) as i32 + 20 + if counted(t) { 20 } else { 0 }
+    };
+    let total: i32 = Tab::ALL.iter().map(|t| width(*t)).sum::<i32>() + GAP * (Tab::ALL.len() as i32 - 1);
+    let mut x = w.max(MIN_W) - PAD - total;
+    Tab::ALL
+        .iter()
+        .map(|&t| {
+            let r = Rect::new(x, 15, width(t), 34);
+            x += r.w + GAP;
+            (t, r)
+        })
+        .collect()
+}
+
 /// One button on the action row: what it is, what it says, whether it is THE next step, whether it
 /// can be pressed now, and how wide it is.
 type Action = (Id, &'static str, bool, bool, i32);
@@ -378,20 +629,11 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     let next = m.next_step();
 
     // ── the band ───────────────────────────────────────────────────────────────────────────
-    out.push(Widget { id: Id::None, rect: Rect::new(0, 0, w, BAND_H), kind: Kind::Band, text: String::new() });
-    out.push(Widget { id: Id::None, rect: Rect::new(PAD, 13, 200, 26), kind: Kind::Title, text: "Flint".into() });
-    out.push(Widget {
-        id: Id::None,
-        rect: Rect::new(w - PAD - 120, 15, 120, 20),
-        kind: Kind::Version,
-        text: env!("CARGO_PKG_VERSION").into(),
-    });
-    out.push(Widget {
-        id: Id::None,
-        rect: Rect::new(PAD, 38, inner, 18),
-        kind: Kind::Subtitle,
-        text: "Put a music library on a Sony Walkman — with SensMe, without the bloat".into(),
-    });
+    band(m, w, &mut out);
+    if m.tab != Tab::Sync {
+        pages::layout(m, w, h, &mut out);
+        return out;
+    }
 
     // ── where the music is ─────────────────────────────────────────────────────────────────
     let mut y = BAND_H + 24;
@@ -588,7 +830,6 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     y += 18;
     let act_h = BTN_H + 6;
     const STOP_W: i32 = 90;
-    let idle = m.phase == Phase::Idle;
     let acts: [Action; 2] = [
         (Id::Plan, "Show what would happen", next == Id::Plan, m.can_plan(), 214),
         (Id::Apply, "Copy to the player", next == Id::Apply, m.can_apply(), 176),
@@ -613,22 +854,9 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     }
     y += act_h + 10;
 
-    // The library tools change nothing on the player, so they are outlines rather than buttons.
-    let tools: [Action; 3] = [
-        (Id::Scan, "Analyse library", false, idle && m.library.is_some(), 138),
-        (Id::Import, "Import Music Center", false, idle, 166),
-        (Id::Check, "Check FLACs", false, idle && m.library.is_some(), 120),
-    ];
-    let mut x = PAD;
-    for &(id, text, _, enabled, width) in tools.iter() {
-        if x > PAD && x + width > w - PAD {
-            x = PAD;
-            y += 34;
-        }
-        out.push(Widget { id, rect: Rect::new(x, y, width, 28), kind: Kind::Tool { enabled }, text: text.into() });
-        x += width + 10;
-    }
-    y += 28;
+    // The library tools (analyse, import Music Center's work, check the FLACs) moved to the
+    // SensMe and Check pages, which are about them. What is left here is the sync.
+    y -= 10;
 
     // ── progress, status, log ──────────────────────────────────────────────────────────────
     //
@@ -698,7 +926,12 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
 pub fn hit(m: &Model, w: i32, h: i32, x: i32, y: i32) -> Option<Id> {
     layout(m, w, h).into_iter().rev().find_map(|wid| {
         let live = match wid.kind {
-            Kind::Button { enabled, .. } | Kind::Check { enabled, .. } => enabled,
+            // `Tool` was missing from this list until 0.2, so every outlined button — Analyse
+            // library, Import Music Center, Check FLACs and the playlist folder's Choose… and
+            // Clear — was drawn, lit up under the pointer's hand cursor… and ignored the click.
+            Kind::Button { enabled, .. } | Kind::Check { enabled, .. } | Kind::Tool { enabled } => enabled,
+            // A tab is always live: looking at another page never starts or stops anything.
+            Kind::Tab { .. } | Kind::Segment { .. } => true,
             _ => false,
         };
         (live && wid.id != Id::None && wid.rect.contains(x, y)).then_some(wid.id)
@@ -736,6 +969,15 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
         Id::Scan => (m.phase == Phase::Idle && m.library.is_some()).then_some(Job::Scan),
         Id::Import => (m.phase == Phase::Idle).then_some(Job::Import),
         Id::Check => (m.phase == Phase::Idle && m.library.is_some()).then_some(Job::Check),
+        Id::ReadPlayer => (m.phase == Phase::Idle && m.volumes.iter().any(Option::is_some)).then_some(Job::ReadPlayer),
+        Id::Tab(t) => {
+            m.tab = t;
+            None
+        }
+        Id::Theme(p) => {
+            m.theme = p;
+            None
+        }
         _ => None,
     }
 }
@@ -927,6 +1169,136 @@ mod tests {
             _ => None,
         });
         assert_eq!(meter, Some((false, 0.0)));
+    }
+
+    /// A model with something on every page: findings, a read player, a log.
+    fn full() -> Model {
+        let mut m = ready();
+        m.volumes[1] = Some("/card".into());
+        m.checked = Some(40);
+        m.findings = (0..30)
+            .map(|i| CheckRow { verdict: "LOSSY".into(), file: format!("a/{i}.flac"), why: "cutoff".into() })
+            .collect();
+        m.player = PlayerFacts {
+            read: true,
+            albums: (0..40)
+                .map(|i| AlbumRow {
+                    folder: format!("Artist/Album {i}"),
+                    volume: i % 2,
+                    files: 10,
+                    bytes: 1 << 28,
+                    format: "FLAC".into(),
+                    by_flint: i % 3 != 0,
+                })
+                .collect(),
+            plays: (0..40)
+                .map(|i| PlayRow {
+                    when: 1_700_000_000 + i,
+                    track: "T".into(),
+                    artist: "A".into(),
+                    kind: "PLAY".into(),
+                })
+                .collect(),
+            unreadable: 1,
+            likes: 3,
+            palettes: vec![PaletteFile { volume: 0, name: "moss.palette".into(), bytes: 600 }],
+        };
+        m.log = (0..60).map(|i| format!("line {i}")).collect();
+        m
+    }
+
+    /// Every page: each live control answers a click at its own centre, no two overlap, and nothing
+    /// is drawn off the window — at the default size, the smallest and a large one.
+    #[test]
+    fn every_page_is_hittable_and_on_the_window() {
+        for tab in Tab::ALL {
+            for (w, h) in [(W, H), (MIN_W, MIN_H), (1400, 900)] {
+                let mut m = full();
+                m.tab = tab;
+                let widgets = layout(&m, w, h);
+                for wid in &widgets {
+                    assert!(wid.rect.x >= 0 && wid.rect.y >= 0, "{tab:?}: {:?} at {:?}", wid.kind, wid.rect);
+                    assert!(
+                        wid.rect.right() <= w && wid.rect.bottom() <= h,
+                        "{tab:?} {w}x{h}: {:?} off the window at {:?}",
+                        wid.kind,
+                        wid.rect
+                    );
+                }
+                let live: Vec<&Widget> = widgets.iter().filter(|x| x.id != Id::None).collect();
+                for wid in &live {
+                    let enabled = !matches!(
+                        wid.kind,
+                        Kind::Button { enabled: false, .. }
+                            | Kind::Tool { enabled: false }
+                            | Kind::Check { enabled: false, .. }
+                    );
+                    if enabled {
+                        let (cx, cy) = (wid.rect.x + wid.rect.w / 2, wid.rect.y + wid.rect.h / 2);
+                        assert_eq!(hit(&m, w, h, cx, cy), Some(wid.id), "{tab:?}: {:?} at {:?}", wid.id, wid.rect);
+                    }
+                }
+                for (i, a) in live.iter().enumerate() {
+                    for b in &live[i + 1..] {
+                        let overlap = a.rect.x < b.rect.right()
+                            && b.rect.x < a.rect.right()
+                            && a.rect.y < b.rect.bottom()
+                            && b.rect.y < a.rect.bottom();
+                        assert!(!overlap, "{tab:?}: {:?} overlaps {:?}", a.id, b.id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The outlined tool buttons answer clicks. They did not, before 0.2: `hit` only knew filled
+    /// buttons and checkboxes, so Analyse library, Import Music Center, Check FLACs and the
+    /// playlist folder's Choose… were drawn and dead.
+    #[test]
+    fn tool_buttons_answer_clicks() {
+        let mut m = ready();
+        m.playlists = Some("/lists".into());
+        for (tab, id) in [
+            (Tab::Sync, Id::PickPlaylists),
+            (Tab::Sync, Id::ClearPlaylists),
+            (Tab::SensMe, Id::Scan),
+            (Tab::SensMe, Id::Import),
+            (Tab::Check, Id::Check),
+            (Tab::Player, Id::ReadPlayer),
+        ] {
+            m.tab = tab;
+            let wid =
+                layout(&m, W, H).into_iter().find(|w| w.id == id).unwrap_or_else(|| panic!("{id:?} not on {tab:?}"));
+            assert_eq!(hit(&m, W, H, wid.rect.x + 5, wid.rect.y + 5), Some(id), "{id:?} on {tab:?} is dead");
+        }
+        assert_eq!(click(&mut m, Id::ReadPlayer), Some(Job::ReadPlayer));
+    }
+
+    /// Tabs switch pages, stay where they are whatever the counts say, and only Sync ever carries
+    /// the accent — nothing on the other pages writes to the player.
+    #[test]
+    fn tabs_switch_pages_and_only_sync_is_accented() {
+        let mut m = ready();
+        let before: Vec<Rect> =
+            layout(&m, W, H).iter().filter(|w| matches!(w.kind, Kind::Tab { .. })).map(|w| w.rect).collect();
+        assert_eq!(before.len(), Tab::ALL.len());
+        for tab in Tab::ALL {
+            let r = tab_rects(W).into_iter().find(|(t, _)| *t == tab).unwrap().1;
+            assert_eq!(hit(&m, W, H, r.x + r.w / 2, r.y + r.h / 2), Some(Id::Tab(tab)));
+            click(&mut m, Id::Tab(tab));
+            assert_eq!(m.tab, tab);
+            let accented =
+                layout(&m, W, H).into_iter().filter(|w| matches!(w.kind, Kind::Button { primary: true, .. })).count();
+            assert_eq!(accented, usize::from(tab == Tab::Sync), "{tab:?} has {accented} accented controls");
+        }
+        let mut f = full();
+        f.tab = Tab::Sync;
+        let after: Vec<Rect> =
+            layout(&f, W, H).iter().filter(|w| matches!(w.kind, Kind::Tab { .. })).map(|w| w.rect).collect();
+        assert_eq!(before, after, "a count appearing moved a tab");
+        // Choosing a theme is a click like any other, and starts nothing.
+        assert_eq!(click(&mut m, Id::Theme(ThemePref::Dark)), None);
+        assert_eq!(m.theme, ThemePref::Dark);
     }
 
     /// A clear button only exists when there is something to clear.

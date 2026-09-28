@@ -4,11 +4,22 @@ A PC companion for the Sony NW-A50-series Walkman and [Cinder](https://github.co
 copy a music library onto the player, keep likes and scrobbles in step, and give every track Sony's
 **SensMe** mood and tempo data — without touching the files on your PC.
 
-**Status: early rewrite.** Flint replaces the Python `Sony-sync` tool, which remains the working
-version until Flint reaches it. No release has been cut yet; `.github/workflows/release.yml` builds
-one from a `v*` tag — `flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside
-it, and `flint-linux-x64` — with SHA-256 sums inlined into the release page and a Sigstore build
-attestation for each file.
+**Status: usable, young.** [v0.1.0](https://github.com/superwilso/flint/releases/latest) is out:
+`flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside it, and
+`flint-linux-x64`, with SHA-256 sums on the release page and a Sigstore build attestation for each
+file. `main` carries the 0.2 window (below), not yet released. Flint replaces the Python `Sony-sync`
+tool. Nothing Flint does touches the files on your PC; everything it writes goes to the player.
+
+## Getting started
+
+1. Download `flint-windows-x64.exe` (and `sensme-helper-x86.exe`, if you want SensMe) from
+   [Releases](https://github.com/superwilso/flint/releases/latest) into one folder.
+2. Plug the Walkman in as a USB drive and run `flint-windows-x64.exe`. The window opens.
+3. **Sync** page: choose your music folder, then the player's drive (and its card, if it has one).
+4. Press **Show what would happen**. Nothing is written; the plan and the space it needs are shown.
+5. Press **Copy to the player**.
+
+The window remembers the folders for next time. Everything it does is also a command, below.
 
 ## SensMe, without the bloat
 
@@ -43,13 +54,28 @@ what is still missing, is in [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
 
 ## The window
 
-On Windows, `flint` with no arguments opens one:
+On Windows, `flint` with no arguments opens one. Seven pages, one tab each:
 
 ![Flint's window](docs/window.svg)
 
-Choose a music folder and the player's drive, press **Show what would happen** — nothing is written
-— and then **Copy to the player**. Copy is only ever offered for a plan you have already been
-shown, and changing any setting takes it away again until you look at the new one.
+| Page | What it answers |
+|---|---|
+| **Sync** | What would be copied, removed and tagged, and does it fit. Then the copy. |
+| **On the player** | What is on each drive, and whether Flint put it there (read from `flint-manifest.tsv`). |
+| **Check** | Which FLACs are not the lossless audio they claim to be, and why (below). |
+| **SensMe** | Analyse the library, or import what Music Center already analysed. |
+| **Likes & plays** | The plays in the player's `.scrobbler.log` and the songs liked on it. |
+| **Palettes** | The colour schemes for Cinder in `cinder_palettes/` on the player. |
+| **Settings** | Theme (Light, Dark or System), the folders, the analysis cache, Last.fm. |
+
+Only **Sync** writes to the player. The other pages read — "Read the player" reads — and nothing on
+them is orange.
+
+![The Check page](docs/window-check.svg)
+
+On **Sync**: choose a music folder and the player's drive, press **Show what would happen** —
+nothing is written — and then **Copy to the player**. Copy is only ever offered for a plan you have
+already been shown, and changing any setting takes it away again until you look at the new one.
 
 One control at a time is in Flint's orange, and it is always the next thing to do: the folder
 first, then the drive, then the plan, then the copy. Each destination carries a bar of its own
@@ -57,13 +83,14 @@ capacity — what is on it already in graphite, what this copy would add in oran
 still be free — because "will it fit" is the question a 16 GB player asks of a library that does
 not. The same orange marks the bytes about to be written, and nothing else.
 
-It follows Windows' own light/dark setting, and changes with it while it is open — the orange does
-not move between the two, because it means "the next thing to do" and a colour that changed with the
-theme could not carry a meaning:
+By default it follows Windows' own light/dark setting, and changes with it while it is open;
+Settings ▸ Theme picks Light or Dark instead. The orange does not move between the two, because it
+means "the next thing to do" and a colour that changed with the theme could not carry a meaning:
 
 ![Flint's window after dark](docs/window-dark.svg)
 
-`flint gui --dark` or `--light` overrides the system setting for one run.
+`flint gui --dark` or `--light` overrides the theme for one run. The folders, the two switches and
+the theme are kept in `gui.conf` beside the analysis cache.
 
 It draws its own window with no toolkit and no dependencies, the same approach as Cinder's
 installer, and everything it does goes through the same code the commands below do. The layout is
@@ -72,7 +99,12 @@ plain Rust with no Windows in it, which is why the pictures above can be drawn a
 ```
 flint gui-preview window.svg --state planned     # or fresh, ready, working, done
 flint gui-preview window-dark.svg --state planned --dark
+flint gui-preview check.svg --state check        # or player, sensme, likes, palettes, settings
 ```
+
+What the pages grow into next — a plan you can tick, conversion to fit a card, SensMe channel
+counts, sending plays and likes from the window, palettes checked before they are copied — is in
+Cinder's [`docs/PLAN_redesign_2026-09.md`](https://github.com/superwilso/Cinder/blob/main/docs/PLAN_redesign_2026-09.md).
 
 ## Copying a library to the player
 
@@ -187,6 +219,7 @@ retagged or moved file is not decoded twice.
 |---|---|
 | `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, the decode → engine pipeline, and reading analysis Music Center has already done |
 | `flint` | The command-line tool |
+| `flint-gui` | The window: a layout in plain Rust, painted by GDI on Windows or written out as SVG anywhere |
 | `sensme-helper` | A 32-bit Windows helper that loads `MMLib11.dll` (the engine is 32-bit, Flint is not) |
 
 ## Building

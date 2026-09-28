@@ -60,6 +60,13 @@ pub struct Theme {
     pub log_border: u32,
     pub log_text: u32,
     pub rule: u32,
+    /// A tab that is not the page on show, and the count beside a tab's name.
+    pub tab_text: u32,
+    pub tab_count: u32,
+    /// Something wrong with a file (LOSSY, DAMAGED), something worth a look, and all clear.
+    pub warn: u32,
+    pub caution: u32,
+    pub ok: u32,
 }
 
 impl Theme {
@@ -91,6 +98,11 @@ impl Theme {
             log_border: rgb(0x2A, 0x27, 0x27),
             log_text: rgb(0xCF, 0xCB, 0xC7),
             rule: rgb(0xDF, 0xDF, 0xE6),
+            tab_text: rgb(0xCF, 0xCB, 0xC7),
+            tab_count: rgb(0x8E, 0x88, 0x84),
+            warn: rgb(0xB3, 0x2E, 0x14),
+            caution: rgb(0xB3, 0x6B, 0x00),
+            ok: rgb(0x2E, 0x7D, 0x4F),
         }
     }
 
@@ -128,6 +140,11 @@ impl Theme {
             log_border: rgb(0x2A, 0x27, 0x25),
             log_text: rgb(0xCF, 0xCB, 0xC7),
             rule: rgb(0x30, 0x2C, 0x2A),
+            tab_text: rgb(0xCF, 0xCB, 0xC7),
+            tab_count: rgb(0x8E, 0x88, 0x84),
+            warn: rgb(0xFF, 0x8A, 0x6A),
+            caution: rgb(0xE8, 0xA8, 0x4A),
+            ok: rgb(0x6C, 0xC7, 0x95),
         }
     }
 }
@@ -244,6 +261,16 @@ pub fn elide_end(text: &str, face: Face, width: i32) -> String {
 }
 
 const CHECK_BOX: i32 = 16;
+
+fn tone_color(t: &Theme, tone: crate::Tone) -> u32 {
+    match tone {
+        crate::Tone::Plain => t.text,
+        crate::Tone::Dim => t.dim,
+        crate::Tone::Warn => t.warn,
+        crate::Tone::Caution => t.caution,
+        crate::Tone::Ok => t.ok,
+    }
+}
 
 /// Everything the window paints, in back-to-front order.
 pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
@@ -473,6 +500,80 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
                 face: Face::Mono,
                 align: Align::Left,
             }),
+            // The page on show is a tab in the PAGE's colour, so it reads as the top of the sheet
+            // below it; the others are text on the band.
+            Kind::Tab { active, count } => {
+                if *active {
+                    out.push(Cmd::Rect { rect: r, fill: Some(t.bg), border: None, radius: 5 });
+                }
+                let ink = if *active { t.text } else { t.tab_text };
+                if count.is_empty() {
+                    out.push(Cmd::Text {
+                        rect: r,
+                        text: wid.text.clone(),
+                        color: ink,
+                        face: Face::Strong,
+                        align: Align::Center,
+                    });
+                } else {
+                    // Label then count, centred as a pair.
+                    let lw = (wid.text.chars().count() as f32 * Face::Strong.advance()) as i32;
+                    let cw = (count.chars().count() as f32 * Face::Small.advance()) as i32;
+                    let x0 = r.x + (r.w - lw - 6 - cw).max(0) / 2;
+                    out.push(Cmd::Text {
+                        rect: Rect::new(x0, r.y, lw + 2, r.h),
+                        text: wid.text.clone(),
+                        color: ink,
+                        face: Face::Strong,
+                        align: Align::Left,
+                    });
+                    out.push(Cmd::Text {
+                        rect: Rect::new(x0 + lw + 6, r.y, cw + 4, r.h),
+                        text: count.clone(),
+                        color: if *active { t.dim } else { t.tab_count },
+                        face: Face::Small,
+                        align: Align::Left,
+                    });
+                }
+            }
+            Kind::Segment { on } => {
+                out.push(Cmd::Rect {
+                    rect: r,
+                    fill: Some(if *on { t.check } else { t.panel }),
+                    border: Some(if *on { t.check } else { t.button_border }),
+                    radius: 0,
+                });
+                out.push(Cmd::Text {
+                    rect: r,
+                    text: wid.text.clone(),
+                    color: if *on { t.panel } else { t.button_text },
+                    face: Face::Strong,
+                    align: Align::Center,
+                });
+            }
+            Kind::Stat { tone, .. } => out.push(Cmd::Text {
+                rect: r,
+                text: elide_end(&wid.text, Face::Figure, r.w),
+                color: tone_color(t, *tone),
+                face: Face::Figure,
+                align: Align::Left,
+            }),
+            Kind::Cell { tone, strong, mono } => {
+                let face = if *mono {
+                    Face::Mono
+                } else if *strong {
+                    Face::Strong
+                } else {
+                    Face::Body
+                };
+                out.push(Cmd::Text {
+                    rect: r,
+                    text: elide_end(&wid.text, face, r.w),
+                    color: tone_color(t, *tone),
+                    face,
+                    align: Align::Left,
+                });
+            }
         }
     }
     out
@@ -582,7 +683,8 @@ mod tests {
         }
         // …and every control really is refused, so the two agree.
         for wid in layout(&m, W, H) {
-            if wid.id == crate::Id::Stop || wid.id == crate::Id::None {
+            // Tabs stay live: looking at another page while a copy runs starts and stops nothing.
+            if wid.id == crate::Id::Stop || wid.id == crate::Id::None || matches!(wid.id, crate::Id::Tab(_)) {
                 continue;
             }
             let cx = wid.rect.x + wid.rect.w / 2;
@@ -662,13 +764,22 @@ mod tests {
     fn every_job_has_a_button() {
         let mut m = ready();
         m.planned = true;
-        let ids: Vec<Id> = layout(&m, W, H).into_iter().map(|w| w.id).collect();
+        // Across every page: since 0.2 the tools live on the pages they belong to.
+        let ids: Vec<Id> = crate::Tab::ALL
+            .iter()
+            .flat_map(|t| {
+                let mut on = m.clone();
+                on.tab = *t;
+                layout(&on, W, H).into_iter().map(|w| w.id).collect::<Vec<_>>()
+            })
+            .collect();
         for (id, job) in [
             (Id::Plan, Job::Plan),
             (Id::Apply, Job::Apply),
             (Id::Scan, Job::Scan),
             (Id::Import, Job::Import),
             (Id::Check, Job::Check),
+            (Id::ReadPlayer, Job::ReadPlayer),
         ] {
             assert!(ids.contains(&id), "{job:?} has no button");
             let mut m2 = m.clone();

@@ -2,7 +2,14 @@
 # render_release_notes.sh — build the GitHub release body, with the real checksums inlined.
 #
 #   tools/render_release_notes.sh <SHA256SUMS file> [output]     write the body (default stdout)
-#   tools/render_release_notes.sh --preview                      render with placeholder sums
+#   tools/render_release_notes.sh --preview [vX.Y.Z]             render with placeholder sums
+#
+# WHAT'S NEW comes from CHANGELOG.md: the section headed `## X.Y.Z` for the tag being released
+# (`$RELEASE_TAG`, else Actions' own `$GITHUB_REF_NAME`, else the --preview argument), dropped in at
+# the template's `{{CHANGES}}` line with its headings one level down. `tools/release.sh` rolls that
+# section out of Unreleased before it tags, so a release made with it always has one; a tag made
+# without it, whose version has no section, is refused rather than published with an empty
+# "What's new".
 #
 # The same file the release workflow runs, so `--preview` shows exactly what will be published.
 # That is the rule this pattern exists for: a document that is only ever rendered during a release
@@ -15,10 +22,15 @@ cd "$(dirname "$0")/.." || { echo "cannot reach the repo root" >&2; exit 2; }
 
 TEMPLATE=".github/release-notes.md"
 MARKER="{{SHA256SUMS}}"
+CHANGES_MARKER="{{CHANGES}}"
+TAG="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 
+PREVIEW=""
 if [ "${1:-}" = "--preview" ]; then
+    PREVIEW=1
+    [ -n "${2:-}" ] && TAG="$2"
     SUMS="$(mktemp)"
-    trap 'rm -f "$SUMS"' EXIT
+    SUMS_TMP="$SUMS"   # removed by the EXIT trap below
     for f in flint-windows-x64.exe sensme-helper-x86.exe flint-linux-x64; do
         printf '%s  %s  (placeholder — nothing built yet)\n' \
             "0000000000000000000000000000000000000000000000000000000000000000" "$f" >> "$SUMS"
@@ -42,15 +54,44 @@ grep -qF "$MARKER" "$TEMPLATE" || {
     exit 1
 }
 
+# The CHANGELOG section for this version, headings demoted one level so they sit under the
+# template's "What's new" heading. Leading and trailing blank lines are trimmed.
+CHANGES="$(mktemp)"
+trap 'rm -f "$CHANGES" ${SUMS_TMP:+"$SUMS_TMP"}' EXIT
+VER="${TAG#v}"; VER="${VER%%-*}"
+if grep -qF "$CHANGES_MARKER" "$TEMPLATE"; then
+    if [ -n "$VER" ] && grep -q "^## $VER\b" CHANGELOG.md; then
+        awk -v ver="$VER" '
+            $0 ~ "^## " ver "( |$)" { f = 1; next }
+            f && /^## / { exit }
+            f { sub(/^### /, "#### "); print }
+        ' CHANGELOG.md | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac > "$CHANGES"
+    fi
+    if [ ! -s "$CHANGES" ]; then
+        if [ -n "$PREVIEW" ]; then
+            echo "(CHANGELOG.md has no \`## ${VER:-X.Y.Z}\` section yet — tools/release.sh makes it)" > "$CHANGES"
+        else
+            echo "CHANGELOG.md has no '## ${VER:-?}' section for tag '${TAG:-?}' — run tools/release.sh, which" >&2
+            echo "rolls Unreleased into it, rather than publishing a release with nothing under What's new" >&2
+            exit 1
+        fi
+    fi
+fi
+
 render() {
     # Drop the HTML comment header: it is guidance for whoever edits the template, not for the
     # people reading the release. Everything from the first '## ' onward is the body.
-    awk -v sums="$SUMS" -v marker="$MARKER" '
+    awk -v sums="$SUMS" -v marker="$MARKER" -v changes="$CHANGES" -v cmarker="$CHANGES_MARKER" '
         !started && /^## / { started = 1 }
         !started { next }
         index($0, marker) {
             while ((getline line < sums) > 0) print line
             close(sums)
+            next
+        }
+        index($0, cmarker) {
+            while ((getline line < changes) > 0) print line
+            close(changes)
             next
         }
         { print }

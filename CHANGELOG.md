@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (0.2)
+## Unreleased
+
+## 0.2.0 — 2026-09-28
 
 ### The window has pages
 
@@ -43,6 +45,9 @@ the drive every time.
 - `flint gui-preview --state` draws every page: `player`, `check`, `sensme`, `likes`, `palettes`,
   `settings`, alongside the Sync states.
 - CI draws every state, not only the five Sync ones.
+- **`tools/release.sh vX.Y.Z` cuts a release**: one run prepares it (version, changelog, window
+  pictures, every gate), you commit, and a second run pushes, tags, waits for the workflow and
+  prints the release page. The release page's *What's new* is now the version's CHANGELOG section.
 - Tests cover every page at three window sizes: every control answers at its centre, none overlap,
   nothing is drawn off the window, and only Sync carries the accent.
 

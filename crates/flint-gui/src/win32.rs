@@ -394,7 +394,7 @@ impl State {
     fn settings(&mut self, job: Job) -> Option<Settings> {
         let library = match (&self.model.library, job) {
             (Some(l), _) => l.clone(),
-            (None, Job::ReadPlayer) => PathBuf::new(),
+            (None, Job::ReadPlayer | Job::CheckPalettes | Job::SendPalettes) => PathBuf::new(),
             (None, _) => return None,
         };
         let mut s = Settings::new(library);
@@ -402,6 +402,8 @@ impl State {
         s.playlists = self.model.playlists.clone();
         s.sensme = self.model.sensme;
         s.extras = self.model.extras;
+        s.internal = self.model.volumes[0].clone();
+        s.palette_dir = self.model.palette_dir.clone();
         if let Some(dir) = &self.settings_cache {
             s.cache = dir.clone();
         }
@@ -612,6 +614,7 @@ fn drain(state: &mut State) {
             Update::Finding(row) => state.model.findings.push(row),
             Update::Checked(n) => state.model.checked = Some(n),
             Update::Player(facts) => state.model.player = *facts,
+            Update::Palettes(rows) => state.model.palette_rows = rows,
         }
     }
     // The log is unbounded otherwise: a library of 40,000 tracks would hold 40,000 strings for the
@@ -715,7 +718,9 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                         let pressed = state.down.take().filter(|d| Some(*d) == over);
                         if let Some(id) = pressed {
                             match id {
-                                Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists => to_pick = Some(id),
+                                Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists | Id::PickPalettes => {
+                                    to_pick = Some(id)
+                                }
                                 Id::Stop => stop = true,
                                 _ => {
                                     let theme_before = state.model.theme;
@@ -753,6 +758,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                 let title = match id {
                     Id::PickLibrary => "Where is your music?",
                     Id::PickPlaylists => "Where are your playlists?",
+                    Id::PickPalettes => "Where are your .palette files?",
                     _ => "Which drive is the player?",
                 };
                 if let Some(path) = pick_folder(hwnd, title) {

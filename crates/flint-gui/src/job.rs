@@ -40,6 +40,11 @@ pub struct Settings {
     pub jobs: usize,
     /// Where Music Center keeps its data, when it is not where it usually is.
     pub music_center: Option<PathBuf>,
+    /// The player's internal memory, by position — `volumes` loses which is which, and Cinder
+    /// reads its palettes from the internal memory only.
+    pub internal: Option<PathBuf>,
+    /// The folder of `.palette` files on this PC.
+    pub palette_dir: Option<PathBuf>,
 }
 
 impl Settings {
@@ -54,6 +59,8 @@ impl Settings {
             cache: cache::default_dir(),
             jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
             music_center: None,
+            internal: None,
+            palette_dir: None,
         }
     }
 }
@@ -83,6 +90,8 @@ pub enum Update {
     Checked(usize),
     /// What "Read the player" found.
     Player(Box<crate::PlayerFacts>),
+    /// The palette check's rows.
+    Palettes(Vec<flint_core::palette::Row>),
 }
 
 /// Run `job`. Returns the last word for the status line, or the reason it stopped.
@@ -97,7 +106,76 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::Import => import_job(s, emit),
         Job::Check => check_job(s, cancel, emit),
         Job::ReadPlayer => read_player_job(s, emit),
+        Job::CheckPalettes => palettes_job(s, false, emit),
+        Job::SendPalettes => palettes_job(s, true, emit),
     }
+}
+
+/// The `.palette` files in `dir`, as `(file name, contents)`. A file too big to be a palette, or
+/// one that cannot be read as text, is logged and left out — the player would skip it too.
+fn read_palettes(dir: &Path, emit: &mut dyn FnMut(Update)) -> Vec<(String, String)> {
+    use flint_core::palette::{palette_stem, MAX_BYTES};
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if palette_stem(&name).is_none() {
+            continue;
+        }
+        if e.metadata().map(|m| m.len() > MAX_BYTES).unwrap_or(true) {
+            emit(Update::Log(format!("{name}: too large to be a palette")));
+            continue;
+        }
+        match std::fs::read_to_string(e.path()) {
+            Ok(body) => out.push((name, body)),
+            Err(err) => emit(Update::Log(format!("{name}: {err}"))),
+        }
+    }
+    out.sort();
+    out
+}
+
+/// CHECK and SEND are one function, like PLAN and COPY: what Send copies is what the check showed.
+fn palettes_job(s: &Settings, send: bool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::palette::{compare, to_send, State, DIR_NAME};
+    let pc = s.palette_dir.as_deref().map(|d| read_palettes(d, emit)).unwrap_or_default();
+    let player_dir = s.internal.as_ref().map(|v| v.join(DIR_NAME));
+    let player = player_dir.as_deref().map(|d| read_palettes(d, emit)).unwrap_or_default();
+    let mut rows = compare(&pc, &player);
+    let mut sent = 0;
+    if send {
+        let dir = player_dir.ok_or("choose the player's internal memory on the Sync page first")?;
+        let src = s.palette_dir.as_ref().ok_or("choose the palettes folder first")?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for file in to_send(&rows) {
+            let body = std::fs::read(src.join(file)).map_err(|e| format!("{file}: {e}"))?;
+            // Lowercase on the player: the id is the lowercased stem, and FAT will keep whatever
+            // case is written — one spelling avoids two files the player treats as one.
+            let dest = dir.join(file.to_ascii_lowercase());
+            let tmp = dest.with_extension("palette.tmp");
+            std::fs::write(&tmp, &body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+            std::fs::rename(&tmp, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+            emit(Update::Log(format!("sent {file}")));
+            sent += 1;
+        }
+        let player = read_palettes(&dir, emit);
+        rows = compare(&pc, &player);
+    }
+    let count = |st: State| rows.iter().filter(|r| r.state == st).count();
+    let (new, changed, refused) = (count(State::New), count(State::Changed), count(State::Refused));
+    emit(Update::Palettes(rows));
+    let mut word =
+        if send { format!("sent {sent} palette{}", if sent == 1 { "" } else { "s" }) } else { String::new() };
+    if !send || new + changed + refused > 0 {
+        let parts: Vec<String> = [(new, "new"), (changed, "changed"), (refused, "refused")]
+            .iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, w)| format!("{n} {w}"))
+            .collect();
+        let tail = if parts.is_empty() { "all on the player".to_string() } else { parts.join(", ") };
+        word = if word.is_empty() { format!("palettes: {tail}") } else { format!("{word}; {tail}") };
+    }
+    Ok(word)
 }
 
 fn stopped(cancel: &AtomicBool) -> bool {
@@ -591,7 +669,8 @@ mod tests {
             Update::Say(l) | Update::Log(l) => lines.push(l),
             Update::Library(f) => library_facts = Some(f),
             Update::Volume(i, f) => volume_facts = Some((i, f)),
-            Update::Progress(_) | Update::Finding(_) | Update::Checked(_) | Update::Player(_) => {}
+            Update::Progress(_) | Update::Finding(_) | Update::Checked(_) | Update::Player(_) | Update::Palettes(_) => {
+            }
         })
         .unwrap();
         assert!(planned, "a plan that shows something must enable COPY");
@@ -730,6 +809,64 @@ mod tests {
         assert!(word.contains("2 albums"), "{word}");
         assert_eq!(walk(&vol), before, "reading the player wrote to it");
         let _ = fs::remove_dir_all(&vol);
+    }
+
+    /// CHECK writes nothing. SEND copies what the check called new or changed — lowercased, through
+    /// a temporary name, never a refused file — and the check that follows finds it on the player.
+    #[test]
+    fn check_writes_nothing_and_send_copies_what_the_check_showed() {
+        use flint_core::palette::{State, DIR_NAME};
+        const SLATE: &str = "name = Slate\nday.bg = #0e1116\nday.panel = #141820\nday.line = #232a35\n\
+            day.ink = #e6ebf2\nday.dim = #8d97a5\nday.faint = #58616e\nnight.bg = #000000\n\
+            night.panel = #0a0c10\nnight.line = #151a21\nnight.ink = #8a93a0\nnight.dim = #57606c\n\
+            night.faint = #373d46\n";
+        let root = tmp("palettes");
+        let (pc, vol) = (root.join("pc"), root.join("player"));
+        fs::create_dir_all(&pc).unwrap();
+        fs::create_dir_all(&vol).unwrap();
+        fs::write(pc.join("Slate.palette"), SLATE).unwrap();
+        fs::write(pc.join("neon.palette"), "day.ink = #0e0d0c\n").unwrap();
+        let mut s = Settings::new(PathBuf::new());
+        s.internal = Some(vol.clone());
+        s.palette_dir = Some(pc.clone());
+        let states = |rows: &[flint_core::palette::Row]| -> Vec<(String, State)> {
+            rows.iter().map(|r| (r.name.clone(), r.state)).collect()
+        };
+
+        let mut rows = Vec::new();
+        let word = run(Job::CheckPalettes, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::Palettes(r) = u {
+                rows = r;
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            states(&rows),
+            vec![("Cinder".into(), State::BuiltIn), ("neon".into(), State::Refused), ("Slate".into(), State::New)]
+        );
+        assert_eq!(word, "palettes: 1 new, 1 refused");
+        assert!(!vol.join(DIR_NAME).exists(), "CHECK wrote to the player");
+
+        let word = run(Job::SendPalettes, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::Palettes(r) = u {
+                rows = r;
+            }
+        })
+        .unwrap();
+        assert_eq!(word, "sent 1 palette; 1 refused");
+        let mut on_player: Vec<String> = fs::read_dir(vol.join(DIR_NAME))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into())
+            .collect();
+        on_player.sort();
+        assert_eq!(on_player, vec!["slate.palette"], "one lowercased copy, no temporary, no refused file");
+        assert_eq!(states(&rows)[2], ("Slate".into(), State::On), "the rows after SEND are read back from the player");
+
+        s.internal = None;
+        let err = run(Job::SendPalettes, &s, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        assert!(err.contains("internal memory"), "{err}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn walk(dir: &Path) -> Vec<(PathBuf, u64)> {

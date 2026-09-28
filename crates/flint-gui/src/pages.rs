@@ -2,9 +2,9 @@
 //!
 //! Each page is one question about the library or the player, answered from something Flint
 //! already reads: the check store, the manifests, the scrobble log, the likes file, the palette
-//! folder. Nothing on these pages writes to the player — "Read the player" only reads — so none of
-//! them carries the accent. The accent on this window means bytes about to be written, and those
-//! only ever come from Sync.
+//! folder. Nothing on these pages writes MUSIC to the player — "Read the player" only reads, and
+//! Palettes ▸ Send copies a few small `.palette` files — so none of them carries the accent. The
+//! accent on this window means music about to be written, and that only ever comes from Sync.
 //!
 //! Same rule as the rest of the window: this is the only place that knows where a page's widgets
 //! are, and the paint and the hit test both read it.
@@ -471,6 +471,8 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
 // ── Palettes ───────────────────────────────────────────────────────────────────────────────────
 
 fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) {
+    use flint_core::palette::{to_send, State};
+    let busy = m.phase == Phase::Working;
     heading(out, PAD, y, "Palettes");
     y += 22;
     hint(
@@ -478,7 +480,7 @@ fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget
         PAD,
         y,
         inner,
-        "Colour schemes for Cinder: .palette files in cinder_palettes at the top of the player's drive.",
+        "Colour schemes for Cinder. Each .palette file is checked with the player's own readability rules before it is sent.",
     );
     y += 20;
     hint(
@@ -486,38 +488,111 @@ fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget
         PAD,
         y,
         inner,
-        "Cinder checks each one as it loads it, and refuses any it could not draw legibly by day and by night.",
+        "Cinder reads them from cinder_palettes on the player's internal memory, and refuses any it could not draw legibly.",
     );
     y += 28;
-    let have_volume = m.volumes.iter().any(Option::is_some);
-    let note = if have_volume { "" } else { "Choose the player on the Sync page first." };
-    y = action(out, m, y, inner, Id::ReadPlayer, "Read the player", have_volume, note) + 16;
-    if !m.player.read {
+
+    // The folder on this PC.
+    out.push(w(Id::None, Rect::new(PAD, y + 5, 170, 20), Kind::Label, "On this PC"));
+    let (text, ph) = match &m.palette_dir {
+        Some(p) => (p.display().to_string(), false),
+        None => ("No folder chosen".to_string(), true),
+    };
+    out.push(w(
+        Id::None,
+        Rect::new(VALUE_X, y + 3, inner - (VALUE_X - PAD) - 110, 22),
+        Kind::Value { placeholder: ph },
+        text,
+    ));
+    out.push(w(
+        Id::PickPalettes,
+        Rect::new(PAD + inner - 96, y, 96, 30),
+        Kind::Button { primary: false, enabled: !busy },
+        "Choose…",
+    ));
+    y += 42;
+
+    // Check, then Send. Outlined like every tool off the Sync page: Send writes a few small files
+    // into cinder_palettes, never music, and the accent on this window stays with the music copy.
+    let n = to_send(&m.palette_rows).len();
+    let have_internal = m.volumes[0].is_some();
+    let can_check = m.palette_dir.is_some() || have_internal;
+    let idle = m.phase == Phase::Idle;
+    out.push(w(Id::CheckPalettes, Rect::new(PAD, y, 120, 30), Kind::Tool { enabled: can_check && idle }, "Check"));
+    let send_label = match n {
+        0 => "Send to the player".to_string(),
+        1 => "Send 1 to the player".to_string(),
+        n => format!("Send {n} to the player"),
+    };
+    let sw = send_label.chars().count() as i32 * 8 + 36;
+    out.push(w(
+        Id::SendPalettes,
+        Rect::new(PAD + 134, y, sw, 30),
+        Kind::Tool { enabled: n > 0 && have_internal && idle },
+        send_label,
+    ));
+    let note = if !have_internal {
+        "Choose the player's internal memory on the Sync page to compare and send."
+    } else if m.palette_rows.is_empty() {
+        "Check compares this folder with what the player holds. It writes nothing."
+    } else {
+        ""
+    };
+    if !note.is_empty() {
+        let nx = PAD + 134 + sw + 14;
+        out.push(w(Id::None, Rect::new(nx, y + 6, (PAD + inner - nx).max(40), 18), Kind::Hint, note));
+    }
+    y += 46;
+    if m.palette_rows.is_empty() {
         return;
     }
-    if m.player.palettes.is_empty() {
-        hint(
-            out,
-            PAD,
-            y,
-            inner,
-            "No palettes on the player. Copy .palette files into cinder_palettes at the top of the drive.",
-        );
-        return;
+
+    // The table: name · colours · state · why.
+    const ROW_H: i32 = 30;
+    let cols = [("Palette", 180), ("Colours", 130), ("On the player", 150)];
+    let why_w = inner - cols.iter().map(|c| c.1).sum::<i32>();
+    out.push(w(Id::None, Rect::new(PAD, y, inner, 30), Kind::Card { filled: true }, ""));
+    let mut cx = PAD + 12;
+    for (title, cw) in cols.iter().chain(std::iter::once(&("", why_w))) {
+        out.push(w(Id::None, Rect::new(cx, y + 6, cw - 12, 18), Kind::Label, *title));
+        cx += cw;
     }
-    let rows: Vec<Vec<(String, Tone, bool)>> = m
-        .player
-        .palettes
-        .iter()
-        .map(|p| {
-            vec![
-                (p.name.clone(), Tone::Plain, true),
-                (drive(m, p.volume), Tone::Dim, false),
-                (format!("{} bytes", thousands(p.bytes as usize)), Tone::Dim, false),
-            ]
-        })
-        .collect();
-    table(out, PAD, y, inner, bottom, &[("Palette", 400), ("Drive", 120), ("Size", 0)], &rows);
+    let mut ry = y + 36;
+    let mut shown = 0;
+    for r in &m.palette_rows {
+        if ry + ROW_H > bottom {
+            break;
+        }
+        out.push(w(Id::None, Rect::new(PAD, ry - 2, inner, 1), Kind::Rule, ""));
+        let mut cx = PAD + 12;
+        out.push(w(
+            Id::None,
+            Rect::new(cx, ry + 5, cols[0].1 - 16, 20),
+            cell(Tone::Plain, true, false),
+            r.name.clone(),
+        ));
+        cx += cols[0].1;
+        if let Some(cells) = r.cells {
+            out.push(w(Id::None, Rect::new(cx, ry + 6, 100, 16), Kind::Swatch(cells), ""));
+        }
+        cx += cols[1].1;
+        let tone = match r.state {
+            State::Refused => Tone::Warn,
+            State::New | State::Changed => Tone::Plain,
+            State::On | State::BuiltIn => Tone::Ok,
+            State::PlayerOnly => Tone::Dim,
+        };
+        out.push(w(Id::None, Rect::new(cx, ry + 5, cols[2].1 - 16, 20), cell(tone, false, true), r.state.word()));
+        cx += cols[2].1;
+        let why = if r.why.is_empty() { r.file.clone() } else { r.why.clone() };
+        let wt = if r.why.is_empty() { Tone::Dim } else { Tone::Warn };
+        out.push(w(Id::None, Rect::new(cx, ry + 5, (why_w - 16).max(10), 20), cell(wt, false, false), why));
+        ry += ROW_H;
+        shown += 1;
+    }
+    if shown < m.palette_rows.len() && ry + 18 <= bottom + 4 {
+        hint(out, PAD + 12, ry + 2, inner - 24, &format!("…and {} more", thousands(m.palette_rows.len() - shown)));
+    }
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────────────────────────

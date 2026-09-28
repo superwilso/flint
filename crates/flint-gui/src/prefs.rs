@@ -33,6 +33,7 @@ pub fn render(m: &Model) -> String {
     put("volume0", &m.volumes[0]);
     put("volume1", &m.volumes[1]);
     put("playlists", &m.playlists);
+    put("palette_dir", &m.palette_dir);
     out.push_str(&format!("sensme={}\n", u8::from(m.sensme)));
     out.push_str(&format!("extras={}\n", u8::from(m.extras)));
     out.push_str(&format!("theme={}\n", m.theme.word()));
@@ -55,6 +56,7 @@ pub fn apply(m: &mut Model, body: &str) {
             "volume0" => m.volumes[0] = path(),
             "volume1" => m.volumes[1] = path(),
             "playlists" => m.playlists = path(),
+            "palette_dir" => m.palette_dir = path(),
             "sensme" => m.sensme = v != "0",
             "extras" => m.extras = v != "0",
             "theme" => m.theme = ThemePref::from_word(v),

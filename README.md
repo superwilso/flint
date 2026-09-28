@@ -65,11 +65,15 @@ On Windows, `flint` with no arguments opens one. Seven pages, one tab each:
 | **Check** | Which FLACs are not the lossless audio they claim to be, and why (below). |
 | **SensMe** | Analyse the library, or import what Music Center already analysed. |
 | **Likes & plays** | The plays in the player's `.scrobbler.log` and the songs liked on it. |
-| **Palettes** | The colour schemes for Cinder in `cinder_palettes/` on the player. |
+| **Palettes** | Which of your colour schemes for Cinder the player would accept, and why not. Then Send. |
 | **Settings** | Theme (Light, Dark or System), the folders, the analysis cache, Last.fm. |
 
-Only **Sync** writes to the player. The other pages read — "Read the player" reads — and nothing on
-them is orange.
+Only **Sync** writes music to the player, and only Sync has anything orange on it. The other pages
+read — "Read the player" reads — except **Palettes ▸ Send**, which copies the few small `.palette`
+files its check passed into `cinder_palettes/`. The check uses Cinder's own contrast rules, so a
+palette the player would refuse is refused on the PC, with the reason, before it is ever copied.
+
+![The Palettes page](docs/window-palettes.svg)
 
 ![The Check page](docs/window-check.svg)
 
@@ -103,7 +107,7 @@ flint gui-preview check.svg --state check        # or player, sensme, likes, pal
 ```
 
 What the pages grow into next — a plan you can tick, conversion to fit a card, SensMe channel
-counts, sending plays and likes from the window, palettes checked before they are copied — is in
+counts, sending plays and likes from the window — is in
 Cinder's [`docs/PLAN_redesign_2026-09.md`](https://github.com/superwilso/Cinder/blob/main/docs/PLAN_redesign_2026-09.md).
 
 ## Copying a library to the player

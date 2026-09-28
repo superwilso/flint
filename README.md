@@ -4,7 +4,7 @@ A PC companion for the Sony NW-A50-series Walkman and [Cinder](https://github.co
 copy a music library onto the player, keep likes and scrobbles in step, and give every track Sony's
 **SensMe** mood and tempo data — without touching the files on your PC.
 
-**Status: usable, young.** [v0.2.0](https://github.com/superwilso/flint/releases/latest) is out:
+**Status: usable, young.** [v0.2.1](https://github.com/superwilso/flint/releases/latest) is out:
 `flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside it, and
 `flint-linux-x64`, with SHA-256 sums on the release page and a Sigstore build attestation for each
 file. `main` can be ahead of it: [`CHANGELOG.md`](CHANGELOG.md)'s *Unreleased* section says by

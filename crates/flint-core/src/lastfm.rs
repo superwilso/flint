@@ -27,6 +27,11 @@ use crate::scrobblelog::Entry;
 use crate::xml::{self, Node};
 
 pub const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
+/// Where a person makes the API key and secret Flint needs. Last.fm gives every application its
+/// own; Flint is open source, so it cannot ship one without publishing the secret with it.
+pub const CREATE_KEY_URL: &str = "https://www.last.fm/api/account/create";
+/// `auth.getSession`'s answer while the person has not pressed "Yes, allow access" yet.
+pub const NOT_AUTHORISED_YET: &str = "14";
 /// Last.fm asks for no more than five requests a second, averaged. Loves are one call each, so a
 /// first push of 300 tracks takes about a minute — that is the API's floor, not this client's.
 const MIN_INTERVAL: Duration = Duration::from_millis(220);
@@ -73,13 +78,23 @@ impl Credentials {
 
     /// Where the file lives: beside the scan cache, so everything Flint keeps is in one directory.
     pub fn path() -> std::path::PathBuf {
-        crate::cache::default_dir().join("lastfm.conf")
+        Credentials::path_in(&crate::cache::default_dir())
+    }
+
+    /// The file in `dir` — the window passes its cache folder, which is the same place unless a
+    /// test moved it.
+    pub fn path_in(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join("lastfm.conf")
     }
 
     /// The file, then the environment on top — the same four names the Python tool used, so an
     /// existing `.env` still works if it is exported.
     pub fn load() -> Credentials {
-        let mut creds = Credentials::read(&Credentials::path()).unwrap_or_default();
+        Credentials::load_in(&crate::cache::default_dir())
+    }
+
+    pub fn load_in(dir: &std::path::Path) -> Credentials {
+        let mut creds = Credentials::read(&Credentials::path_in(dir)).unwrap_or_default();
         for (name, field) in [
             ("LASTFM_API_KEY", &mut creds.api_key),
             ("LASTFM_API_SECRET", &mut creds.api_secret),
@@ -132,7 +147,11 @@ impl Credentials {
 
     /// Write it out, owner-readable only where the platform has such a thing.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path = Credentials::path();
+        self.save_in(&crate::cache::default_dir())
+    }
+
+    pub fn save_in(&self, dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+        let path = Credentials::path_in(dir);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -304,6 +323,33 @@ impl Client {
             Signing::WithoutSession,
             true,
         )?;
+        self.take_session(&root)
+    }
+
+    /// The first step of signing in through the browser: a token for [`auth_url`]. It is good for
+    /// an hour and for one session.
+    pub fn token(&mut self) -> Result<String, Error> {
+        let root = self.call(vec![("method".into(), "auth.getToken".into())], Signing::WithoutSession, false)?;
+        let token = root.text_at("token");
+        if token.is_empty() {
+            return Err(Error::Transport("Last.fm sent no token".into()));
+        }
+        Ok(token)
+    }
+
+    /// The last step: once the person has allowed access on [`auth_url`]'s page, the token turns
+    /// into a session key. Before that it fails with [`NOT_AUTHORISED_YET`], which is the answer to
+    /// keep asking on.
+    pub fn session_from_token(&mut self, token: &str) -> Result<(String, String), Error> {
+        let root = self.call(
+            vec![("method".into(), "auth.getSession".into()), ("token".into(), token.into())],
+            Signing::WithoutSession,
+            false,
+        )?;
+        self.take_session(&root)
+    }
+
+    fn take_session(&mut self, root: &Node) -> Result<(String, String), Error> {
         let session = root.child("session").ok_or_else(|| Error::Transport("no session came back".into()))?;
         let name = session.text_at("name");
         let key = session.text_at("key");
@@ -434,6 +480,17 @@ impl Client {
     }
 }
 
+/// The page where the person lets `api_key` act for them — step two of signing in through the
+/// browser, between [`Client::token`] and [`Client::session_from_token`]. No password passes
+/// through Flint this way.
+pub fn auth_url(api_key: &str, token: &str) -> String {
+    format!(
+        "https://www.last.fm/api/auth/?api_key={}&token={}",
+        crate::http::percent_encode(api_key),
+        crate::http::percent_encode(token)
+    )
+}
+
 fn back_off(attempt: u32) {
     std::thread::sleep(Duration::from_secs(1u64 << attempt));
 }
@@ -481,6 +538,25 @@ mod tests {
         assert_eq!(Credentials::parse(&rendered), creds);
         // A file with comments and blank lines still reads.
         assert_eq!(Credentials::parse("# note\n\napi_key = k \n").api_key, "k");
+    }
+
+    #[test]
+    fn the_sign_in_page_carries_the_key_and_the_token() {
+        assert_eq!(
+            super::auth_url("0123abcd", "tok en"),
+            "https://www.last.fm/api/auth/?api_key=0123abcd&token=tok%20en"
+        );
+    }
+
+    #[test]
+    fn credentials_live_in_the_folder_they_are_given() {
+        let dir = std::env::temp_dir().join(format!("flint-lastfm-creds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let creds = Credentials { api_key: "k".into(), api_secret: "s".into(), ..Credentials::default() };
+        let path = creds.save_in(&dir).unwrap();
+        assert_eq!(path, Credentials::path_in(&dir));
+        assert_eq!(Credentials::read(&path).unwrap(), creds);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

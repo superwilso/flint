@@ -12,10 +12,15 @@
 //! second source of truth for where everything is. The installer is a wizard of stock controls and
 //! wants the theme; this is one dense page whose layout must match its hit test exactly.
 //!
-//! **The worker thread.** A sync takes minutes. It runs on its own thread, owns nothing the UI
-//! thread touches, and posts [`WM_JOB`] to the window for every update; the update itself travels
-//! through a mutex-guarded queue. The UI thread never blocks on the worker, so the window keeps
-//! painting and STOP keeps answering while gigabytes move.
+//! **The worker threads.** A sync takes minutes and an analysis hours. Each job runs on its own
+//! thread, owns nothing the UI thread touches, and posts [`WM_JOB`] to the window for every update;
+//! the update itself travels through that job's mutex-guarded queue. The UI thread never blocks on
+//! a worker, so the window keeps painting and STOP keeps answering while gigabytes move. Jobs that
+//! share nothing run at once — which ones may is [`crate::Hold`]'s business, not this file's.
+//!
+//! **Typing.** Settings takes a Last.fm key and Check a filter, so the window has text fields —
+//! also owner-drawn. `WM_CHAR` hands keys to [`crate::key`], Ctrl+V reads the clipboard into
+//! [`crate::paste`], and that is all the editing there is: type, delete, paste, clear.
 
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -24,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::job::{self, Settings, Update};
 use crate::paint::{b_of, commands, g_of, r_of, Align, Cmd, Face, Theme};
-use crate::{click, hit, layout, set_path, Id, Job, Model, Phase, ThemePref, H, MIN_H, MIN_W, W};
+use crate::{click, hit, layout, set_path, Id, Job, Key, Model, ThemePref, H, MIN_H, MIN_W, W};
 
 // ── the Win32 surface, declared rather than depended on ────────────────────────────────────────
 
@@ -185,6 +190,22 @@ extern "system" {
 extern "system" {
     fn SHBrowseForFolderW(bi: *mut BrowseInfo) -> *mut c_void;
     fn SHGetPathFromIDListW(list: *mut c_void, path: *mut u16) -> i32;
+    fn ShellExecuteW(
+        hwnd: Hwnd,
+        op: *const u16,
+        file: *const u16,
+        params: *const u16,
+        dir: *const u16,
+        show: i32,
+    ) -> *mut c_void;
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn OpenClipboard(hwnd: Hwnd) -> i32;
+    fn CloseClipboard() -> i32;
+    fn GetClipboardData(format: u32) -> *mut c_void;
+    fn DestroyWindow(hwnd: Hwnd) -> i32;
 }
 
 #[link(name = "ole32")]
@@ -213,6 +234,8 @@ extern "system" {
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    fn GlobalLock(mem: *mut c_void) -> *mut c_void;
+    fn GlobalUnlock(mem: *mut c_void) -> i32;
 }
 
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
@@ -227,10 +250,13 @@ const WM_CLOSE: u32 = 0x0010;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
-/// The worker thread has put something in the queue.
+const WM_CHAR: u32 = 0x0102;
+/// A worker thread has put something in its queue.
 const WM_JOB: u32 = 0x8000 + 1;
-/// The worker thread has finished.
+/// A worker thread has finished. `wparam` is its job's [`Job::code`].
 const WM_JOB_DONE: u32 = 0x8000 + 2;
+const CF_UNICODETEXT: u32 = 13;
+const SW_SHOWNORMAL: i32 = 1;
 
 const SW_SHOW: i32 = 5;
 const SRCCOPY: u32 = 0x00CC_0020;
@@ -352,8 +378,8 @@ fn set_caption_dark(hwnd: Hwnd, dark: bool) {
 
 // ── the window's state ─────────────────────────────────────────────────────────────────────────
 
-/// Shared between the UI thread and the worker. The worker only ever pushes to `queue` and sets
-/// `done`; everything else is the UI thread's.
+/// Shared between the UI thread and one worker. The worker only ever pushes to `queue` and sets
+/// `result`; everything else is the UI thread's.
 struct Shared {
     queue: Mutex<Vec<Update>>,
     /// The worker's last word: `Ok(summary)` or `Err(reason)`.
@@ -373,9 +399,13 @@ struct State {
     hot: Option<Id>,
     /// What the pointer went down on, so a press that slides off does not fire.
     down: Option<Id>,
-    shared: Arc<Shared>,
+    /// One per running job.
+    workers: Vec<(Job, Arc<Shared>)>,
     fonts: Vec<(Face, Hgdi)>,
     settings_cache: Option<PathBuf>,
+    /// Close was pressed while jobs ran: they were asked to stop, and the window closes when the
+    /// last one has.
+    closing: bool,
 }
 
 impl State {
@@ -389,12 +419,12 @@ impl State {
         (v as i64 * 96 / self.dpi as i64) as i32
     }
 
-    /// What a job needs. `None` when it needs a library and there is none; "Read the player" is
-    /// the one job that does not, so it runs with an empty library path it never reads.
+    /// What a job needs. `None` when it needs a library and there is none; the jobs that never
+    /// read the library run with an empty path they never look at.
     fn settings(&mut self, job: Job) -> Option<Settings> {
         let library = match (&self.model.library, job) {
             (Some(l), _) => l.clone(),
-            (None, Job::ReadPlayer | Job::CheckPalettes | Job::SendPalettes) => PathBuf::new(),
+            (None, j) if !j.reads_library() && j != Job::Import => PathBuf::new(),
             (None, _) => return None,
         };
         let mut s = Settings::new(library);
@@ -404,6 +434,8 @@ impl State {
         s.extras = self.model.extras;
         s.internal = self.model.volumes[0].clone();
         s.palette_dir = self.model.palette_dir.clone();
+        s.api_key = self.model.key_input.clone();
+        s.api_secret = self.model.secret_input.clone();
         if let Some(dir) = &self.settings_cache {
             s.cache = dir.clone();
         }
@@ -577,51 +609,158 @@ unsafe fn pick_folder(owner: Hwnd, title: &str) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf16_lossy(&path[..len])))
 }
 
-// ── the worker ─────────────────────────────────────────────────────────────────────────────────
+// ── the workers ────────────────────────────────────────────────────────────────────────────
 
-fn start(hwnd: Hwnd, job: Job, settings: Settings, shared: Arc<Shared>) {
-    shared.cancel.store(false, Ordering::Relaxed);
-    shared.queue.lock().unwrap().clear();
-    *shared.result.lock().unwrap() = None;
+fn start(hwnd: Hwnd, job: Job, settings: Settings) -> Arc<Shared> {
+    let shared =
+        Arc::new(Shared { queue: Mutex::new(Vec::new()), result: Mutex::new(None), cancel: AtomicBool::new(false) });
+    let theirs = shared.clone();
     // `Hwnd` is a raw pointer, which is not `Send`; the handle itself is fine to use from another
     // thread (that is what `PostMessageW` is for), so it crosses as an integer.
     let hwnd = hwnd as usize;
     std::thread::spawn(move || {
-        let out = job::run(job, &settings, &shared.cancel, &mut |u| {
-            shared.queue.lock().unwrap().push(u);
+        let out = job::run(job, &settings, &theirs.cancel, &mut |u| {
+            theirs.queue.lock().unwrap().push(u);
             unsafe { PostMessageW(hwnd as Hwnd, WM_JOB, 0, 0) };
         });
-        *shared.result.lock().unwrap() = Some(out);
-        unsafe { PostMessageW(hwnd as Hwnd, WM_JOB_DONE, 0, 0) };
+        *theirs.result.lock().unwrap() = Some(out);
+        unsafe { PostMessageW(hwnd as Hwnd, WM_JOB_DONE, job.code(), 0) };
     });
+    shared
 }
 
-/// Drain everything the worker has queued into the model. Called on the UI thread only.
-fn drain(state: &mut State) {
-    let updates: Vec<Update> = std::mem::take(&mut *state.shared.queue.lock().unwrap());
-    for u in updates {
-        match u {
-            Update::Say(line) => state.model.say(line),
-            Update::Log(line) => state.model.log.push(line),
-            Update::Progress(p) => state.model.progress = p,
-            Update::Planned => state.model.planned = true,
-            Update::Library(facts) => state.model.source = Some(facts),
-            Update::Volume(i, facts) => {
-                if let Some(slot) = state.model.dest.get_mut(i) {
-                    *slot = Some(facts);
-                }
+/// Drain everything every worker has queued into the model. Called on the UI thread only. Pages
+/// to open are returned rather than opened here, because this runs inside the state's borrow.
+fn drain(state: &mut State) -> Vec<String> {
+    let mut open = Vec::new();
+    for (job, shared) in &state.workers {
+        let updates: Vec<Update> = std::mem::take(&mut *shared.queue.lock().unwrap());
+        for u in updates {
+            if let Update::Open(url) = &u {
+                open.push(url.clone());
             }
-            Update::Finding(row) => state.model.findings.push(row),
-            Update::Checked(n) => state.model.checked = Some(n),
-            Update::Player(facts) => state.model.player = *facts,
-            Update::Palettes(rows) => state.model.palette_rows = rows,
+            crate::update(&mut state.model, *job, u);
         }
     }
-    // The log is unbounded otherwise: a library of 40,000 tracks would hold 40,000 strings for the
-    // sake of the 9 lines the pane shows.
-    const KEEP: usize = 2_000;
-    if state.model.log.len() > KEEP * 2 {
-        state.model.log.drain(..state.model.log.len() - KEEP);
+    open
+}
+
+/// Hand `url` to whatever the person uses for web pages.
+fn open_url(hwnd: Hwnd, url: &str) {
+    let (op, file) = (wide("open"), wide(url));
+    unsafe {
+        ShellExecuteW(hwnd, op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+    }
+}
+
+/// The clipboard's text, if it holds any.
+fn clipboard_text(hwnd: Hwnd) -> Option<String> {
+    unsafe {
+        if OpenClipboard(hwnd) == 0 {
+            return None;
+        }
+        let mut out = None;
+        let handle = GetClipboardData(CF_UNICODETEXT);
+        if !handle.is_null() {
+            let p = GlobalLock(handle) as *const u16;
+            if !p.is_null() {
+                let mut n = 0usize;
+                while n < 65_536 && *p.add(n) != 0 {
+                    n += 1;
+                }
+                out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+                GlobalUnlock(handle);
+            }
+        }
+        CloseClipboard();
+        out
+    }
+}
+
+/// A message box with Flint's name on it.
+pub fn message(text: &str) {
+    let (text, cap) = (wide(text), wide("Flint"));
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), cap.as_ptr(), MB_ICONERROR) };
+}
+
+/// Start `job` if it may start, and repaint.
+fn launch(hwnd: Hwnd, job: Job) {
+    let settings = STATE.with(|st| {
+        let mut b = st.borrow_mut();
+        let state = b.as_mut()?;
+        if !state.model.can_start(job) {
+            return None;
+        }
+        let s = state.settings(job)?;
+        crate::started(&mut state.model, job);
+        Some(s)
+    });
+    if let Some(settings) = settings {
+        let shared = start(hwnd, job, settings);
+        STATE.with(|st| {
+            if let Some(state) = st.borrow_mut().as_mut() {
+                state.workers.push((job, shared));
+            }
+        });
+    }
+}
+
+/// A click that landed on `id`, outside the state's borrow: a folder chooser and the browser both
+/// run message loops of their own.
+unsafe fn press(hwnd: Hwnd, id: Id) {
+    if let Some(url) = crate::url_for(id) {
+        open_url(hwnd, url);
+        return;
+    }
+    match id {
+        Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists | Id::PickPalettes => {
+            let title = match id {
+                Id::PickLibrary => "Where is your music?",
+                Id::PickPlaylists => "Where are your playlists?",
+                Id::PickPalettes => "Where are your .palette files?",
+                _ => "Which drive is the player?",
+            };
+            if let Some(path) = pick_folder(hwnd, title) {
+                STATE.with(|st| {
+                    if let Some(state) = st.borrow_mut().as_mut() {
+                        // Nothing can start while the chooser is up, but this is one line to be sure.
+                        if crate::live(&state.model, id) {
+                            set_path(&mut state.model, id, path);
+                            save_prefs(&state.model);
+                        }
+                    }
+                });
+            }
+        }
+        Id::Stop => STATE.with(|st| {
+            if let Some(state) = st.borrow_mut().as_mut() {
+                let Some(job) = state.model.stop_target(state.model.tab) else { return };
+                for (j, shared) in &state.workers {
+                    if *j == job {
+                        shared.cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+                if let Some(r) = state.model.running.iter_mut().find(|r| r.job == job) {
+                    r.status = "Stopping…".into();
+                }
+            }
+        }),
+        _ => {
+            let (job, retheme) = STATE.with(|st| {
+                let mut b = st.borrow_mut();
+                let Some(state) = b.as_mut() else { return (None, false) };
+                let before = state.model.theme;
+                let job = click(&mut state.model, id);
+                save_prefs(&state.model);
+                (job, state.model.theme != before)
+            });
+            if retheme {
+                apply_theme(hwnd);
+            }
+            if let Some(job) = job {
+                launch(hwnd, job);
+            }
+        }
     }
 }
 
@@ -695,11 +834,8 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
         WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP => {
             let x = (l & 0xFFFF) as i16 as i32;
             let y = ((l >> 16) & 0xFFFF) as i16 as i32;
-            let mut to_pick: Option<Id> = None;
-            let mut to_start: Option<(Job, Settings)> = None;
+            let mut pressed: Option<Id> = None;
             let mut repaint = false;
-            let mut stop = false;
-            let mut retheme = false;
             STATE.with(|st| {
                 let mut st = st.borrow_mut();
                 let Some(state) = st.as_mut() else { return };
@@ -711,96 +847,62 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                     repaint = true;
                 }
                 match msg {
-                    WM_LBUTTONDOWN => state.down = over,
-                    WM_LBUTTONUP => {
-                        // A press that slid off its control does nothing, which is what every other
-                        // button on the system does.
-                        let pressed = state.down.take().filter(|d| Some(*d) == over);
-                        if let Some(id) = pressed {
-                            match id {
-                                Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists | Id::PickPalettes => {
-                                    to_pick = Some(id)
-                                }
-                                Id::Stop => stop = true,
-                                _ => {
-                                    let theme_before = state.model.theme;
-                                    if let Some(job) = click(&mut state.model, id) {
-                                        if let Some(s) = state.settings(job) {
-                                            to_start = Some((job, s));
-                                        }
-                                    }
-                                    if state.model.theme != theme_before {
-                                        retheme = true;
-                                    }
-                                    save_prefs(&state.model);
-                                    repaint = true;
-                                }
-                            }
+                    WM_LBUTTONDOWN => {
+                        state.down = over;
+                        // A press on nothing takes the caret out of a field, as it does anywhere else.
+                        if over.is_none() && state.model.focus.take().is_some() {
+                            repaint = true;
                         }
                     }
+                    // A press that slid off its control does nothing, which is what every other
+                    // button on the system does.
+                    WM_LBUTTONUP => pressed = state.down.take().filter(|d| Some(*d) == over),
                     _ => {}
                 }
             });
-            if stop {
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow().as_ref() {
-                        state.shared.cancel.store(true, Ordering::Relaxed);
-                    }
-                });
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow_mut().as_mut() {
-                        state.model.say("stopping…");
-                    }
-                });
+            if let Some(id) = pressed {
+                press(hwnd, id);
                 repaint = true;
-            }
-            if let Some(id) = to_pick {
-                let title = match id {
-                    Id::PickLibrary => "Where is your music?",
-                    Id::PickPlaylists => "Where are your playlists?",
-                    Id::PickPalettes => "Where are your .palette files?",
-                    _ => "Which drive is the player?",
-                };
-                if let Some(path) = pick_folder(hwnd, title) {
-                    STATE.with(|st| {
-                        if let Some(state) = st.borrow_mut().as_mut() {
-                            set_path(&mut state.model, id, path);
-                            save_prefs(&state.model);
-                        }
-                    });
-                }
-                repaint = true;
-            }
-            if let Some((job, settings)) = to_start {
-                let shared = STATE.with(|st| st.borrow().as_ref().map(|s| s.shared.clone()));
-                if let Some(shared) = shared {
-                    STATE.with(|st| {
-                        if let Some(state) = st.borrow_mut().as_mut() {
-                            state.model.phase = Phase::Working;
-                            state.model.progress = None;
-                            state.model.log.clear();
-                            // Starting anything spends the shown plan. `Plan` puts it back when it
-                            // finishes (`Update::Planned`); a COPY that has been carried out does
-                            // not, so the window asks to be shown the new state of the player
-                            // rather than offering to copy the same plan a second time. The meter
-                            // numbers stay: they are what the job now running is doing.
-                            state.model.planned = false;
-                            // A new check replaces the last one's rows; they arrive as it finds them.
-                            if job == Job::Check {
-                                state.model.findings.clear();
-                            }
-                        }
-                    });
-                    start(hwnd, job, settings, shared);
-                }
-                repaint = true;
-            }
-            if retheme {
-                apply_theme(hwnd);
             }
             if repaint {
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
+            0
+        }
+        WM_CHAR => {
+            // Keys arrive as characters: `TranslateMessage` has already turned Backspace, Enter,
+            // Tab, Esc and the Ctrl chords into their control codes. A character outside the basic
+            // plane comes as two surrogate halves, neither a `char`, and is dropped — nothing typed
+            // into a key or a filter needs one.
+            let code = w as u32;
+            if code == 0x16 {
+                // Ctrl+V. The clipboard is read outside the state's borrow: opening it can pump
+                // messages, and a message that lands here while the state is borrowed would panic.
+                if let Some(text) = clipboard_text(hwnd) {
+                    STATE.with(|st| {
+                        if let Some(state) = st.borrow_mut().as_mut() {
+                            crate::paste(&mut state.model, &text);
+                        }
+                    });
+                }
+            } else {
+                let k = match code {
+                    0x08 => Some(Key::Backspace),
+                    0x7F => Some(Key::Clear), // Ctrl+Backspace
+                    0x0D => Some(Key::Enter),
+                    0x09 => Some(Key::Tab),
+                    0x1B => Some(Key::Escape),
+                    c if c < 0x20 => None,
+                    c => char::from_u32(c).map(Key::Char),
+                };
+                let job = k.and_then(|k| {
+                    STATE.with(|st| st.borrow_mut().as_mut().and_then(|state| crate::key(&mut state.model, k)))
+                });
+                if let Some(job) = job {
+                    launch(hwnd, job);
+                }
+            }
+            InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
         WM_SETCURSOR => {
@@ -816,48 +918,65 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
             }
         }
         WM_JOB => {
-            STATE.with(|st| {
-                if let Some(state) = st.borrow_mut().as_mut() {
-                    drain(state);
-                }
-            });
+            let open = STATE.with(|st| st.borrow_mut().as_mut().map(drain).unwrap_or_default());
+            for url in open {
+                open_url(hwnd, &url);
+            }
             InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
         WM_JOB_DONE => {
-            STATE.with(|st| {
-                if let Some(state) = st.borrow_mut().as_mut() {
-                    drain(state);
-                    state.model.phase = Phase::Idle;
-                    let result = state.shared.result.lock().unwrap().take();
-                    match result {
-                        Some(Ok(word)) => state.model.say(word),
-                        Some(Err(why)) => {
-                            state.model.progress = None;
-                            state.model.say(format!("stopped: {why}"));
-                            let text = wide(&why);
-                            let cap = wide("Flint");
-                            MessageBoxW(hwnd, text.as_ptr(), cap.as_ptr(), MB_ICONERROR);
-                        }
-                        None => {}
-                    }
+            let Some(job) = Job::from_code(w) else { return 0 };
+            let (open, failed, close) = STATE.with(|st| {
+                let mut b = st.borrow_mut();
+                let Some(state) = b.as_mut() else { return (Vec::new(), None, false) };
+                // Whatever it said last, before the word it finished with.
+                let open = drain(state);
+                let mut failed = None;
+                if let Some(i) = state.workers.iter().position(|(j, _)| *j == job) {
+                    let (_, shared) = state.workers.remove(i);
+                    let result = shared.result.lock().unwrap().take();
+                    let result = result.unwrap_or_else(|| Err("the job ended without saying how".into()));
+                    failed = crate::finished(&mut state.model, job, result);
                 }
+                (open, failed, state.closing && state.workers.is_empty())
             });
+            if close {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            for url in open {
+                open_url(hwnd, &url);
+            }
             InvalidateRect(hwnd, std::ptr::null(), 0);
+            // Outside the borrow: a message box runs its own message loop, which paints this
+            // window and delivers the other jobs' updates while it is up.
+            if let Some(why) = failed {
+                let (text, cap) = (wide(&why), wide("Flint"));
+                MessageBoxW(hwnd, text.as_ptr(), cap.as_ptr(), MB_ICONERROR);
+            }
             0
         }
         WM_CLOSE => {
-            // A job in flight is asked to stop and the window waits for it, rather than the process
-            // exiting mid-copy. `apply` renames every copy into place, so the worst a stop leaves
-            // is a file not copied yet — never a half-written one.
-            let busy = STATE.with(|st| st.borrow().as_ref().is_some_and(|s| s.model.phase == Phase::Working));
+            // Jobs in flight are asked to stop and the window waits for the last of them, rather
+            // than the process exiting mid-copy. `apply` renames every copy into place, so the
+            // worst a stop leaves is a file not copied yet — never a half-written one.
+            let busy = STATE.with(|st| {
+                let mut b = st.borrow_mut();
+                let Some(state) = b.as_mut() else { return false };
+                if state.workers.is_empty() {
+                    return false;
+                }
+                for (_, shared) in &state.workers {
+                    shared.cancel.store(true, Ordering::Relaxed);
+                }
+                for r in &mut state.model.running {
+                    r.status = "Stopping before closing…".into();
+                }
+                state.closing = true;
+                true
+            });
             if busy {
-                STATE.with(|st| {
-                    if let Some(state) = st.borrow_mut().as_mut() {
-                        state.shared.cancel.store(true, Ordering::Relaxed);
-                        state.model.say("stopping before closing…");
-                    }
-                });
                 InvalidateRect(hwnd, std::ptr::null(), 0);
                 return 0;
             }
@@ -931,7 +1050,7 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
         }
 
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let fonts = [Face::Title, Face::Small, Face::Body, Face::Strong, Face::Mono]
+        let fonts = [Face::Title, Face::Figure, Face::Path, Face::Small, Face::Body, Face::Strong, Face::Mono]
             .into_iter()
             .map(|f| {
                 let name = wide(if f.mono() { "Consolas" } else { "Segoe UI" });
@@ -947,18 +1066,7 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
         let mut model = Model::new();
         crate::prefs::load(&mut model, &crate::prefs::path());
         model.cache_dir = flint_core::cache::default_dir().display().to_string();
-        let creds = flint_core::lastfm::Credentials::load();
-        model.lastfm = if creds.is_ready() {
-            if creds.username.is_empty() {
-                "Signed in".into()
-            } else {
-                format!("Signed in as {}", creds.username)
-            }
-        } else if !creds.api_key.is_empty() {
-            "API key set, not signed in yet".into()
-        } else {
-            "Not set up".into()
-        };
+        model.lastfm = crate::lastfm_facts(&flint_core::lastfm::Credentials::load());
         let pref = pref.or(match model.theme {
             ThemePref::Dark => Some(true),
             ThemePref::Light => Some(false),
@@ -973,13 +1081,10 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
                 dpi,
                 hot: None,
                 down: None,
-                shared: Arc::new(Shared {
-                    queue: Mutex::new(Vec::new()),
-                    result: Mutex::new(None),
-                    cancel: AtomicBool::new(false),
-                }),
+                workers: Vec::new(),
                 fonts,
                 settings_cache: None,
+                closing: false,
             });
         });
 

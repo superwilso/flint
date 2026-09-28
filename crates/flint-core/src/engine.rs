@@ -52,6 +52,20 @@ fn from_env(var: &str) -> Option<PathBuf> {
     env::var_os(var).map(PathBuf::from).filter(|p| p.is_file())
 }
 
+/// A child with no console window of its own. Flint's window is a GUI program with no console, and
+/// Windows gives a console program started from one a NEW window — so without this every track
+/// analysed or checked would flash a black box on the screen. Every child here talks through pipes
+/// only, so it loses nothing by not having one.
+pub fn quiet(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// FFmpeg alone, for work that does not need Sony's engine (the lossless check).
 pub fn locate_ffmpeg() -> Result<PathBuf, String> {
     from_env("FLINT_FFMPEG").or_else(|| on_path("ffmpeg")).ok_or_else(|| {
@@ -68,7 +82,7 @@ impl Engine {
         let beside = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(exe("sensme-helper"))));
         let helper = from_env("FLINT_HELPER")
             .or(beside.filter(|p| p.is_file()))
-            .ok_or("sensme-helper.exe was not found next to flint.exe (or set FLINT_HELPER).")?;
+            .ok_or("sensme-helper.exe was not found next to Flint (or set FLINT_HELPER).")?;
         let dll = from_env("FLINT_MMLIB")
             .or_else(|| Some(PathBuf::from(MUSIC_CENTER_ENGINE)).filter(|p| p.is_file()))
             .ok_or(
@@ -79,7 +93,7 @@ impl Engine {
     }
 
     pub fn analyse(&self, track: &Path) -> Result<Analysis, String> {
-        let mut decode = Command::new(&self.ffmpeg)
+        let mut decode = quiet(&mut Command::new(&self.ffmpeg))
             .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
             .arg(track)
             .args(["-vn", "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "2", "-ar", "44100", "-"])
@@ -89,7 +103,7 @@ impl Engine {
             .spawn()
             .map_err(|e| format!("could not start FFmpeg: {e}"))?;
         let pcm = decode.stdout.take().expect("piped");
-        let mut helper = Command::new(&self.helper)
+        let mut helper = quiet(&mut Command::new(&self.helper))
             .arg(&self.dll)
             .args(&self.params)
             .stdin(Stdio::from(pcm))

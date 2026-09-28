@@ -7,6 +7,7 @@ pub mod flac;
 pub mod http;
 pub mod id3;
 pub mod lastfm;
+pub mod lastfm_sync;
 pub mod library;
 pub mod likes;
 pub mod lossless;

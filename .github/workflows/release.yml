@@ -6,11 +6,16 @@ name: release
 # committed payload to verify — everything published here is built from the tagged source in this
 # run. What ships:
 #
-#   flint-windows-x64.exe    the tool and its window. This is the one most people want.
-#   sensme-helper-x86.exe    32-bit, because Sony's MMLib11.dll is 32-bit COM. It is NOT optional
-#                            for analysis: flint runs it as a child process. It ships beside
-#                            flint.exe and is found in the same folder.
-#   flint-linux-x64          everything but the window and the analysis, which need Windows.
+#   flint-windows-x64.exe      the window. This is the one most people want. Built from the
+#                              `flint-window` binary, for the Windows subsystem, so it opens with
+#                              no terminal window behind it.
+#   flint-cli-windows-x64.exe  the same tool as commands (`scan`, `check`, `sync`, `scrobble`…),
+#                              for a terminal. A console program: Windows gives it a console,
+#                              which is right for this one and wrong for the window.
+#   sensme-helper-x86.exe      32-bit, because Sony's MMLib11.dll is 32-bit COM. It is NOT
+#                              optional for analysis: Flint runs it as a child process. It ships
+#                              beside Flint and is found in the same folder.
+#   flint-linux-x64            everything but the window and the analysis, which need Windows.
 #
 # Sony's MMLib11.dll is never built, shipped or downloaded by any of this. Flint runs the copy
 # already on the machine, from a Music Center install the user chose to have.
@@ -46,15 +51,17 @@ jobs:
 
       - name: Stage artifacts
         run: |
-          Copy-Item target/release/flint.exe flint-windows-x64.exe
+          Copy-Item target/release/flint-window.exe flint-windows-x64.exe
+          Copy-Item target/release/flint.exe flint-cli-windows-x64.exe
           Copy-Item target/i686-pc-windows-msvc/release/sensme-helper.exe sensme-helper-x86.exe
-          Get-ChildItem flint-windows-x64.exe, sensme-helper-x86.exe
+          Get-ChildItem flint-windows-x64.exe, flint-cli-windows-x64.exe, sensme-helper-x86.exe
 
       - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: |
             flint-windows-x64.exe
+            flint-cli-windows-x64.exe
             sensme-helper-x86.exe
           if-no-files-found: error
 

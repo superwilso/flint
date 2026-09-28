@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### No terminal window
+
+`flint-windows-x64.exe` is now the window alone, built for the Windows subsystem, so it opens with
+no black console box behind it. The commands moved to their own download,
+`flint-cli-windows-x64.exe`, which is the same program 0.2.0 shipped. FFmpeg and the SensMe
+helper are started with `CREATE_NO_WINDOW`, so a check or an analysis does not flash a console per
+file either.
+
+### Jobs run side by side
+
+0.2.0 ran one job at a time: while an analysis ran — hours, on a big library — every other button
+was grey. Now each job says what it needs (the analysis cache, the player, the check results, the
+palettes, the Last.fm account), and two jobs wait for each other only when they share one.
+
+- During an analysis you can check FLACs, read the player, compare palettes, change the player's
+  drives and sign in to Last.fm.
+- **Show what would happen** and **Copy** still wait for an analysis, because the copies are tagged
+  from its results. The button says so: *Available when analysing the library finishes.*
+- Each page's footer shows its own job's progress, line and **Stop**; a page whose job is not
+  running says what is, so the window never looks idle while the machine is not.
+- Closing the window stops every job and closes when the last one has.
+
+### Last.fm from the window
+
+- **Settings ▸ Last.fm** takes the API key and shared secret (paste with Ctrl+V), with a **Get a key
+  on last.fm** button that opens the page that makes one.
+- **Sign in with Last.fm** opens last.fm in the browser; after *Yes, allow access* Flint picks up
+  the session by itself (it asks every three seconds, for up to ten minutes, and **Stop waiting**
+  gives up). The window never asks for the password. **Sign out** and **Change key** are beside it.
+- **Likes & plays** gains **Send N plays**, **Compare likes** — what a likes sync would change, in
+  both directions, written nowhere — and **Make N changes**, which carries that out.
+- The code behind `flint scrobble` and `flint likes` moved into `flint-core` (`lastfm_sync`), so the
+  window and the commands run the same thing. The commands print what they did before.
+
+### Check can filter
+
+Click a verdict's count to list only those files, and type in the filter to narrow by artist,
+album, file name or reason (case does not matter). **Show all** clears both.
+
+### Fixed
+
+- **Paths and the big figures drew in the wrong font** on Windows: the window made no GDI font for
+  either face, so they took whatever font the text before them had used.
+- A job that failed showed its message box from inside the window's state, and a repaint while the
+  box was up could close Flint. The box now opens after the state is put down.
+
 ## 0.2.0 — 2026-09-28
 
 ### The window has pages

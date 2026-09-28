@@ -126,7 +126,7 @@ pub fn draw(cmds: &[Cmd], w: i32, h: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Phase, H, W};
+    use crate::{Job, Running, H, W};
 
     fn shown() -> Model {
         let mut m = Model::new();
@@ -181,8 +181,7 @@ mod tests {
         let t = Theme::light();
         let idle = render(&shown(), W, H, &t);
         let mut busy = shown();
-        busy.phase = Phase::Working;
-        busy.progress = Some(0.4);
+        busy.running = vec![Running { job: Job::Apply, progress: Some(0.4), status: "copying 41/120".into() }];
         busy.say("copying 41/120");
         let busy = render(&busy, W, H, &t);
         assert_ne!(idle, busy);

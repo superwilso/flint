@@ -1,7 +1,7 @@
 <!--
-The release body. `{{SHA256SUMS}}` is replaced with the real checksums by
-tools/render_release_notes.sh, which the release workflow runs — preview it with
-`tools/render_release_notes.sh --preview`.
+The release body. `{{SHA256SUMS}}` is replaced with the real checksums, and `{{CHANGES}}` with this
+version's section of CHANGELOG.md, by tools/render_release_notes.sh, which the release workflow runs
+— preview it with `tools/render_release_notes.sh --preview v0.2.0`.
 
 Everything above the first `## ` heading is dropped, so this comment does not ship.
 GitHub appends its own generated "What's Changed" list below whatever this produces.
@@ -10,6 +10,10 @@ GitHub appends its own generated "What's Changed" list below whatever this produ
 ## Flint
 
 Put a music library on a Sony NW-A50-series Walkman — with SensMe, without the bloat.
+
+### What's new in this release
+
+{{CHANGES}}
 
 ### What to download
 

@@ -4,11 +4,11 @@ A PC companion for the Sony NW-A50-series Walkman and [Cinder](https://github.co
 copy a music library onto the player, keep likes and scrobbles in step, and give every track Sony's
 **SensMe** mood and tempo data — without touching the files on your PC.
 
-**Status: usable, young.** [v0.1.0](https://github.com/superwilso/flint/releases/latest) is out:
+**Status: usable, young.** [v0.2.0](https://github.com/superwilso/flint/releases/latest) is out:
 `flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside it, and
 `flint-linux-x64`, with SHA-256 sums on the release page and a Sigstore build attestation for each
-file. `main` carries the 0.2 window (below), not yet released. Flint replaces the Python `Sony-sync`
-tool. Nothing Flint does touches the files on your PC; everything it writes goes to the player.
+file. `main` can be ahead of it: [`CHANGELOG.md`](CHANGELOG.md)'s *Unreleased* section says by
+what. Flint replaces the Python `Sony-sync` tool. Nothing Flint does touches the files on your PC; everything it writes goes to the player.
 
 ## Getting started
 
@@ -235,6 +235,22 @@ cargo build --release --target i686-pc-windows-gnu -p sensme-helper
 ```
 
 Both Windows targets cross-compile from Linux with mingw-w64.
+
+## Releasing
+
+```
+tools/release.sh v0.2.0 --dry-run     what would change; edits nothing
+tools/release.sh v0.2.0               1st run: prepare — then commit the diff it lists
+tools/release.sh v0.2.0               2nd run: push main, tag, push, wait, print the release page
+```
+
+The first run bumps the version, rolls *Unreleased* in `CHANGELOG.md` into the new version (the
+release page's *What's new* is that section), points the README at the new release, re-draws the
+window pictures in `docs/`, and runs every gate — fmt, clippy, the tests, the window drawn in every
+state, and both Windows builds. It never commits: review the diff, commit it, and run it again. The
+second run pushes `main` and the tag; GitHub builds the three downloads, attests them and publishes
+the release, and the script waits for that and prints the page. A tag with a suffix
+(`v0.2.0-rc1`) publishes as a pre-release.
 
 ## Licence
 

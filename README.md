@@ -19,7 +19,8 @@ what. Flint replaces the Python `Sony-sync` tool. Nothing Flint does touches the
 4. Press **Show what would happen**. Nothing is written; the plan and the space it needs are shown.
 5. Press **Copy to the player**.
 
-The window remembers the folders for next time. Everything it does is also a command, below.
+The window remembers the folders for next time. Everything it does is also a command, in
+`flint-cli-windows-x64.exe` (below) — the window itself opens with no terminal behind it.
 
 ## SensMe, without the bloat
 
@@ -54,7 +55,9 @@ what is still missing, is in [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
 
 ## The window
 
-On Windows, `flint` with no arguments opens one. Seven pages, one tab each:
+`flint-windows-x64.exe` is the window. It is built for the Windows subsystem, so no terminal
+opens behind it; `flint gui` from the command-line build opens the same window. Seven pages, one
+tab each:
 
 ![Flint's window](docs/window.svg)
 
@@ -62,11 +65,11 @@ On Windows, `flint` with no arguments opens one. Seven pages, one tab each:
 |---|---|
 | **Sync** | What would be copied, removed and tagged, and does it fit. Then the copy. |
 | **On the player** | What is on each drive, and whether Flint put it there (read from `flint-manifest.tsv`). |
-| **Check** | Which FLACs are not the lossless audio they claim to be, and why (below). |
+| **Check** | Which FLACs are not the lossless audio they claim to be, and why (below). Click a count to see only that verdict; type to filter by file, folder or reason. |
 | **SensMe** | Analyse the library, or import what Music Center already analysed. |
-| **Likes & plays** | The plays in the player's `.scrobbler.log` and the songs liked on it. |
+| **Likes & plays** | The plays in the player's `.scrobbler.log` and the songs liked on it. **Send plays** scrobbles them; **Compare likes** shows what a likes sync would change, and **Make changes** does it. |
 | **Palettes** | Which of your colour schemes for Cinder the player would accept, and why not. Then Send. |
-| **Settings** | Theme (Light, Dark or System), the folders, the analysis cache, Last.fm. |
+| **Settings** | Theme (Light, Dark or System), the folders, the analysis cache, and the Last.fm key and sign-in. |
 
 Only **Sync** writes music to the player, and only Sync has anything orange on it. The other pages
 read — "Read the player" reads — except **Palettes ▸ Send**, which copies the few small `.palette`
@@ -80,6 +83,14 @@ palette the player would refuse is refused on the PC, with the reason, before it
 On **Sync**: choose a music folder and the player's drive, press **Show what would happen** —
 nothing is written — and then **Copy to the player**. Copy is only ever offered for a plan you have
 already been shown, and changing any setting takes it away again until you look at the new one.
+
+**Jobs run side by side.** An analysis can take hours, so it does not lock the window: while it
+runs you can check FLACs, read the player, compare palettes, and sign in to Last.fm. Two jobs wait
+for each other only when they share something — the analysis cache, the player, the check
+results, the palettes or the Last.fm account — and a grey button says what it is waiting for.
+**Show what would happen** and **Copy** wait for an analysis, because the copies carry its results;
+a plan made halfway through would tag half the library. Each page's footer shows its own job's
+progress and its own **Stop**.
 
 One control at a time is in Flint's orange, and it is always the next thing to do: the folder
 first, then the drive, then the plan, then the copy. Each destination carries a bar of its own
@@ -101,13 +112,13 @@ installer, and everything it does goes through the same code the commands below 
 plain Rust with no Windows in it, which is why the pictures above can be drawn anywhere:
 
 ```
-flint gui-preview window.svg --state planned     # or fresh, ready, working, done
+flint gui-preview window.svg --state planned     # or fresh, ready, working, done, scanning
 flint gui-preview window-dark.svg --state planned --dark
-flint gui-preview check.svg --state check        # or player, sensme, likes, palettes, settings
+flint gui-preview check.svg --state check        # or filtered, player, sensme, likes, palettes, settings, signed-in
 ```
 
 What the pages grow into next — a plan you can tick, conversion to fit a card, SensMe channel
-counts, sending plays and likes from the window — is in
+counts — is in
 Cinder's [`docs/PLAN_redesign_2026-09.md`](https://github.com/superwilso/Cinder/blob/main/docs/PLAN_redesign_2026-09.md).
 
 ## Copying a library to the player
@@ -135,7 +146,16 @@ run, for ever.
 ## Scrobbles and liked songs
 
 The Walkman has no WiFi, so it cannot reach Last.fm itself. It writes files instead, and Flint
-carries them:
+carries them.
+
+**In the window.** Settings ▸ Last.fm asks for an API key and its shared secret: **Get a key on
+last.fm** opens the page that makes one (any application name; the callback URL can stay empty).
+Paste both, press **Save**, then **Sign in with Last.fm** — your browser opens last.fm, you press
+*Yes, allow access*, and Flint picks the session up on its own. It never sees your password. Then
+on **Likes & plays**: **Read the player**, **Send N plays**, **Compare likes**, and **Make N
+changes** once you have seen what they are.
+
+**From a terminal:**
 
 ```
 flint lastfm key <api-key> <api-secret>     once — https://www.last.fm/api/account/create
@@ -181,7 +201,8 @@ USB; the hearts on the device need no such thing.
 Everything here goes out over **the system's own TLS** — WinHTTP on Windows, the same stack every
 other program on the machine uses, with its proxy settings and its certificate store. Flint adds no
 crates for it, and your password is never written down: `login` exchanges it for a session key, and
-that key is what lands in `lastfm.conf` (revoke it at last.fm/settings/applications).
+that key is what lands in `lastfm.conf` (revoke it at last.fm/settings/applications). The window's
+sign-in never asks for the password at all.
 
 ## Checking for fake FLACs
 
@@ -213,6 +234,10 @@ Measured against transcodes of four albums (each encoded and turned back into FL
 | Upsampled to 96 kHz, and 16-bit padded to 24 | 4 of 4 each |
 | The four untouched originals | none flagged |
 
+In the window, the **Check** page shows the same verdicts as counts. Click one to list only those
+files, type in the filter to narrow by artist, album, file name or reason, and **Show all** to
+clear both.
+
 **A clean result is not proof.** It means none of the usual signs. Equally, `SUSPECT` is not an
 accusation: plenty of genuine masters stop at 20 kHz. Results are cached by audio content, so a
 retagged or moved file is not decoded twice.
@@ -222,7 +247,7 @@ retagged or moved file is not decoded twice.
 | Crate | What it is |
 |---|---|
 | `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, the decode → engine pipeline, and reading analysis Music Center has already done |
-| `flint` | The command-line tool |
+| `flint` | The command-line tool (`flint.exe`) and the window's own program (`flint-window.exe`, no console) |
 | `flint-gui` | The window: a layout in plain Rust, painted by GDI on Windows or written out as SVG anywhere |
 | `sensme-helper` | A 32-bit Windows helper that loads `MMLib11.dll` (the engine is 32-bit, Flint is not) |
 
@@ -234,7 +259,8 @@ cargo build --release --target x86_64-pc-windows-gnu -p flint
 cargo build --release --target i686-pc-windows-gnu -p sensme-helper
 ```
 
-Both Windows targets cross-compile from Linux with mingw-w64.
+Both Windows targets cross-compile from Linux with mingw-w64. The first builds `flint.exe` (the
+commands) and `flint-window.exe` (the window, published as `flint-windows-x64.exe`).
 
 ## Releasing
 
@@ -248,7 +274,7 @@ The first run bumps the version, rolls *Unreleased* in `CHANGELOG.md` into the n
 release page's *What's new* is that section), points the README at the new release, re-draws the
 window pictures in `docs/`, and runs every gate — fmt, clippy, the tests, the window drawn in every
 state, and both Windows builds. It never commits: review the diff, commit it, and run it again. The
-second run pushes `main` and the tag; GitHub builds the three downloads, attests them and publishes
+second run pushes `main` and the tag; GitHub builds the four downloads, attests them and publishes
 the release, and the script waits for that and prints the page. A tag with a suffix
 (`v0.2.0-rc1`) publishes as a pre-release.
 

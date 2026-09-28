@@ -459,7 +459,7 @@ pub fn measure(ffmpeg: &Path, track: &Path) -> Result<Measurement, String> {
     let layout = flac::read_layout(&mut f).map_err(|e| format!("not a FLAC file: {e}"))?;
     drop(f);
     let info = stream_info(&layout.blocks[0].data).ok_or("the STREAMINFO block is malformed")?;
-    let mut decode = Command::new(ffmpeg)
+    let mut decode = crate::engine::quiet(&mut Command::new(ffmpeg))
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
         .arg(track)
         .args(["-vn", "-map", "0:a:0", "-f", "s32le", "-acodec", "pcm_s32le", "-"])

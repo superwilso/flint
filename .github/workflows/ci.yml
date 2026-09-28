@@ -35,12 +35,12 @@ jobs:
         run: cargo test --workspace
       # The window is Win32, so Linux cannot run it — but it CAN draw it. The preview is the
       # regression test with eyes: if a change moves a button, the SVG says so. Rendering every
-      # state — the five Sync states and each other page — means a layout that panics or draws off
+      # state — the Sync states and each other page — means a layout that panics or draws off
       # the window fails on the pull request rather than on someone's desktop.
       - name: Draw the window
         run: |
           cargo build -p flint
-          for state in fresh ready planned working done player check sensme likes palettes settings; do
+          for state in fresh ready planned working done scanning player check filtered sensme likes palettes settings signed-in; do
               ./target/debug/flint gui-preview "gui-$state.svg" --state "$state"
           done
           ls -l gui-*.svg

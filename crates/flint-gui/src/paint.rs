@@ -575,6 +575,55 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
                     radius: 0,
                 });
             }
+            // A line that takes typing: the page's panel with an outline, darker while typing goes
+            // to it. The ink, not the accent — the accent means bytes about to be written. The
+            // caret is a bar at the end of the text, drawn in the same run so the face that draws
+            // the text places it; there is no moving it, and none is needed for a key or a filter.
+            Kind::Field { focused, masked, enabled, placeholder } => {
+                out.push(Cmd::Rect {
+                    rect: r,
+                    fill: Some(if *enabled { t.panel } else { t.disabled }),
+                    border: Some(if *focused { t.check } else { t.button_border }),
+                    radius: 5,
+                });
+                let inner = Rect::new(r.x + 10, r.y, r.w - 20, r.h);
+                if wid.text.is_empty() && !focused {
+                    out.push(Cmd::Text {
+                        rect: inner,
+                        text: elide_end(placeholder, Face::Body, inner.w),
+                        color: t.placeholder,
+                        face: Face::Body,
+                        align: Align::Left,
+                    });
+                } else {
+                    let shown = if *masked { "•".repeat(wid.text.chars().count()) } else { wid.text.clone() };
+                    let shown = if *focused { format!("{shown}|") } else { shown };
+                    out.push(Cmd::Text {
+                        rect: inner,
+                        text: elide_start(&shown, Face::Mono, inner.w),
+                        color: if *enabled { t.text } else { t.disabled_text },
+                        face: Face::Mono,
+                        align: Align::Left,
+                    });
+                }
+            }
+            // A card that is a choice: the chosen one is outlined twice in the ink.
+            Kind::Pick { on } => {
+                out.push(Cmd::Rect {
+                    rect: r,
+                    fill: Some(t.panel),
+                    border: Some(if *on { t.check } else { t.panel_border }),
+                    radius: 8,
+                });
+                if *on {
+                    out.push(Cmd::Rect {
+                        rect: Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
+                        fill: None,
+                        border: Some(t.check),
+                        radius: 7,
+                    });
+                }
+            }
             Kind::Cell { tone, strong, mono } => {
                 let face = if *mono {
                     Face::Mono
@@ -617,7 +666,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::{Id, Job, Phase, H, W};
+    use crate::{Id, Job, Running, H, W};
 
     fn ready() -> Model {
         let mut m = Model::new();
@@ -686,8 +735,7 @@ mod tests {
         let t = Theme::light();
         let mut m = ready();
         m.planned = true;
-        m.phase = Phase::Working;
-        m.progress = Some(0.5);
+        m.running = vec![Running { job: Job::Apply, progress: Some(0.5), status: String::new() }];
         for c in commands(&m, W, H, &t) {
             if let Cmd::Rect { rect, fill: Some(f), radius, .. } = c {
                 if f != t.accent {
@@ -767,12 +815,14 @@ mod tests {
         // At rest there is no bar at all: a trough with nothing in it is a control that controls
         // nothing, and the room it was holding belongs to the log.
         assert_eq!(trough_and_fill(&m), (0, 0));
-        m.phase = Phase::Working;
-        m.progress = Some(0.5);
+        m.running = vec![Running { job: Job::Apply, progress: Some(0.5), status: String::new() }];
         assert_eq!(trough_and_fill(&m), (1, 1));
         // A job with no measurable length leaves the trough empty rather than guessing.
-        m.progress = None;
+        m.running[0].progress = None;
         assert_eq!(trough_and_fill(&m), (1, 0));
+        // A job that belongs to another page draws no bar here: its page has it.
+        m.running[0].job = Job::Scan;
+        assert_eq!(trough_and_fill(&m), (0, 0));
     }
 
     /// Every job the window can start is reachable from some button. If a `Job` is added and no
@@ -793,18 +843,36 @@ mod tests {
                 layout(&on, W, H).into_iter().map(|w| w.id).collect::<Vec<_>>()
             })
             .collect();
-        for (id, job) in [
-            (Id::Plan, Job::Plan),
-            (Id::Apply, Job::Apply),
-            (Id::Scan, Job::Scan),
-            (Id::Import, Job::Import),
-            (Id::Check, Job::Check),
-            (Id::ReadPlayer, Job::ReadPlayer),
-            (Id::CheckPalettes, Job::CheckPalettes),
-            (Id::SendPalettes, Job::SendPalettes),
-        ] {
-            assert!(ids.contains(&id), "{job:?} has no button");
-            let mut m2 = m.clone();
+        // Every Last.fm job has its button in one of the account's states, so those are drawn too.
+        let mut signed_in = m.clone();
+        signed_in.lastfm = crate::Lastfm { has_key: true, user: Some("someone".into()), editing: false };
+        signed_in.player = crate::PlayerFacts {
+            read: true,
+            plays: vec![crate::PlayRow { when: 1, track: "T".into(), artist: "A".into(), kind: "PLAY".into() }],
+            ..Default::default()
+        };
+        signed_in.likes_plan = Some(crate::LikesPlan { device_add: 1, ..Default::default() });
+        let mut no_session = m.clone();
+        no_session.lastfm = crate::Lastfm { has_key: true, user: None, editing: false };
+        let mut typing = m.clone();
+        typing.key_input = "k".into();
+        typing.secret_input = "s".into();
+        let mut ids = ids;
+        for model in [&signed_in, &no_session, &typing] {
+            for t in crate::Tab::ALL {
+                let mut on = model.clone();
+                on.tab = t;
+                ids.extend(layout(&on, W, H).into_iter().map(|w| w.id));
+            }
+        }
+        for job in Job::ALL {
+            let id = ids.iter().copied().find(|id| crate::job_of(*id) == Some(job));
+            let id = id.unwrap_or_else(|| panic!("{job:?} has no button"));
+            let mut m2 = [&m, &signed_in, &no_session, &typing]
+                .into_iter()
+                .find(|model| crate::live(model, id))
+                .unwrap_or_else(|| panic!("{job:?}'s button is never live"))
+                .clone();
             assert_eq!(crate::click(&mut m2, id), Some(job));
         }
     }

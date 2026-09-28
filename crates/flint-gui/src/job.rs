@@ -45,6 +45,9 @@ pub struct Settings {
     pub internal: Option<PathBuf>,
     /// The folder of `.palette` files on this PC.
     pub palette_dir: Option<PathBuf>,
+    /// Settings ▸ Last.fm ▸ what was typed, for Save.
+    pub api_key: String,
+    pub api_secret: String,
 }
 
 impl Settings {
@@ -61,6 +64,8 @@ impl Settings {
             music_center: None,
             internal: None,
             palette_dir: None,
+            api_key: String::new(),
+            api_secret: String::new(),
         }
     }
 }
@@ -92,6 +97,14 @@ pub enum Update {
     Player(Box<crate::PlayerFacts>),
     /// The palette check's rows.
     Palettes(Vec<flint_core::palette::Row>),
+    /// The Last.fm account changed: a key saved, a sign-in, a sign-out.
+    Lastfm(crate::Lastfm),
+    /// Open this page in the browser. Only the platform can.
+    Open(String),
+    /// The plays left in the logs after a send.
+    Plays { plays: Vec<crate::PlayRow>, unreadable: usize },
+    /// What Compare likes found; `None` once it has been carried out.
+    Likes(Option<crate::LikesPlan>),
 }
 
 /// Run `job`. Returns the last word for the status line, or the reason it stopped.
@@ -108,7 +121,172 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::ReadPlayer => read_player_job(s, emit),
         Job::CheckPalettes => palettes_job(s, false, emit),
         Job::SendPalettes => palettes_job(s, true, emit),
+        Job::LastfmKey => lastfm_key_job(s, emit),
+        Job::LastfmSignIn => lastfm_sign_in_job(s, cancel, emit),
+        Job::LastfmSignOut => lastfm_sign_out_job(s, emit),
+        Job::Scrobble => scrobble_job(s, cancel, emit),
+        Job::CompareLikes => likes_job(s, false, cancel, emit),
+        Job::SyncLikes => likes_job(s, true, cancel, emit),
     }
+}
+
+// ── Last.fm ────────────────────────────────────────────────────────────────────────────────────
+//
+// The credentials live in the cache folder like everything else Flint keeps, and the window reads
+// and writes the same file `flint lastfm` does.
+
+fn lastfm_key_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::lastfm::Credentials;
+    let (key, secret) = (s.api_key.trim(), s.api_secret.trim());
+    if key.is_empty() || secret.is_empty() {
+        return Err("paste both the API key and the shared secret".into());
+    }
+    if key.chars().any(char::is_whitespace) || secret.chars().any(char::is_whitespace) {
+        return Err("a key and a secret are one word each — check what was pasted".into());
+    }
+    let mut creds = Credentials::load_in(&s.cache);
+    // A session belongs to the key that made it. A different key means signing in again.
+    if creds.api_key != key {
+        creds.session_key.clear();
+        creds.username.clear();
+    }
+    creds.api_key = key.to_string();
+    creds.api_secret = secret.to_string();
+    let path = creds.save_in(&s.cache).map_err(|e| format!("could not save the key: {e}"))?;
+    emit(Update::Log(format!("saved to {}", path.display())));
+    emit(Update::Lastfm(crate::lastfm_facts(&creds)));
+    Ok(if creds.is_ready() {
+        "Last.fm key saved.".into()
+    } else {
+        "Last.fm key saved. Now sign in with Last.fm.".into()
+    })
+}
+
+/// Signing in the way Last.fm asks desktop programs to: a token, its page in the browser, and then
+/// asking every few seconds whether the person has allowed it yet. Stop ends the wait.
+fn lastfm_sign_in_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::lastfm::{self, Client, Credentials, Error};
+    const ASK_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+    // The token is good for an hour; nobody is still on the page after ten minutes.
+    const GIVE_UP: std::time::Duration = std::time::Duration::from_secs(600);
+    let mut client = Client::new(Credentials::load_in(&s.cache)).map_err(|e| e.to_string())?;
+    emit(Update::Progress(None));
+    emit(Update::Say("asking Last.fm for a sign-in page…".into()));
+    let token = client.token().map_err(|e| e.to_string())?;
+    emit(Update::Open(lastfm::auth_url(&client.creds.api_key, &token)));
+    emit(Update::Say("Waiting for you to allow Flint on Last.fm's page in your browser…".into()));
+    let started = std::time::Instant::now();
+    loop {
+        let wait = std::time::Instant::now();
+        while wait.elapsed() < ASK_EVERY {
+            if stopped(cancel) {
+                return Ok("Sign-in stopped. Nothing was saved.".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        match client.session_from_token(&token) {
+            Ok((name, _)) => {
+                client.creds.save_in(&s.cache).map_err(|e| format!("could not save the session: {e}"))?;
+                emit(Update::Lastfm(crate::lastfm_facts(&client.creds)));
+                return Ok(format!("Signed in to Last.fm as {name}."));
+            }
+            Err(Error::Api { code, .. }) if code == lastfm::NOT_AUTHORISED_YET => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        if started.elapsed() > GIVE_UP {
+            return Err("Last.fm has not heard back from the browser in ten minutes. Press Sign in again.".into());
+        }
+    }
+}
+
+fn lastfm_sign_out_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::lastfm::Credentials;
+    let mut creds = Credentials::load_in(&s.cache);
+    creds.session_key.clear();
+    creds.username.clear();
+    creds.save_in(&s.cache).map_err(|e| format!("could not save: {e}"))?;
+    emit(Update::Lastfm(crate::lastfm_facts(&creds)));
+    Ok("Signed out. Last.fm still lists Flint until you remove it at last.fm/settings/applications.".into())
+}
+
+fn scrobble_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::{lastfm::Credentials, lastfm_sync};
+    emit(Update::Progress(None));
+    let report =
+        lastfm_sync::scrobble(&s.volumes, Credentials::load_in(&s.cache), true, &|| stopped(cancel), &mut |l| {
+            emit(Update::Log(l))
+        })?;
+    let (plays, unreadable) = plays_on(&s.volumes);
+    emit(Update::Plays { plays, unreadable });
+    let mut word = format!("Sent {} play(s): {} accepted", report.found, report.accepted);
+    if report.ignored > 0 {
+        word.push_str(&format!(", {} ignored", report.ignored));
+    }
+    if report.kept > 0 {
+        word.push_str(&format!(", {} kept in the log — see why below", report.kept));
+    }
+    if let Some(why) = report.stopped {
+        word.push_str(&format!(". Stopped: {why}"));
+    }
+    Ok(format!("{word}."))
+}
+
+fn likes_job(s: &Settings, apply: bool, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::{lastfm::Credentials, lastfm_sync};
+    emit(Update::Progress(None));
+    let report = lastfm_sync::likes(
+        &s.volumes,
+        Credentials::load_in(&s.cache),
+        &s.cache.join("likes-state.tsv"),
+        apply,
+        false,
+        &|| stopped(cancel),
+        &mut |l| emit(Update::Log(l)),
+    )?;
+    let p = &report.plan;
+    let plan = crate::LikesPlan {
+        liked: p.liked.len(),
+        device_add: p.device_add.len(),
+        device_remove: p.device_remove.len(),
+        lastfm_love: p.lastfm_love.len(),
+        lastfm_unlove: p.lastfm_unlove.len(),
+    };
+    if !apply {
+        emit(Update::Likes(Some(plan)));
+        return Ok(match plan.changes() {
+            0 => format!("Likes are in step: {} on both sides. Nothing to change.", plan.liked),
+            n => format!("{n} change(s) would keep likes in step. Nothing has been written yet."),
+        });
+    }
+    emit(Update::Likes(None));
+    if !report.pushed && report.loved + report.unloved == 0 {
+        return Ok("Nothing was changed.".into());
+    }
+    Ok(format!(
+        "Likes in step: {} loved and {} unloved on Last.fm{}.",
+        report.loved,
+        report.unloved,
+        if report.pushed { "; the player takes in the list on its next start" } else { "" }
+    ))
+}
+
+/// The plays in each volume's `.scrobbler.log`, newest first, and how many rows could not be read.
+fn plays_on(roots: &[PathBuf]) -> (Vec<crate::PlayRow>, usize) {
+    let (mut plays, mut unreadable) = (Vec::new(), 0);
+    for root in roots {
+        if let Ok(body) = std::fs::read_to_string(root.join(".scrobbler.log")) {
+            let parsed = flint_core::scrobblelog::parse(&body);
+            unreadable += parsed.unreadable.len();
+            plays.extend(parsed.entries.iter().map(|e| crate::PlayRow {
+                when: e.timestamp,
+                track: e.track.clone(),
+                artist: e.artist.clone(),
+                kind: if e.is_play() { "PLAY".into() } else { "SKIP".into() },
+            }));
+        }
+    }
+    plays.sort_by_key(|p| std::cmp::Reverse(p.when));
+    (plays, unreadable)
 }
 
 /// The `.palette` files in `dir`, as `(file name, contents)`. A file too big to be a palette, or
@@ -526,18 +704,6 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
         let scan = sync::scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
         let manifest = sync::Manifest::load(root);
         facts.albums.extend(albums_on(i, &scan, &manifest));
-
-        let log = root.join(".scrobbler.log");
-        if let Ok(body) = std::fs::read_to_string(&log) {
-            let parsed = flint_core::scrobblelog::parse(&body);
-            facts.unreadable += parsed.unreadable.len();
-            facts.plays.extend(parsed.entries.iter().map(|e| crate::PlayRow {
-                when: e.timestamp,
-                track: e.track.clone(),
-                artist: e.artist.clone(),
-                kind: if e.is_play() { "PLAY".into() } else { "SKIP".into() },
-            }));
-        }
         facts.likes += flint_core::likes::read_loved(&flint_core::likes::Volume::new(root, "")).len();
 
         if let Ok(dir) = std::fs::read_dir(root.join("cinder_palettes")) {
@@ -550,7 +716,7 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
             }
         }
     }
-    facts.plays.sort_by_key(|p| std::cmp::Reverse(p.when));
+    (facts.plays, facts.unreadable) = plays_on(&s.volumes);
     facts.palettes.sort_by_key(|p| p.name.to_lowercase());
     let summary = format!(
         "{} albums on the player, {} plays in the log, {} songs liked",
@@ -669,8 +835,7 @@ mod tests {
             Update::Say(l) | Update::Log(l) => lines.push(l),
             Update::Library(f) => library_facts = Some(f),
             Update::Volume(i, f) => volume_facts = Some((i, f)),
-            Update::Progress(_) | Update::Finding(_) | Update::Checked(_) | Update::Player(_) | Update::Palettes(_) => {
-            }
+            _ => {}
         })
         .unwrap();
         assert!(planned, "a plan that shows something must enable COPY");

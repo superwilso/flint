@@ -111,6 +111,120 @@ pub enum Id {
     CheckPalettes,
     /// Copy the new and changed palettes to the player.
     SendPalettes,
+    /// A line of text that takes typing: click to type into it.
+    Field(Field),
+    /// Check ▸ one verdict's card: show only the files with that verdict. Pressed again, all.
+    Verdict(usize),
+    /// Check ▸ forget the filter.
+    ClearFilter,
+    /// Settings ▸ Last.fm ▸ keep the API key and secret typed in.
+    LastfmSaveKey,
+    /// Settings ▸ Last.fm ▸ open the page where a key is made, in the browser.
+    LastfmGetKey,
+    /// Settings ▸ Last.fm ▸ sign in through the browser.
+    LastfmSignIn,
+    LastfmSignOut,
+    /// Settings ▸ Last.fm ▸ type a different key.
+    LastfmChangeKey,
+    /// …and go back to the one already saved.
+    LastfmKeepKey,
+    /// Likes & plays ▸ send the plays to Last.fm.
+    Scrobble,
+    /// Likes & plays ▸ work out what keeping likes in step would change. Writes nothing.
+    CompareLikes,
+    /// Likes & plays ▸ make those changes.
+    SyncLikes,
+}
+
+/// The lines of text the window takes typing into.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Field {
+    ApiKey,
+    ApiSecret,
+    /// Check ▸ the filter over the flagged files.
+    CheckFilter,
+}
+
+impl Field {
+    /// Shown as dots. The secret is a password in all but name: anyone holding it and the key can
+    /// act as this application.
+    pub fn masked(self) -> bool {
+        self == Field::ApiSecret
+    }
+
+    /// What an empty field says it is for.
+    pub fn placeholder(self) -> &'static str {
+        match self {
+            Field::ApiKey => "Paste the API key",
+            Field::ApiSecret => "Paste the shared secret",
+            Field::CheckFilter => "Filter by file, folder or reason",
+        }
+    }
+
+    /// Longer than any real key, filter or path fragment; a paste of a whole document stops here.
+    pub const MAX: usize = 200;
+}
+
+/// A key the focused field acts on. Everything that is not one of these is ignored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Key {
+    Char(char),
+    Backspace,
+    /// Ctrl+Backspace: empty the field.
+    Clear,
+    Enter,
+    Tab,
+    Escape,
+}
+
+/// Settings ▸ Last.fm, as far as the window needs to know it. Built from the credentials file by
+/// [`lastfm_facts`]; the secret and the session key never leave it.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Lastfm {
+    /// An API key and its secret are saved.
+    pub has_key: bool,
+    /// Signed in: `Some(name)`, where the name is empty if Last.fm never gave one.
+    pub user: Option<String>,
+    /// Settings is showing the key fields over a key that is already saved.
+    pub editing: bool,
+}
+
+impl Lastfm {
+    pub fn signed_in(&self) -> bool {
+        self.has_key && self.user.is_some()
+    }
+
+    /// Settings ▸ Last.fm ▸ Account, in words.
+    pub fn account(&self) -> String {
+        match (&self.user, self.has_key) {
+            (_, false) => "Not set up".into(),
+            (None, true) => "Not signed in".into(),
+            (Some(n), true) if n.is_empty() => "Signed in".into(),
+            (Some(n), true) => format!("Signed in as {n}"),
+        }
+    }
+}
+
+/// What the credentials file says, for the window.
+pub fn lastfm_facts(c: &flint_core::lastfm::Credentials) -> Lastfm {
+    let has_key = !c.api_key.is_empty() && !c.api_secret.is_empty();
+    Lastfm { has_key, user: (has_key && !c.session_key.is_empty()).then(|| c.username.clone()), editing: false }
+}
+
+/// What "Compare likes" found would change.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct LikesPlan {
+    pub liked: usize,
+    pub device_add: usize,
+    pub device_remove: usize,
+    pub lastfm_love: usize,
+    pub lastfm_unlove: usize,
+}
+
+impl LikesPlan {
+    pub fn changes(&self) -> usize {
+        self.device_add + self.device_remove + self.lastfm_love + self.lastfm_unlove
+    }
 }
 
 /// The window's pages, in the order the tabs are drawn — the same order in every page, so a tab
@@ -241,16 +355,7 @@ pub struct PlayerFacts {
     pub palettes: Vec<PaletteFile>,
 }
 
-/// What the window is doing. The controls that would start a second job are disabled while one is
-/// running, which is the whole of the state machine.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Phase {
-    #[default]
-    Idle,
-    Working,
-}
-
-/// A job the worker thread runs. The window never runs one itself — see `win32::start`.
+/// A job a worker thread runs. The window never runs one itself — see `win32::start`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Job {
     Plan,
@@ -264,6 +369,173 @@ pub enum Job {
     CheckPalettes,
     /// Copy the new and changed palettes to the player's `cinder_palettes`.
     SendPalettes,
+    /// Save the API key and secret typed into Settings.
+    LastfmKey,
+    /// Sign in through the browser: a token from Last.fm, its page opened, then wait for the allow.
+    LastfmSignIn,
+    /// Forget the session key. The API key stays.
+    LastfmSignOut,
+    /// Send the plays in `.scrobbler.log` to Last.fm, and take the sent ones out of it.
+    Scrobble,
+    /// Work out what keeping likes in step would change on each side. Writes nothing.
+    CompareLikes,
+    /// Carry that out, both ways.
+    SyncLikes,
+}
+
+/// Something a job needs to itself while it runs. Two jobs that need the same one cannot run at
+/// once; any others can.
+///
+/// **Why not one job at a time.** Until 0.3 the window ran exactly one job and greyed out every
+/// other button until it finished — and an analysis of a large library takes hours, so "Analyse
+/// library" locked the whole window for an evening over nothing: checking the FLACs, reading the
+/// player and sending palettes share nothing with it. What they genuinely cannot share is a file
+/// two of them would both write, or a player one of them is writing to, and that is what these are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hold {
+    /// The analysis cache. The scan and the import write it; a plan and a copy take analysis out
+    /// of the files into it, and tag the copies from it.
+    Cache,
+    /// The check store, `checks.tsv`.
+    Checks,
+    /// The player's drives, while something writes them or must read them whole.
+    Player,
+    /// The palette folder and the player's `cinder_palettes`.
+    Palettes,
+    /// The Last.fm credentials file and the account itself.
+    Lastfm,
+}
+
+impl Job {
+    /// Every job, in the order `code` numbers them.
+    pub const ALL: [Job; 14] = [
+        Job::Plan,
+        Job::Apply,
+        Job::Scan,
+        Job::Import,
+        Job::Check,
+        Job::ReadPlayer,
+        Job::CheckPalettes,
+        Job::SendPalettes,
+        Job::LastfmKey,
+        Job::LastfmSignIn,
+        Job::LastfmSignOut,
+        Job::Scrobble,
+        Job::CompareLikes,
+        Job::SyncLikes,
+    ];
+
+    /// A small number for the platform layer's messages.
+    pub fn code(self) -> usize {
+        Job::ALL.iter().position(|j| *j == self).unwrap_or(0)
+    }
+
+    pub fn from_code(code: usize) -> Option<Job> {
+        Job::ALL.get(code).copied()
+    }
+
+    pub fn holds(self) -> &'static [Hold] {
+        match self {
+            Job::Plan | Job::Apply => &[Hold::Cache, Hold::Player],
+            Job::Scan | Job::Import => &[Hold::Cache],
+            Job::Check => &[Hold::Checks],
+            Job::ReadPlayer => &[Hold::Player],
+            Job::CheckPalettes | Job::SendPalettes => &[Hold::Palettes],
+            Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Hold::Lastfm],
+            Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Hold::Lastfm, Hold::Player],
+        }
+    }
+
+    /// Does it read the music folder? Then the folder cannot change under it.
+    pub fn reads_library(self) -> bool {
+        matches!(self, Job::Plan | Job::Apply | Job::Scan | Job::Check)
+    }
+
+    /// Does it read or write the player's drives? Then they cannot change under it.
+    pub fn reads_volumes(self) -> bool {
+        matches!(
+            self,
+            Job::Plan
+                | Job::Apply
+                | Job::ReadPlayer
+                | Job::CheckPalettes
+                | Job::SendPalettes
+                | Job::Scrobble
+                | Job::CompareLikes
+                | Job::SyncLikes
+        )
+    }
+
+    /// The pages whose footer shows this job's bar and its Stop.
+    pub fn pages(self) -> &'static [Tab] {
+        match self {
+            Job::Plan | Job::Apply => &[Tab::Sync],
+            Job::Scan | Job::Import => &[Tab::SensMe],
+            Job::Check => &[Tab::Check],
+            Job::ReadPlayer => &[Tab::Player, Tab::Likes],
+            Job::CheckPalettes | Job::SendPalettes => &[Tab::Palettes],
+            Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Tab::Settings],
+            Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Tab::Likes],
+        }
+    }
+
+    /// What it is doing, for a page that is not its own: "…while analysing the library".
+    pub fn doing(self) -> &'static str {
+        match self {
+            Job::Plan => "working out the sync",
+            Job::Apply => "copying to the player",
+            Job::Scan => "analysing the library",
+            Job::Import => "importing Music Center's analysis",
+            Job::Check => "checking the FLACs",
+            Job::ReadPlayer => "reading the player",
+            Job::CheckPalettes => "checking palettes",
+            Job::SendPalettes => "sending palettes",
+            Job::LastfmKey => "saving the Last.fm key",
+            Job::LastfmSignIn => "signing in to Last.fm",
+            Job::LastfmSignOut => "signing out of Last.fm",
+            Job::Scrobble => "sending plays to Last.fm",
+            Job::CompareLikes => "comparing likes",
+            Job::SyncLikes => "syncing likes",
+        }
+    }
+
+    /// Which log its lines go to.
+    pub fn pane(self) -> Pane {
+        match self {
+            Job::Scan | Job::Import => Pane::SensMe,
+            Job::LastfmKey
+            | Job::LastfmSignIn
+            | Job::LastfmSignOut
+            | Job::Scrobble
+            | Job::CompareLikes
+            | Job::SyncLikes => Pane::Lastfm,
+            _ => Pane::Sync,
+        }
+    }
+}
+
+/// The logs. A job's chatter goes to the page it belongs to, so an analysis running in the
+/// background does not interleave four thousand lines into a sync's plan.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pane {
+    Sync,
+    SensMe,
+    Lastfm,
+}
+
+/// A job that is running, and what it last said.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Running {
+    pub job: Job,
+    /// 0.0..=1.0, or `None` for a job with no measurable length.
+    pub progress: Option<f32>,
+    /// The line under its bar.
+    pub status: String,
+}
+
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// What a destination volume is holding, and what this plan would add to it.
@@ -302,12 +574,17 @@ pub struct Model {
     pub playlists: Option<PathBuf>,
     pub sensme: bool,
     pub extras: bool,
-    pub phase: Phase,
-    /// 0.0..=1.0, or `None` for a job with no measurable length.
-    pub progress: Option<f32>,
-    /// One line per thing that happened, newest last. The pane shows the tail.
+    /// The jobs running now, oldest first.
+    pub running: Vec<Running>,
+    /// One line per thing that happened, newest last. The pane shows the tail. This is the Sync
+    /// page's log, and the log of every job without a page of its own.
     pub log: Vec<String>,
-    /// The line under the progress bar: what is happening now.
+    /// The SensMe page's log: the analysis and the import.
+    pub sensme_log: Vec<String>,
+    /// The Likes & plays page's log: everything that talked to Last.fm.
+    pub lastfm_log: Vec<String>,
+    /// The last thing a finished job said. A page with a job of its own running shows that job's
+    /// line instead.
     pub status: String,
     /// True once a plan has been made and nothing has changed since, which is what makes COPY
     /// legal: this window never copies anything the user has not been shown first.
@@ -326,8 +603,18 @@ pub struct Model {
     pub findings: Vec<CheckRow>,
     /// What "Read the player" found.
     pub player: PlayerFacts,
-    /// Settings ▸ Last.fm, in words: who is signed in, or how to sign in.
-    pub lastfm: String,
+    /// Settings ▸ Last.fm.
+    pub lastfm: Lastfm,
+    /// What is typed into the key fields. Cleared once it is saved.
+    pub key_input: String,
+    pub secret_input: String,
+    /// The field typing goes to, if any.
+    pub focus: Option<Field>,
+    /// Check ▸ the filter: text to look for, and one verdict (an index into `pages::VERDICTS`).
+    pub check_filter: String,
+    pub check_verdict: Option<usize>,
+    /// The last "Compare likes", until something makes it stale.
+    pub likes_plan: Option<LikesPlan>,
     /// Where the analysis cache lives, for Settings.
     pub cache_dir: String,
     /// The folder of `.palette` files on this PC.
@@ -344,29 +631,147 @@ impl Model {
             sensme: true,
             extras: true,
             status: "Choose a music folder and a player volume.".into(),
-            lastfm: "Not set up".into(),
             ..Model::default()
         }
     }
 
-    /// Is there enough here to plan a sync?
+    /// Is there enough here to plan a sync, and nothing in its way?
     pub fn can_plan(&self) -> bool {
-        self.phase == Phase::Idle && self.library.is_some() && self.volumes.iter().any(Option::is_some)
+        live(self, Id::Plan)
     }
 
     /// COPY is only ever offered for a plan the user has already seen. A change to any input
     /// clears that, so the button cannot carry over a plan made against different settings.
     pub fn can_apply(&self) -> bool {
-        self.can_plan() && self.planned
+        live(self, Id::Apply)
     }
 
-    /// The one control the window is asking for next, or `Id::None` while a job is running. It is
-    /// the ONLY thing drawn in the accent, so the window always has exactly one place the eye is
-    /// meant to land: a folder, then a volume, then the plan, then the copy. A tool that is
-    /// perfectly pressable is not the next step — `Import Music Center` is available from the
-    /// first frame and is still not what the window is asking for.
+    pub fn busy(&self) -> bool {
+        !self.running.is_empty()
+    }
+
+    pub fn is_running(&self, job: Job) -> bool {
+        self.running.iter().any(|r| r.job == job)
+    }
+
+    /// Is something running that holds `h`?
+    pub fn held(&self, h: Hold) -> bool {
+        self.running.iter().any(|r| r.job.holds().contains(&h))
+    }
+
+    /// The running job in `job`'s way, if any: the one holding something it needs.
+    pub fn blocker(&self, job: Job) -> Option<Job> {
+        self.running.iter().map(|r| r.job).find(|r| r.holds().iter().any(|h| job.holds().contains(h)))
+    }
+
+    pub fn can_start(&self, job: Job) -> bool {
+        self.blocker(job).is_none()
+    }
+
+    /// The music folder cannot change while something is reading it.
+    pub fn library_locked(&self) -> bool {
+        self.running.iter().any(|r| r.job.reads_library())
+    }
+
+    /// Nor the player's drives.
+    pub fn volumes_locked(&self) -> bool {
+        self.running.iter().any(|r| r.job.reads_volumes())
+    }
+
+    /// Nor the playlists and the two switches, while a plan or a copy is using them.
+    pub fn sync_running(&self) -> bool {
+        self.is_running(Job::Plan) || self.is_running(Job::Apply)
+    }
+
+    /// The job whose bar, line and Stop the footer of `tab` shows: the newest of that page's own.
+    pub fn footer_job(&self, tab: Tab) -> Option<&Running> {
+        self.running.iter().rev().find(|r| r.job.pages().contains(&tab))
+    }
+
+    /// The job a Stop on `tab` stops. Settings has no footer; its Stop is "Stop waiting" beside
+    /// the Last.fm sign-in.
+    pub fn stop_target(&self, tab: Tab) -> Option<Job> {
+        match tab {
+            Tab::Settings => self.is_running(Job::LastfmSignIn).then_some(Job::LastfmSignIn),
+            t => self.footer_job(t).map(|r| r.job),
+        }
+    }
+
+    /// The line at the bottom of `tab`: its own job's latest word; else what a job running
+    /// elsewhere is doing, so a page never looks idle while the machine is not; else the last
+    /// thing any job said.
+    pub fn status_line(&self, tab: Tab) -> String {
+        if let Some(r) = self.footer_job(tab) {
+            return if r.status.is_empty() { format!("{}…", cap(r.job.doing())) } else { r.status.clone() };
+        }
+        if let Some(r) = self.running.last() {
+            let more =
+                if self.running.len() > 1 { format!(" (and {} more)", self.running.len() - 1) } else { String::new() };
+            return if r.status.is_empty() {
+                format!("{}{more}…", cap(r.job.doing()))
+            } else {
+                format!("{}{more}: {}", cap(r.job.doing()), r.status)
+            };
+        }
+        self.status.clone()
+    }
+
+    /// Why `job`'s button is grey when its inputs are all there: something else holds what it
+    /// needs. `None` when it is free, or running itself.
+    pub fn waits_for(&self, job: Job) -> Option<String> {
+        let b = self.blocker(job)?;
+        (b != job).then(|| format!("Available when {} finishes.", b.doing()))
+    }
+
+    pub fn field(&self, f: Field) -> &str {
+        match f {
+            Field::ApiKey => &self.key_input,
+            Field::ApiSecret => &self.secret_input,
+            Field::CheckFilter => &self.check_filter,
+        }
+    }
+
+    fn field_mut(&mut self, f: Field) -> &mut String {
+        match f {
+            Field::ApiKey => &mut self.key_input,
+            Field::ApiSecret => &mut self.secret_input,
+            Field::CheckFilter => &mut self.check_filter,
+        }
+    }
+
+    /// The flagged files the Check page's table shows: the verdict chosen, if one is, and the
+    /// filter text anywhere in the verdict, the path or the reason, ignoring case.
+    pub fn check_rows(&self) -> Vec<&CheckRow> {
+        let needle = self.check_filter.trim().to_lowercase();
+        let verdict = self.check_verdict.and_then(|i| pages::VERDICTS.get(i)).map(|v| v.0);
+        self.findings
+            .iter()
+            .filter(|r| verdict.is_none_or(|v| r.verdict == v))
+            .filter(|r| {
+                needle.is_empty()
+                    || r.file.to_lowercase().contains(&needle)
+                    || r.why.to_lowercase().contains(&needle)
+                    || r.verdict.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    /// Where a job's lines go.
+    pub fn pane_mut(&mut self, p: Pane) -> &mut Vec<String> {
+        match p {
+            Pane::Sync => &mut self.log,
+            Pane::SensMe => &mut self.sensme_log,
+            Pane::Lastfm => &mut self.lastfm_log,
+        }
+    }
+
+    /// The one control the window is asking for next, or `Id::None` while the sync cannot go
+    /// ahead. It is the ONLY thing drawn in the accent, so the window always has exactly one place
+    /// the eye is meant to land: a folder, then a volume, then the plan, then the copy. A tool
+    /// that is perfectly pressable is not the next step — `Import Music Center` is available from
+    /// the first frame and is still not what the window is asking for.
     pub fn next_step(&self) -> Id {
-        if self.phase == Phase::Working {
+        if !self.can_start(Job::Plan) {
             Id::None
         } else if self.library.is_none() {
             Id::PickLibrary
@@ -485,6 +890,18 @@ pub enum Kind {
         tone: Tone,
         strong: bool,
         mono: bool,
+    },
+    /// A line of text that takes typing. The widget's text is what is in it.
+    Field {
+        focused: bool,
+        masked: bool,
+        enabled: bool,
+        placeholder: &'static str,
+    },
+    /// A card that is also a choice — Check's verdict counts, which filter the table. `on` is the
+    /// one chosen.
+    Pick {
+        on: bool,
     },
 }
 
@@ -642,8 +1059,8 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     let h = h.max(MIN_H);
     let inner = w - PAD * 2;
     let mut out = Vec::with_capacity(48);
-    let busy = m.phase == Phase::Working;
     let next = m.next_step();
+    let on = |id: Id| live(m, id);
 
     // ── the band ───────────────────────────────────────────────────────────────────────────
     band(m, w, &mut out);
@@ -666,7 +1083,7 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     out.push(Widget {
         id: Id::PickLibrary,
         rect: Rect::new(w - PAD - CHOOSE_W, y - 2, CHOOSE_W, BTN_H),
-        kind: Kind::Button { primary: next == Id::PickLibrary, enabled: !busy },
+        kind: Kind::Button { primary: next == Id::PickLibrary, enabled: on(Id::PickLibrary) },
         text: "Choose…".into(),
     });
     y += 30;
@@ -697,7 +1114,7 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     out.push(Widget {
         id: Id::PickPlaylists,
         rect: Rect::new(px, y, 84, 26),
-        kind: Kind::Tool { enabled: !busy },
+        kind: Kind::Tool { enabled: on(Id::PickPlaylists) },
         text: "Choose…".into(),
     });
     if m.playlists.is_some() {
@@ -705,7 +1122,7 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
         out.push(Widget {
             id: Id::ClearPlaylists,
             rect: Rect::new(px, y, 62, 26),
-            kind: Kind::Tool { enabled: !busy },
+            kind: Kind::Tool { enabled: on(Id::ClearPlaylists) },
             text: "Clear".into(),
         });
     }
@@ -748,14 +1165,14 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
             out.push(Widget {
                 id: Id::ClearVolume(i),
                 rect: Rect::new(w - PAD - CARD_PAD - CHOOSE_W - CLEAR_W - 8, y + 8, CLEAR_W, BTN_H),
-                kind: Kind::Button { primary: false, enabled: !busy },
+                kind: Kind::Button { primary: false, enabled: on(Id::ClearVolume(i)) },
                 text: "Clear".into(),
             });
         }
         out.push(Widget {
             id: Id::PickVolume(i),
             rect: Rect::new(w - PAD - CARD_PAD - CHOOSE_W, y + 8, CHOOSE_W, BTN_H),
-            kind: Kind::Button { primary: next == Id::PickVolume(i), enabled: !busy },
+            kind: Kind::Button { primary: next == Id::PickVolume(i), enabled: on(Id::PickVolume(i)) },
             text: "Choose…".into(),
         });
 
@@ -825,13 +1242,13 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     out.push(Widget {
         id: Id::ToggleSensMe,
         rect: Rect::new(PAD, y, 300, 22),
-        kind: Kind::Check { on: m.sensme, enabled: !busy },
+        kind: Kind::Check { on: m.sensme, enabled: on(Id::ToggleSensMe) },
         text: "Write SensMe tags into the copies".into(),
     });
     out.push(Widget {
         id: Id::ToggleExtras,
         rect: Rect::new(PAD + 320, y, 280, 22),
-        kind: Kind::Check { on: m.extras, enabled: !busy },
+        kind: Kind::Check { on: m.extras, enabled: on(Id::ToggleExtras) },
         text: "Copy cover art and lyrics too".into(),
     });
     y += 22;
@@ -861,13 +1278,19 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
         });
         x += width + 10;
     }
-    if busy {
+    let sync_job = m.footer_job(Tab::Sync);
+    if sync_job.is_some() {
         out.push(Widget {
             id: Id::Stop,
             rect: Rect::new(w - PAD - STOP_W, y, STOP_W, act_h),
             kind: Kind::Button { primary: false, enabled: true },
             text: "Stop".into(),
         });
+    } else if let Some(why) = m.waits_for(Job::Plan) {
+        // Grey with every input in place is a question; this is the answer. An analysis running
+        // for an hour holds the cache the copy tags from, and the window should say so rather
+        // than look broken.
+        out.push(hint(why, Rect::new(x + 4, y + 9, (w - PAD - x - 4).max(40), 18)));
     }
     y += act_h + 10;
 
@@ -877,15 +1300,15 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
 
     // ── progress, status, log ──────────────────────────────────────────────────────────────
     //
-    // The bar exists only while a job does. An empty trough at rest is a control that is not
+    // The bar exists only while a sync job does. An empty trough at rest is a control that is not
     // controlling anything, and the space it was holding goes to the log, which is the part of
     // this window people actually read.
     y += 16;
-    let status_y = if busy {
+    let status_y = if let Some(r) = sync_job {
         out.push(Widget {
             id: Id::None,
             rect: Rect::new(PAD, y, inner, 8),
-            kind: Kind::Progress(m.progress),
+            kind: Kind::Progress(r.progress),
             text: String::new(),
         });
         y + 14
@@ -896,7 +1319,7 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
         id: Id::None,
         rect: Rect::new(PAD, status_y, inner, 20),
         kind: Kind::Status,
-        text: m.status.clone(),
+        text: m.status_line(Tab::Sync),
     });
 
     let log_y = status_y + 28;
@@ -946,13 +1369,77 @@ pub fn hit(m: &Model, w: i32, h: i32, x: i32, y: i32) -> Option<Id> {
             // `Tool` was missing from this list until 0.2, so every outlined button — Analyse
             // library, Import Music Center, Check FLACs and the playlist folder's Choose… and
             // Clear — was drawn, lit up under the pointer's hand cursor… and ignored the click.
-            Kind::Button { enabled, .. } | Kind::Check { enabled, .. } | Kind::Tool { enabled } => enabled,
+            Kind::Button { enabled, .. }
+            | Kind::Check { enabled, .. }
+            | Kind::Tool { enabled }
+            | Kind::Field { enabled, .. } => enabled,
             // A tab is always live: looking at another page never starts or stops anything.
-            Kind::Tab { .. } | Kind::Segment { .. } => true,
+            Kind::Tab { .. } | Kind::Segment { .. } | Kind::Pick { .. } => true,
             _ => false,
         };
         (live && wid.id != Id::None && wid.rect.contains(x, y)).then_some(wid.id)
     })
+}
+
+/// The job a control starts, if it starts one.
+pub fn job_of(id: Id) -> Option<Job> {
+    Some(match id {
+        Id::Plan => Job::Plan,
+        Id::Apply => Job::Apply,
+        Id::Scan => Job::Scan,
+        Id::Import => Job::Import,
+        Id::Check => Job::Check,
+        Id::ReadPlayer => Job::ReadPlayer,
+        Id::CheckPalettes => Job::CheckPalettes,
+        Id::SendPalettes => Job::SendPalettes,
+        Id::LastfmSaveKey => Job::LastfmKey,
+        Id::LastfmSignIn => Job::LastfmSignIn,
+        Id::LastfmSignOut => Job::LastfmSignOut,
+        Id::Scrobble => Job::Scrobble,
+        Id::CompareLikes => Job::CompareLikes,
+        Id::SyncLikes => Job::SyncLikes,
+        _ => return None,
+    })
+}
+
+/// Everything `job` reads is there — whether or not something else is in its way.
+fn ready(m: &Model, job: Job) -> bool {
+    let volume = m.volumes.iter().any(Option::is_some);
+    match job {
+        Job::Plan => m.library.is_some() && volume,
+        Job::Apply => m.library.is_some() && volume && m.planned,
+        Job::Scan | Job::Check => m.library.is_some(),
+        Job::Import => true,
+        Job::ReadPlayer => volume,
+        Job::CheckPalettes => m.palette_dir.is_some() || m.volumes[0].is_some(),
+        Job::SendPalettes => m.volumes[0].is_some() && !flint_core::palette::to_send(&m.palette_rows).is_empty(),
+        Job::LastfmKey => !m.key_input.trim().is_empty() && !m.secret_input.trim().is_empty(),
+        Job::LastfmSignIn => m.lastfm.has_key,
+        Job::LastfmSignOut => m.lastfm.user.is_some(),
+        // What Send sends is the table the page shows, so the player has to have been read.
+        Job::Scrobble => {
+            m.lastfm.signed_in() && volume && m.player.read && m.player.plays.iter().any(|p| p.kind == "PLAY")
+        }
+        Job::CompareLikes => m.lastfm.signed_in() && volume,
+        Job::SyncLikes => m.lastfm.signed_in() && volume && m.likes_plan.is_some_and(|p| p.changes() > 0),
+    }
+}
+
+/// Would a click on `id` do anything now? The layout draws a control live exactly when this says
+/// so and `click` acts exactly when it says so — one answer for both, so a button cannot look
+/// pressable and ignore the press, or the other way round.
+pub fn live(m: &Model, id: Id) -> bool {
+    match id {
+        Id::None => false,
+        Id::Tab(_) | Id::Theme(_) | Id::Stop | Id::Verdict(_) | Id::ClearFilter | Id::LastfmGetKey => true,
+        Id::PickLibrary => !m.library_locked(),
+        Id::PickVolume(_) | Id::ClearVolume(_) => !m.volumes_locked(),
+        Id::PickPlaylists | Id::ClearPlaylists | Id::ToggleSensMe | Id::ToggleExtras => !m.sync_running(),
+        Id::PickPalettes => !m.held(Hold::Palettes),
+        Id::Field(Field::CheckFilter) => true,
+        Id::Field(_) | Id::LastfmChangeKey | Id::LastfmKeepKey => !m.held(Hold::Lastfm),
+        other => job_of(other).is_some_and(|job| ready(m, job) && m.can_start(job)),
+    }
 }
 
 /// Apply a click to the model, and say which job (if any) the platform layer should start.
@@ -960,56 +1447,220 @@ pub fn hit(m: &Model, w: i32, h: i32, x: i32, y: i32) -> Option<Id> {
 /// The file pickers are the platform's business — this returns the `Id` for those and the caller
 /// opens a dialog, because a folder chooser is the one thing that cannot be pure.
 pub fn click(m: &mut Model, id: Id) -> Option<Job> {
+    if !live(m, id) {
+        return None;
+    }
+    if !matches!(id, Id::Field(_)) {
+        m.focus = None;
+    }
     match id {
         Id::ToggleSensMe => {
             m.sensme = !m.sensme;
             m.invalidate_plan();
-            None
         }
         Id::ToggleExtras => {
             m.extras = !m.extras;
             m.invalidate_plan();
-            None
         }
         Id::ClearVolume(i) => {
             m.volumes[i] = None;
             m.invalidate_plan();
-            None
+            m.likes_plan = None;
         }
         Id::ClearPlaylists => {
             m.playlists = None;
             m.invalidate_plan();
-            None
         }
-        Id::Plan => m.can_plan().then_some(Job::Plan),
-        Id::Apply => m.can_apply().then_some(Job::Apply),
-        Id::Scan => (m.phase == Phase::Idle && m.library.is_some()).then_some(Job::Scan),
-        Id::Import => (m.phase == Phase::Idle).then_some(Job::Import),
-        Id::Check => (m.phase == Phase::Idle && m.library.is_some()).then_some(Job::Check),
-        Id::ReadPlayer => (m.phase == Phase::Idle && m.volumes.iter().any(Option::is_some)).then_some(Job::ReadPlayer),
-        Id::CheckPalettes => (m.phase == Phase::Idle && (m.palette_dir.is_some() || m.volumes[0].is_some()))
-            .then_some(Job::CheckPalettes),
-        Id::SendPalettes => (m.phase == Phase::Idle
-            && m.volumes[0].is_some()
-            && !flint_core::palette::to_send(&m.palette_rows).is_empty())
-        .then_some(Job::SendPalettes),
-        Id::Tab(t) => {
-            m.tab = t;
-            None
+        Id::Tab(t) => m.tab = t,
+        Id::Theme(p) => m.theme = p,
+        Id::Field(f) => m.focus = Some(f),
+        Id::Verdict(i) => m.check_verdict = if m.check_verdict == Some(i) { None } else { Some(i) },
+        Id::ClearFilter => {
+            m.check_verdict = None;
+            m.check_filter.clear();
         }
-        Id::Theme(p) => {
-            m.theme = p;
-            None
+        Id::LastfmChangeKey => {
+            m.lastfm.editing = true;
+            m.focus = Some(Field::ApiKey);
         }
+        Id::LastfmKeepKey => {
+            m.lastfm.editing = false;
+            m.key_input.clear();
+            m.secret_input.clear();
+        }
+        other => return job_of(other),
+    }
+    None
+}
+
+/// A key pressed while a field has the focus. Returns a job when Enter means one: in the key
+/// fields, Enter saves them.
+pub fn key(m: &mut Model, k: Key) -> Option<Job> {
+    let f = m.focus?;
+    if !live(m, Id::Field(f)) {
+        m.focus = None;
+        return None;
+    }
+    match k {
+        Key::Char(c) if !c.is_control() => {
+            let text = m.field_mut(f);
+            if text.chars().count() < Field::MAX {
+                text.push(c);
+            }
+        }
+        Key::Char(_) => {}
+        Key::Backspace => {
+            m.field_mut(f).pop();
+        }
+        Key::Clear => m.field_mut(f).clear(),
+        Key::Tab => {
+            m.focus = match f {
+                Field::ApiKey => Some(Field::ApiSecret),
+                Field::ApiSecret => Some(Field::ApiKey),
+                Field::CheckFilter => Some(Field::CheckFilter),
+            }
+        }
+        Key::Escape => m.focus = None,
+        Key::Enter => {
+            if matches!(f, Field::ApiKey | Field::ApiSecret) {
+                return click(m, Id::LastfmSaveKey);
+            }
+            m.focus = None;
+        }
+    }
+    None
+}
+
+/// Text from the clipboard, into the focused field. One line: a key copied off a web page often
+/// brings a newline or a space with it, and neither belongs in a key.
+pub fn paste(m: &mut Model, text: &str) {
+    let Some(f) = m.focus else { return };
+    if !live(m, Id::Field(f)) {
+        return;
+    }
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line: String = if matches!(f, Field::ApiKey | Field::ApiSecret) {
+        line.chars().filter(|c| !c.is_whitespace()).collect()
+    } else {
+        line.to_string()
+    };
+    let field = m.field_mut(f);
+    let room = Field::MAX.saturating_sub(field.chars().count());
+    field.extend(line.chars().filter(|c| !c.is_control()).take(room));
+}
+
+/// A page on the web a control opens in the browser, rather than a job.
+pub fn url_for(id: Id) -> Option<&'static str> {
+    match id {
+        Id::LastfmGetKey => Some(flint_core::lastfm::CREATE_KEY_URL),
         _ => None,
     }
+}
+
+/// `job` has been handed to a worker. Its pane is cleared for it and anything it makes stale is
+/// forgotten.
+pub fn started(m: &mut Model, job: Job) {
+    m.running.retain(|r| r.job != job);
+    m.running.push(Running { job, progress: None, status: String::new() });
+    match job {
+        // A sync's log is the plan it shows; a new one replaces it. Other jobs that log to the
+        // Sync pane append, because that pane may be showing a plan someone is reading.
+        Job::Plan | Job::Apply => m.log.clear(),
+        Job::Scan | Job::Import => m.sensme_log.clear(),
+        Job::Scrobble | Job::CompareLikes | Job::SyncLikes => m.lastfm_log.clear(),
+        _ => {}
+    }
+    // Anything that changes the analysis cache changes what a copy would tag, so the shown plan
+    // is spent: a copy only ever carries out a plan that is still true. A copy that has been
+    // carried out does not come back either — the window asks to be shown the new state of the
+    // player rather than offering to copy the same plan a second time.
+    if job.holds().contains(&Hold::Cache) {
+        m.planned = false;
+    }
+    if job == Job::Check {
+        m.findings.clear();
+    }
+    if matches!(job, Job::CompareLikes | Job::SyncLikes) {
+        m.likes_plan = None;
+    }
+}
+
+/// One thing a running job said.
+pub fn update(m: &mut Model, job: Job, u: job::Update) {
+    use job::Update;
+    let pane = job.pane();
+    match u {
+        Update::Say(line) => {
+            if let Some(r) = m.running.iter_mut().find(|r| r.job == job) {
+                r.status = line.clone();
+            }
+            // A check's per-file progress is a status line, not a log: thousands of them would bury
+            // whatever the Sync pane is showing.
+            if job != Job::Check {
+                m.pane_mut(pane).push(line);
+            }
+        }
+        Update::Log(line) => m.pane_mut(pane).push(line),
+        Update::Progress(p) => {
+            if let Some(r) = m.running.iter_mut().find(|r| r.job == job) {
+                r.progress = p;
+            }
+        }
+        Update::Planned => m.planned = job == Job::Plan,
+        Update::Library(facts) => m.source = Some(facts),
+        Update::Volume(i, facts) => {
+            if let Some(slot) = m.dest.get_mut(i) {
+                *slot = Some(facts);
+            }
+        }
+        Update::Finding(row) => m.findings.push(row),
+        Update::Checked(n) => m.checked = Some(n),
+        Update::Player(facts) => m.player = *facts,
+        Update::Palettes(rows) => m.palette_rows = rows,
+        Update::Lastfm(facts) => {
+            m.lastfm = facts;
+            if !m.lastfm.editing {
+                m.key_input.clear();
+                m.secret_input.clear();
+            }
+        }
+        Update::Plays { plays, unreadable } => {
+            m.player.plays = plays;
+            m.player.unreadable = unreadable;
+        }
+        Update::Likes(plan) => m.likes_plan = plan,
+        // The platform opens it; there is nothing to keep.
+        Update::Open(_) => {}
+    }
+    // The log is unbounded otherwise: a library of 40,000 tracks would hold 40,000 strings for the
+    // sake of the 9 lines the pane shows.
+    const KEEP: usize = 2_000;
+    let log = m.pane_mut(pane);
+    if log.len() > KEEP * 2 {
+        log.drain(..log.len() - KEEP);
+    }
+}
+
+/// `job` has finished. Returns the reason when it failed, for the platform to show in a box.
+pub fn finished(m: &mut Model, job: Job, result: Result<String, String>) -> Option<String> {
+    m.running.retain(|r| r.job != job);
+    let (line, err) = match result {
+        Ok(word) => (word, None),
+        Err(why) => (format!("stopped: {why}"), Some(why)),
+    };
+    m.status = line.clone();
+    m.pane_mut(job.pane()).push(line);
+    err
 }
 
 /// A folder the user picked, for `id`. Any of these invalidates a shown plan.
 pub fn set_path(m: &mut Model, id: Id, path: PathBuf) {
     match id {
         Id::PickLibrary => m.library = Some(path),
-        Id::PickVolume(i) => m.volumes[i] = Some(path),
+        Id::PickVolume(i) => {
+            m.volumes[i] = Some(path);
+            m.likes_plan = None;
+        }
         Id::PickPlaylists => m.playlists = Some(path),
         Id::PickPalettes => {
             // A new folder is a new comparison; the old rows describe the old one.
@@ -1112,22 +1763,151 @@ mod tests {
         assert!(!m.can_apply(), "choosing a different library left a stale plan usable");
     }
 
-    /// With a job running, the things that would start a second one are dead and STOP appears.
+    /// With a copy running, the jobs that share anything with it are dead and STOP appears. A
+    /// check shares nothing with a copy — it reads the library, which a copy never writes — so it
+    /// may still start.
     #[test]
     fn a_running_job_disables_the_starters_and_offers_stop() {
         let mut m = ready();
         m.planned = true;
-        m.phase = Phase::Working;
-        for id in [Id::Plan, Id::Apply, Id::Scan, Id::Import, Id::Check] {
-            assert_eq!(click(&mut m, id), None, "{id:?} started a second job");
+        started(&mut m, Job::Apply);
+        for id in [Id::Plan, Id::Apply, Id::Scan, Id::Import, Id::ReadPlayer] {
+            assert_eq!(click(&mut m, id), None, "{id:?} started beside a copy");
         }
         let stop = layout(&m, W, H).into_iter().find(|w| w.id == Id::Stop);
         let stop = stop.expect("a running job offers a way to stop it");
         assert_eq!(hit(&m, W, H, stop.rect.x + 4, stop.rect.y + 4), Some(Id::Stop));
+        assert_eq!(m.stop_target(Tab::Sync), Some(Job::Apply));
         // …and the pickers are dead too, so a path cannot change under a running job.
         assert!(hit(&m, W, H, 0, 0).is_none());
         let pick = layout(&m, W, H).into_iter().find(|w| w.id == Id::PickLibrary).unwrap();
         assert_eq!(hit(&m, W, H, pick.rect.x + 4, pick.rect.y + 4), None);
+        assert_eq!(click(&mut m, Id::Check), Some(Job::Check));
+    }
+
+    /// The question that started this: an analysis runs for hours, and it holds only the analysis
+    /// cache. Everything that does not touch the cache stays live while it runs; the two that do
+    /// (a plan tags copies from it) say what they are waiting for.
+    #[test]
+    fn a_scan_leaves_everything_it_does_not_share_live() {
+        let mut m = ready();
+        m.lastfm = Lastfm { has_key: true, user: None, editing: false };
+        started(&mut m, Job::Scan);
+        for id in [
+            Id::Check,
+            Id::ReadPlayer,
+            Id::CheckPalettes,
+            Id::LastfmSignIn,
+            Id::PickVolume(1),
+            Id::PickPlaylists,
+            Id::ToggleSensMe,
+            Id::Tab(Tab::Likes),
+        ] {
+            assert!(live(&m, id), "{id:?} is dead during a scan");
+        }
+        for id in [Id::Plan, Id::Scan, Id::Import, Id::PickLibrary] {
+            assert!(!live(&m, id), "{id:?} is live during a scan");
+        }
+        assert_eq!(m.waits_for(Job::Plan).as_deref(), Some("Available when analysing the library finishes."));
+        assert_eq!(m.waits_for(Job::Check), None);
+        // Two at once: the check starts, and each job keeps its own line.
+        assert_eq!(click(&mut m, Id::Check), Some(Job::Check));
+        started(&mut m, Job::Check);
+        update(&mut m, Job::Scan, job::Update::Say("[3/456] Says.flac".into()));
+        update(&mut m, Job::Check, job::Update::Say("12/3184 checked".into()));
+        assert_eq!(m.status_line(Tab::SensMe), "[3/456] Says.flac");
+        assert_eq!(m.status_line(Tab::Check), "12/3184 checked");
+        assert_eq!(m.sensme_log, vec!["[3/456] Says.flac".to_string()], "a check's progress is not logged");
+        assert!(m.log.is_empty(), "a scan's lines do not land in the Sync log");
+        assert!(m.status_line(Tab::Sync).contains("(and 1 more)"), "{}", m.status_line(Tab::Sync));
+        // The scan finishing frees the plan, and leaves the check running.
+        assert_eq!(finished(&mut m, Job::Scan, Ok("Analysed 456 tracks.".into())), None);
+        assert!(live(&m, Id::Plan));
+        assert!(m.is_running(Job::Check) && !m.is_running(Job::Scan));
+        assert_eq!(m.sensme_log.last().map(String::as_str), Some("Analysed 456 tracks."));
+        assert_eq!(finished(&mut m, Job::Check, Err("ffmpeg is missing".into())).as_deref(), Some("ffmpeg is missing"));
+        assert!(!m.busy());
+    }
+
+    /// Settings has no footer; its Stop is the one beside a sign-in that is waiting.
+    #[test]
+    fn stop_on_settings_stops_the_sign_in() {
+        let mut m = ready();
+        m.lastfm = Lastfm { has_key: true, user: None, editing: false };
+        started(&mut m, Job::Scan);
+        m.tab = Tab::Settings;
+        assert_eq!(m.stop_target(Tab::Settings), None, "Stop on Settings must not stop a scan");
+        started(&mut m, Job::LastfmSignIn);
+        assert_eq!(m.stop_target(Tab::Settings), Some(Job::LastfmSignIn));
+        assert!(layout(&m, W, H).iter().any(|w| w.id == Id::Stop && w.text == "Stop waiting"));
+        assert_eq!(m.stop_target(Tab::SensMe), Some(Job::Scan));
+    }
+
+    /// Typing: a field takes characters while it has the focus, Tab moves between the key fields,
+    /// Enter in them saves, and a paste brings one line with no stray whitespace.
+    #[test]
+    fn fields_take_typing_and_pastes() {
+        let mut m = ready();
+        m.tab = Tab::Settings;
+        assert_eq!(key(&mut m, Key::Char('a')), None);
+        assert!(m.key_input.is_empty(), "nothing has the focus, so nothing is typed");
+        click(&mut m, Id::Field(Field::ApiKey));
+        for c in "ab1".chars() {
+            key(&mut m, Key::Char(c));
+        }
+        key(&mut m, Key::Backspace);
+        assert_eq!(m.key_input, "ab");
+        key(&mut m, Key::Tab);
+        assert_eq!(m.focus, Some(Field::ApiSecret));
+        paste(&mut m, "\n  s3 cr et \nsecond line");
+        assert_eq!(m.secret_input, "s3cret", "a key keeps no whitespace and no second line");
+        assert_eq!(key(&mut m, Key::Enter), Some(Job::LastfmKey));
+        assert_eq!(m.focus, None, "saving takes the caret out of the field");
+        click(&mut m, Id::Field(Field::ApiSecret));
+        key(&mut m, Key::Clear);
+        assert!(m.secret_input.is_empty());
+        assert_eq!(key(&mut m, Key::Enter), None, "Save needs both halves");
+        // A click anywhere else takes the focus away.
+        click(&mut m, Id::Tab(Tab::Check));
+        assert_eq!(m.focus, None);
+        // The filter keeps its spaces.
+        click(&mut m, Id::Field(Field::CheckFilter));
+        paste(&mut m, "Pink Moon");
+        assert_eq!(m.check_filter, "Pink Moon");
+        for _ in 0..(Field::MAX + 20) {
+            key(&mut m, Key::Char('x'));
+        }
+        assert_eq!(m.check_filter.chars().count(), Field::MAX);
+        key(&mut m, Key::Escape);
+        assert_eq!(m.focus, None);
+    }
+
+    /// The Check page's filter: a verdict card, text anywhere in the row, both, and Show all.
+    #[test]
+    fn the_check_filter_narrows_the_table() {
+        let mut m = ready();
+        m.tab = Tab::Check;
+        let row = |v: &str, f: &str, why: &str| CheckRow { verdict: v.into(), file: f.into(), why: why.into() };
+        m.findings = vec![
+            row("LOSSY", "Burial/Untrue/02 Archangel.flac", "stops at 16.0 kHz"),
+            row("LOSSY", "Radiohead/Kid A/01.flac", "stops at 16.0 kHz"),
+            row("PADDED", "Burial/Untrue/05 Near Dark.flac", "24-bit file holding 16-bit samples"),
+        ];
+        let files = |m: &Model| m.check_rows().iter().map(|r| r.file.clone()).collect::<Vec<_>>();
+        assert_eq!(files(&m).len(), 3);
+        m.check_filter = "BURIAL".into();
+        assert_eq!(files(&m).len(), 2, "the text ignores case");
+        let lossy = pages::VERDICTS.iter().position(|v| v.0 == "LOSSY").unwrap();
+        click(&mut m, Id::Verdict(lossy));
+        assert_eq!(files(&m), vec!["Burial/Untrue/02 Archangel.flac".to_string()]);
+        m.check_filter = "16-bit".into();
+        assert!(files(&m).is_empty(), "the reason is searched too, and the verdict still applies");
+        click(&mut m, Id::Verdict(lossy));
+        assert_eq!(m.check_verdict, None, "a second click on the card lets it go");
+        assert_eq!(files(&m).len(), 1);
+        click(&mut m, Id::ClearFilter);
+        assert_eq!(files(&m).len(), 3);
+        assert!(m.check_filter.is_empty());
     }
 
     /// The log pane shows the TAIL: a job that prints a thousand lines must leave the newest ones
@@ -1165,7 +1945,7 @@ mod tests {
         assert_eq!(accented(&m), vec![Id::Plan], "…then to be shown what would happen");
         m.planned = true;
         assert_eq!(accented(&m), vec![Id::Apply], "…and only then to copy");
-        m.phase = Phase::Working;
+        started(&mut m, Job::Apply);
         assert!(accented(&m).is_empty(), "a running job accents no control");
     }
 

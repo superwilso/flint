@@ -43,29 +43,32 @@
 <rect x="757.5" y="202.5" width="136" height="63" rx="8" fill="#ffffff" stroke="#e3e4ea" stroke-width="1"/>
 <text x="769" y="224" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="22" font-weight="600" fill="#2e7d4f" text-anchor="start" dominant-baseline="central">3,179</text>
 <text x="769" y="248" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">real lossless</text>
-<rect x="22.5" y="280.5" width="875" height="29" rx="8" fill="#ffffff" stroke="#e3e4ea" stroke-width="1"/>
-<text x="34" y="295" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Verdict</text>
-<text x="144" y="295" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">File</text>
-<text x="544" y="295" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Why</text>
-<rect x="22" y="314" width="876" height="1" fill="#dfdfe6"/>
-<text x="34" y="329" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b32e14" text-anchor="start" dominant-baseline="central">LOSSY</text>
-<text x="144" y="329" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Burial/Untrue/02 Archangel.flac</text>
-<text x="544" y="329" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">content stops dead at 16.0 kHz, like a lossy en…</text>
-<rect x="22" y="340" width="876" height="1" fill="#dfdfe6"/>
-<text x="34" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b36b00" text-anchor="start" dominant-baseline="central">UPSAMPLED</text>
-<text x="144" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Nick Drake/Pink Moon/01 Pink Moon.flac</text>
-<text x="544" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">nothing real above 22.1 kHz: resampled from a l…</text>
-<rect x="22" y="366" width="876" height="1" fill="#dfdfe6"/>
-<text x="34" y="381" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b36b00" text-anchor="start" dominant-baseline="central">SUSPECT</text>
-<text x="144" y="381" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Radiohead/Kid A/04 How to Disappear Completely.flac</text>
-<text x="544" y="381" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">content stops at 19.6 kHz: a high-bitrate lossy…</text>
-<rect x="22" y="392" width="876" height="1" fill="#dfdfe6"/>
-<text x="34" y="407" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b36b00" text-anchor="start" dominant-baseline="central">PADDED</text>
-<text x="144" y="407" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Benjamin Francis Leftwich/After the Rain/07 Shine.f…</text>
-<text x="544" y="407" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">24-bit file holding 16-bit samples</text>
-<rect x="22" y="418" width="876" height="1" fill="#dfdfe6"/>
-<text x="34" y="433" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b32e14" text-anchor="start" dominant-baseline="central">DAMAGED</text>
-<text x="144" y="433" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Four Tet/Three/06 Skater.flac</text>
-<text x="544" y="433" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">FFmpeg reported 3 error line(s) decoding it</text>
+<rect x="22.5" y="280.5" width="359" height="29" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="32" y="295" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#9a9ca6" text-anchor="start" dominant-baseline="central">Filter by file, folder or reason</text>
+<text x="396" y="295" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Click a count above to see only that verdict.</text>
+<rect x="22.5" y="320.5" width="875" height="29" rx="8" fill="#ffffff" stroke="#e3e4ea" stroke-width="1"/>
+<text x="34" y="335" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Verdict</text>
+<text x="144" y="335" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">File</text>
+<text x="544" y="335" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Why</text>
+<rect x="22" y="354" width="876" height="1" fill="#dfdfe6"/>
+<text x="34" y="369" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b32e14" text-anchor="start" dominant-baseline="central">LOSSY</text>
+<text x="144" y="369" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Burial/Untrue/02 Archangel.flac</text>
+<text x="544" y="369" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">content stops dead at 16.0 kHz, like a lossy en…</text>
+<rect x="22" y="380" width="876" height="1" fill="#dfdfe6"/>
+<text x="34" y="395" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b36b00" text-anchor="start" dominant-baseline="central">UPSAMPLED</text>
+<text x="144" y="395" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Nick Drake/Pink Moon/01 Pink Moon.flac</text>
+<text x="544" y="395" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">nothing real above 22.1 kHz: resampled from a l…</text>
+<rect x="22" y="406" width="876" height="1" fill="#dfdfe6"/>
+<text x="34" y="421" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b36b00" text-anchor="start" dominant-baseline="central">SUSPECT</text>
+<text x="144" y="421" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Radiohead/Kid A/04 How to Disappear Completely.flac</text>
+<text x="544" y="421" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">content stops at 19.6 kHz: a high-bitrate lossy…</text>
+<rect x="22" y="432" width="876" height="1" fill="#dfdfe6"/>
+<text x="34" y="447" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b36b00" text-anchor="start" dominant-baseline="central">PADDED</text>
+<text x="144" y="447" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Benjamin Francis Leftwich/After the Rain/07 Shine.f…</text>
+<text x="544" y="447" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">24-bit file holding 16-bit samples</text>
+<rect x="22" y="458" width="876" height="1" fill="#dfdfe6"/>
+<text x="34" y="473" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b32e14" text-anchor="start" dominant-baseline="central">DAMAGED</text>
+<text x="144" y="473" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">Four Tet/Three/06 Skater.flac</text>
+<text x="544" y="473" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">FFmpeg reported 3 error line(s) decoding it</text>
 <text x="22" y="728" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">Checked 3,184 FLACs; 5 are worth a closer look.</text>
 </svg>

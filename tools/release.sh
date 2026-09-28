@@ -168,7 +168,7 @@ ok "clippy clean"
 cargo test -q --workspace >/tmp/flint-release-test.log 2>&1 \
     || { tail -20 /tmp/flint-release-test.log; die "tests fail — see /tmp/flint-release-test.log"; }
 ok "tests pass ($(grep -o '[0-9]* passed' /tmp/flint-release-test.log | awk '{s+=$1} END {print s}'))"
-for state in fresh ready planned working "done" player check sensme likes palettes settings; do
+for state in fresh ready planned working "done" scanning player check filtered sensme likes palettes settings signed-in; do
     "${CARGO_TARGET_DIR:-target}/debug/flint" gui-preview "$SHOTS_TMP/gui-$state.svg" --state "$state" >/dev/null \
         || die "the window cannot be drawn in state $state"
 done
@@ -177,8 +177,8 @@ ok "the window draws in every state"
 # (the window is Win32 and never compiled on Linux otherwise) before it costs a tag.
 if rustup target list --installed 2>/dev/null | grep -qx x86_64-pc-windows-gnu; then
     cargo build -q --release --target x86_64-pc-windows-gnu -p flint \
-        || die "flint.exe does not build for Windows"
-    ok "flint.exe builds for Windows"
+        || die "flint does not build for Windows"
+    ok "the window (flint-window.exe) and the command line (flint.exe) build for Windows"
 else
     note "no x86_64-pc-windows-gnu target here — the Windows build is left to the workflow"
 fi

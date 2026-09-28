@@ -1,255 +1,170 @@
 # Flint
 
-A PC companion for the Sony NW-A50-series Walkman and [Cinder](https://github.com/superwilso/Cinder):
-copy a music library onto the player, keep likes and scrobbles in step, and give every track Sony's
-**SensMe** mood and tempo data — without touching the files on your PC.
+PC companion for the Sony NW-A50-series Walkman and [Cinder](https://github.com/superwilso/Cinder).
+Copies your library to the player, adds Sony's **SensMe** mood and tempo data to the copies, and
+syncs scrobbles and liked songs with Last.fm. It never modifies the files on your PC.
 
-**Status: usable, young.** [v0.2.1](https://github.com/superwilso/flint/releases/latest) is out:
-`flint-windows-x64.exe`, the 32-bit `sensme-helper-x86.exe` that goes beside it, and
-`flint-linux-x64`, with SHA-256 sums on the release page and a Sigstore build attestation for each
-file. `main` can be ahead of it: [`CHANGELOG.md`](CHANGELOG.md)'s *Unreleased* section says by
-what. Flint replaces the Python `Sony-sync` tool. Nothing Flint does touches the files on your PC; everything it writes goes to the player.
+**Status:** usable, still young. Latest release: [v0.2.1](https://github.com/superwilso/flint/releases/latest)
+(Windows and Linux, SHA-256 sums and build attestations on the release page). `main` may be ahead;
+see *Unreleased* in [`CHANGELOG.md`](CHANGELOG.md). Replaces the Python `Sony-sync` tool.
 
 ## Getting started
 
-1. Download `flint-windows-x64.exe` (and `sensme-helper-x86.exe`, if you want SensMe) from
-   [Releases](https://github.com/superwilso/flint/releases/latest) into one folder.
-2. Plug the Walkman in as a USB drive and run `flint-windows-x64.exe`. The window opens.
-3. **Sync** page: choose your music folder, then the player's drive (and its card, if it has one).
-4. Press **Show what would happen**. Nothing is written; the plan and the space it needs are shown.
+1. From [Releases](https://github.com/superwilso/flint/releases/latest), download
+   `flint-windows-x64.exe`, plus `sensme-helper-x86.exe` into the same folder if you want SensMe.
+2. Connect the Walkman as a USB drive and run `flint-windows-x64.exe`.
+3. On **Sync**, pick your music folder and the player's drive (and its card, if any).
+4. Press **Show what would happen**. Nothing is written yet.
 5. Press **Copy to the player**.
 
-The window remembers the folders for next time. Everything it does is also a command, in
-`flint-cli-windows-x64.exe` (below) — the window itself opens with no terminal behind it.
+Everything the window does is also a command in `flint-cli-windows-x64.exe` (Linux:
+`flint-linux-x64`).
 
-## SensMe, without the bloat
+## SensMe
 
-SensMe channels on the Walkman need an analysis tag in each file. Sony's Music Center writes one into
-your PC library, and those files have been reported to grow by almost a megabyte each. Flint does it
-differently:
+The Walkman builds SensMe channels from an analysis tag in each file. Sony's Music Center writes that
+tag into your PC files, which can grow each one by close to a megabyte. Flint instead:
 
-* It runs **Sony's own analysis engine** (`MMLib11.dll`, installed with Music Center for PC) over each
-  track once, and keeps the result in its own cache — about 6 KB per track.
-* It writes that 6 KB **only into the copy it puts on the Walkman** — a FLAC `SMFM` block or an MP3
-  `GEOB` frame, the same containers Sony uses. Your PC files are never modified.
-* The Walkman's own scanner turns the tag into channels, the same as for Music Center's tags — so this
-  works on stock firmware as well as Cinder.
+- runs Sony's own engine (`MMLib11.dll`, installed with Music Center for PC) once per track and
+  caches the result, about 6 KB each;
+- writes it only into the copy on the Walkman, in the same containers Sony uses (FLAC `SMFM` block,
+  MP3 `GEOB` frame).
 
-Flint does not include Sony's engine. SensMe analysis needs Music Center for PC installed on the same
-Windows machine; everything else in Flint works without it.
+The player's own scanner does the rest, so it works on stock firmware as well as Cinder. Flint does
+not ship Sony's engine: SensMe analysis needs Music Center installed on the same PC. Nothing else in
+Flint does.
 
-### If you already use Music Center
-
-Then the analysis is done and Flint will not do it again:
-
-* **Tags already inside your files** are taken as they stand. `flint scan` and `flint sync` read
-  them, and say how many they found. No decode, no engine run.
-* **Music Center's own cache** — it analyses far more tracks than it writes tags for — comes in with
-  `flint import`. It reads `%APPDATA%\Sony\Music Center`, writes nothing back, and keys each result
-  against the audio it belongs to.
-* Either way the copy on the Walkman carries only the part the player reads, so a Music Center tag
-  that had grown to a megabyte arrives as about 6 KB.
-
-A feature-by-feature comparison with Music Center, including what Flint deliberately does not do and
-what is still missing, is in [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
+**Already using Music Center?** Tags already in your files are used as-is, and `flint import` reads
+Music Center's own analysis cache (read-only). Either way the Walkman copy carries only the ~6 KB
+the player reads. Full comparison: [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md).
 
 ## The window
 
-`flint-windows-x64.exe` is the window. It is built for the Windows subsystem, so no terminal
-opens behind it; `flint gui` from the command-line build opens the same window. Seven pages, one
-tab each:
-
 ![Flint's window](docs/window.svg)
 
-| Page | What it answers |
+| Page | What it does |
 |---|---|
-| **Sync** | What would be copied, removed and tagged, and does it fit. Then the copy. |
-| **On the player** | What is on each drive, and whether Flint put it there (read from `flint-manifest.tsv`). |
-| **Check** | Which FLACs are not the lossless audio they claim to be, and why (below). Click a count to see only that verdict; type to filter by file, folder or reason. |
-| **SensMe** | Analyse the library, or import what Music Center already analysed. |
-| **Likes & plays** | The plays in the player's `.scrobbler.log` and the songs liked on it. **Send plays** scrobbles them; **Compare likes** shows what a likes sync would change, and **Make changes** does it. |
-| **Palettes** | Which of your colour schemes for Cinder the player would accept, and why not. Then Send. |
-| **Settings** | Theme (Light, Dark or System), the folders, the analysis cache, and the Last.fm key and sign-in. |
-
-Only **Sync** writes music to the player, and only Sync has anything orange on it. The other pages
-read — "Read the player" reads — except **Palettes ▸ Send**, which copies the few small `.palette`
-files its check passed into `cinder_palettes/`. The check uses Cinder's own contrast rules, so a
-palette the player would refuse is refused on the PC, with the reason, before it is ever copied.
+| **Sync** | Plans the copy (what's added, removed, tagged, and whether it fits), then copies. |
+| **On the player** | Lists what's on each drive and whether Flint put it there. |
+| **Check** | Finds FLACs that aren't really lossless. Click a verdict or type to filter. |
+| **SensMe** | Analyses the library, or imports Music Center's results. |
+| **Likes & plays** | Sends scrobbles to Last.fm and syncs liked songs. |
+| **Palettes** | Checks your Cinder colour palettes with Cinder's own rules, then sends the ones that pass. |
+| **Settings** | Theme, folders, the analysis cache, Last.fm key and sign-in. |
 
 ![The Palettes page](docs/window-palettes.svg)
 
-![The Check page](docs/window-check.svg)
+Only **Sync** writes music, and **Copy** is only offered for a plan you've just seen. Changing a
+setting withdraws it until you look again. Each drive shows a bar: used, this copy, free.
 
-On **Sync**: choose a music folder and the player's drive, press **Show what would happen** —
-nothing is written — and then **Copy to the player**. Copy is only ever offered for a plan you have
-already been shown, and changing any setting takes it away again until you look at the new one.
+Jobs run side by side, so a long analysis doesn't lock the window. Two jobs wait for each other only
+if they share something (the cache, the player, Last.fm), and a greyed button says what it's waiting
+for. Planning and copying wait for a running analysis, since the copies carry its results.
 
-**Jobs run side by side.** An analysis can take hours, so it does not lock the window: while it
-runs you can check FLACs, read the player, compare palettes, and sign in to Last.fm. Two jobs wait
-for each other only when they share something — the analysis cache, the player, the check
-results, the palettes or the Last.fm account — and a grey button says what it is waiting for.
-**Show what would happen** and **Copy** wait for an analysis, because the copies carry its results;
-a plan made halfway through would tag half the library. Each page's footer shows its own job's
-progress and its own **Stop**.
+The theme follows Windows' light/dark setting unless you pick one in Settings (or run
+`flint gui --light` / `--dark`).
 
-One control at a time is in Flint's orange, and it is always the next thing to do: the folder
-first, then the drive, then the plan, then the copy. Each destination carries a bar of its own
-capacity — what is on it already in graphite, what this copy would add in orange, and what would
-still be free — because "will it fit" is the question a 16 GB player asks of a library that does
-not. The same orange marks the bytes about to be written, and nothing else.
+![Flint's window, dark](docs/window-dark.svg)
 
-By default it follows Windows' own light/dark setting, and changes with it while it is open;
-Settings ▸ Theme picks Light or Dark instead. The orange does not move between the two, because it
-means "the next thing to do" and a colour that changed with the theme could not carry a meaning:
-
-![Flint's window after dark](docs/window-dark.svg)
-
-`flint gui --dark` or `--light` overrides the theme for one run. The folders, the two switches and
-the theme are kept in `gui.conf` beside the analysis cache.
-
-It draws its own window with no toolkit and no dependencies, the same approach as Cinder's
-installer, and everything it does goes through the same code the commands below do. The layout is
-plain Rust with no Windows in it, which is why the pictures above can be drawn anywhere:
+The window is drawn with no UI toolkit. Its layout is plain Rust, so the pictures here are rendered
+by Flint itself:
 
 ```
-flint gui-preview window.svg --state planned     # or fresh, ready, working, done, scanning
+flint gui-preview window.svg --state planned     # fresh, ready, working, done, scanning
 flint gui-preview window-dark.svg --state planned --dark
-flint gui-preview check.svg --state check        # or filtered, player, sensme, likes, palettes, settings, signed-in
+flint gui-preview check.svg --state check        # filtered, player, sensme, likes, palettes, settings, signed-in
 ```
 
-What the pages grow into next — a plan you can tick, conversion to fit a card, SensMe channel
-counts — is in
-Cinder's [`docs/PLAN_redesign_2026-09.md`](https://github.com/superwilso/Cinder/blob/main/docs/PLAN_redesign_2026-09.md).
-
-## Copying a library to the player
+## Copying a library
 
 ```
-flint scan "D:\\Music"                              analyse once, into Flint's cache
-flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists"     a dry run
-flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply
+flint scan "D:\\Music"                                                    analyse once
+flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists"          dry run
+flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  copy
 ```
 
-Cover art and lyrics (`.jpg`, `.png`, `.lrc`) sitting in an album's folder travel with it. They are
-copied, never swept: deleting artwork another tool put on the player is not a call a sync should
-make.
-
-Albums are the unit that moves, and an album is never split across the internal memory and the card.
-Albums that share a playlist stay together, so no playlist spans two volumes, and an album already on
-a volume stays there. Each volume gets whatever space is free on it, less half a gigabyte of
-headroom; `--gb N` sets a budget instead. `--no-sensme` copies without tagging.
-
-Each copy is written to a temporary file and renamed, so an interrupted transfer leaves either the
-old file or the new one. Every volume carries `flint-manifest.tsv`, recording what each copy was made
-from — without it, a SensMe-tagged copy is larger than its source and would be copied again on every
-run, for ever.
+- Albums move as a unit and are never split between internal memory and the card. Albums that share
+  a playlist stay on the same volume, and an album already on a volume stays there.
+- Each volume is filled to its free space minus 0.5 GB; `--gb N` sets a budget instead.
+  `--no-sensme` copies without tagging.
+- Cover art and lyrics (`.jpg`, `.png`, `.lrc`) in an album folder are copied with it. Flint never
+  deletes artwork it didn't put there.
+- Copies are written to a temp file and renamed, so an interrupted copy leaves the old file or the
+  new one, never half of one. `flint-manifest.tsv` on each volume records what each copy came from.
 
 ## Scrobbles and liked songs
 
-The Walkman has no WiFi, so it cannot reach Last.fm itself. It writes files instead, and Flint
-carries them.
+The Walkman has no network, so it writes files and Flint carries them.
 
-**In the window.** Settings ▸ Last.fm asks for an API key and its shared secret: **Get a key on
-last.fm** opens the page that makes one (any application name; the callback URL can stay empty).
-Paste both, press **Save**, then **Sign in with Last.fm** — your browser opens last.fm, you press
-*Yes, allow access*, and Flint picks the session up on its own. It never sees your password. Then
-on **Likes & plays**: **Read the player**, **Send N plays**, **Compare likes**, and **Make N
-changes** once you have seen what they are.
+**In the window:** Settings ▸ Last.fm. **Get a key on last.fm** opens the page that makes an API key
+(any app name, no callback URL). Paste the key and secret, **Save**, then **Sign in with Last.fm**
+and approve in your browser. Flint never sees your password. Then use **Likes & plays**.
 
 **From a terminal:**
 
 ```
 flint lastfm key <api-key> <api-secret>     once — https://www.last.fm/api/account/create
-flint lastfm login <your-username>          once — the password is exchanged for a session key
-flint lastfm status                         what is configured, and whether Last.fm answers
+flint lastfm login <your-username>          once — exchanges the password for a session key
+flint lastfm status
 
-flint scrobble E:\                          what would be sent
+flint scrobble E:\                          show what would be sent
 flint scrobble E:\ --apply                  send it
 
-flint likes E:\ F:\                         what would change, both directions
-flint likes E:\ F:\ --apply --playlist      do it, and write Liked Songs.m3u8
+flint likes E:\ F:\                         show what would change, both ways
+flint likes E:\ F:\ --apply --playlist      apply, and write Liked Songs.m3u8
 ```
 
-**Scrobbles.** Cinder appends an Audioscrobbler/1.1 `.scrobbler.log` at the root of the player's
-storage. `flint scrobble` reads it, sends the plays fifty at a time, and removes from the file only
-the rows Last.fm actually **accepted** — anything it refused stays, with the reason printed, and so
-does any row this version cannot parse. Skipped-track rows are never sent: Last.fm has no call that
-would take them.
+**Scrobbles.** Cinder writes an Audioscrobbler `.scrobbler.log` at the root of the player. Flint
+sends the plays in batches of 50 and removes only the rows Last.fm accepted. Rejected or unreadable
+rows stay, with the reason printed.
 
-**Liked songs.** Cinder exports `cinder_loved.tsv` whenever the liked set changes and reads
-`cinder_liked_import.tsv` back. `flint likes` merges that with Last.fm's loved tracks and pushes the
-result both ways.
+**Liked songs.** Cinder exports `cinder_loved.tsv` and reads `cinder_liked_import.tsv`. `flint likes`
+syncs these with your Last.fm loved tracks in both directions. It remembers the last state of each
+side (`likes-state.tsv`) so it can tell an unlike from a new like:
 
-It is a sync, not a merge, which means it has a memory: `likes-state.tsv` beside the scan cache
-records what each side looked like after the last run. Without it, a track that is on Last.fm and
-not on the player is ambiguous — just loved over there, or just unliked over here? — and guessing
-deletes a hand-curated list. From that one rule the rest follows:
+- the first run only adds, never removes;
+- a player that isn't connected causes no removals;
+- a track changed on both sides keeps the like.
 
-* the **first run is additive**: everything on both sides is kept, nothing is removed anywhere;
-* **an unplugged player proves nothing** — a source that cannot be read this run causes no removals;
-* while the player has an import **it has not merged yet**, its own export is still the old list, so
-  it is treated as additive only and the pending push does not come back as an unlove;
-* a track that changed on both sides **keeps the like**.
+Tracks match on artist and title, ignoring case, `feat.` credits and remaster/edition suffixes. Live,
+remix, acoustic and demo versions stay separate. `--playlist` also writes `Liked Songs.m3u8` per
+volume (off by default: it reads every file's tags over USB).
 
-Matching is by artist and title, folded the same way Cinder folds them on the device: case, curly
-punctuation, `feat.` credits and re-issue suffixes (`- 2011 Remaster`, `(Deluxe Edition)`) come out,
-while anything that marks a *different recording* — live, remix, acoustic, demo — stays distinct.
-
-`--playlist` also writes `Liked Songs.m3u8` into each volume's music folder, holding only that
-volume's own tracks. It is off by default because it reads the tags of every file on the player over
-USB; the hearts on the device need no such thing.
-
-Everything here goes out over **the system's own TLS** — WinHTTP on Windows, the same stack every
-other program on the machine uses, with its proxy settings and its certificate store. Flint adds no
-crates for it, and your password is never written down: `login` exchanges it for a session key, and
-that key is what lands in `lastfm.conf` (revoke it at last.fm/settings/applications). The window's
-sign-in never asks for the password at all.
+Network calls use the OS's own TLS (WinHTTP on Windows). Only a session key is stored, in
+`lastfm.conf`; revoke it at last.fm/settings/applications.
 
 ## Checking for fake FLACs
 
-`flint check` looks for FLACs that are not the lossless audio they claim to be. It needs FFmpeg, and
-nothing else — no Music Center, no Walkman.
+`flint check` flags FLACs that aren't the lossless audio they claim to be. Needs FFmpeg only.
 
 ```
 flint check "D:\Music"            every FLAC under a folder
 flint check track.flac --verbose  one file, with its spectrum
 ```
 
-| Verdict | What was found |
+| Verdict | Meaning |
 |---|---|
-| `LOSSY` | The sound stops dead at an encoder's lowpass frequency, or stops at one and the top band is switched off in a third of loud frames |
-| `SUSPECT` | It stops between 19.5 and 21 kHz: a high-bitrate encoder, or simply the master |
-| `UPSAMPLED` | An 88.2 kHz or higher file with nothing real above CD or DAT bandwidth |
-| `PADDED` | A 24-bit file whose samples only use 16 bits |
-| `DAMAGED` | FFmpeg reported errors decoding the stream |
+| `LOSSY` | Audio cuts off at a lossy encoder's lowpass |
+| `SUSPECT` | Cuts off between 19.5 and 21 kHz: a high-bitrate encode, or just the master |
+| `UPSAMPLED` | 88.2 kHz or higher with nothing above CD/DAT bandwidth |
+| `PADDED` | 24-bit file using only 16 bits |
+| `DAMAGED` | FFmpeg reported decode errors |
 
-Measured against transcodes of four albums (each encoded and turned back into FLAC):
+![The Check page](docs/window-check.svg)
 
-| Source | Caught |
-|---|---|
-| MP3 128 kbit/s | 4 of 4 |
-| MP3 320 kbit/s | 4 of 4 (2 as `LOSSY`, 2 as `SUSPECT`) |
-| Opus 160 kbit/s | 4 of 4 (2 as `LOSSY`, 2 as `SUSPECT`) |
-| Vorbis q6 | 1 of 4 |
-| LAME V0, FFmpeg AAC 256 kbit/s | 0 of 4 — these keep sound almost to 22 kHz, so there is nothing to see |
-| Upsampled to 96 kHz, and 16-bit padded to 24 | 4 of 4 each |
-| The four untouched originals | none flagged |
-
-In the window, the **Check** page shows the same verdicts as counts. Click one to list only those
-files, type in the filter to narrow by artist, album, file name or reason, and **Show all** to
-clear both.
-
-**A clean result is not proof.** It means none of the usual signs. Equally, `SUSPECT` is not an
-accusation: plenty of genuine masters stop at 20 kHz. Results are cached by audio content, so a
-retagged or moved file is not decoded twice.
+Tested on transcodes of four albums: MP3 128 and 320, Opus 160, upsampled and bit-padded copies were
+all caught; Vorbis q6 1 of 4; LAME V0 and AAC 256 none (they keep content up to ~22 kHz). No
+originals were flagged. A clean result isn't proof, and `SUSPECT` isn't an accusation. Results are
+cached by audio content, so moved or retagged files aren't decoded again.
 
 ## Layout
 
-| Crate | What it is |
+| Crate | Contents |
 |---|---|
-| `flint-core` | FLAC metadata and ID3v2 reading and writing, the SMFMF chunk format, the decode → engine pipeline, and reading analysis Music Center has already done |
-| `flint` | The command-line tool (`flint.exe`) and the window's own program (`flint-window.exe`, no console) |
-| `flint-gui` | The window: a layout in plain Rust, painted by GDI on Windows or written out as SVG anywhere |
-| `sensme-helper` | A 32-bit Windows helper that loads `MMLib11.dll` (the engine is 32-bit, Flint is not) |
+| `flint-core` | FLAC/ID3v2 read and write, the SensMe chunk format, decode → engine pipeline, Music Center import |
+| `flint` | The command-line tool and the window's console-free launcher |
+| `flint-gui` | The window: layout in plain Rust, painted with GDI on Windows or written as SVG anywhere |
+| `sensme-helper` | 32-bit Windows helper that loads Sony's 32-bit engine |
 
 ## Building
 
@@ -259,24 +174,19 @@ cargo build --release --target x86_64-pc-windows-gnu -p flint
 cargo build --release --target i686-pc-windows-gnu -p sensme-helper
 ```
 
-Both Windows targets cross-compile from Linux with mingw-w64. The first builds `flint.exe` (the
-commands) and `flint-window.exe` (the window, published as `flint-windows-x64.exe`).
+Both Windows targets cross-compile from Linux with mingw-w64.
 
 ## Releasing
 
 ```
-tools/release.sh v0.2.0 --dry-run     what would change; edits nothing
-tools/release.sh v0.2.0               1st run: prepare — then commit the diff it lists
-tools/release.sh v0.2.0               2nd run: push main, tag, push, wait, print the release page
+tools/release.sh v0.2.0 --dry-run     show what would change
+tools/release.sh v0.2.0               1st run: prepare, then commit the diff it lists
+tools/release.sh v0.2.0               2nd run: push, tag, wait for CI, print the release page
 ```
 
-The first run bumps the version, rolls *Unreleased* in `CHANGELOG.md` into the new version (the
-release page's *What's new* is that section), points the README at the new release, re-draws the
-window pictures in `docs/`, and runs every gate — fmt, clippy, the tests, the window drawn in every
-state, and both Windows builds. It never commits: review the diff, commit it, and run it again. The
-second run pushes `main` and the tag; GitHub builds the four downloads, attests them and publishes
-the release, and the script waits for that and prints the page. A tag with a suffix
-(`v0.2.0-rc1`) publishes as a pre-release.
+The first run bumps the version, moves *Unreleased* in `CHANGELOG.md` into the new version (that
+section becomes the release notes), updates the README link, redraws the window pictures and runs
+every gate. It never commits. A tag with a suffix (`v0.2.0-rc1`) publishes as a pre-release.
 
 ## Licence
 

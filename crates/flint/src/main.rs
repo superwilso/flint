@@ -833,6 +833,12 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 "likes" => Tab::Likes,
                 _ => Tab::Palettes,
             };
+            if state == "palettes" {
+                let (pc, player) = preview_palettes();
+                m.palette_dir = Some(PathBuf::from("D:\\Walkman\\Palettes"));
+                m.palette_rows = flint_core::palette::compare(&pc, &player);
+                m.status = "palettes: 1 new, 1 changed, 1 refused".into();
+            }
         }
         "check" => {
             use flint_gui::{CheckRow, Tab};
@@ -889,6 +895,43 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         }
     }
     Ok(m)
+}
+
+type PaletteFiles = Vec<(String, String)>;
+
+/// The Palettes preview's two folders, `(file, contents)`: one palette of every kind the page shows
+/// — the same on both, new, changed, on the player only, and refused. Slate and Paper are Cinder's
+/// own shipped files; the rest are made up, and checked by the same rules as a real one.
+fn preview_palettes() -> (PaletteFiles, PaletteFiles) {
+    const SLATE: &str = "name = Slate\nday.bg = #0e1116\nday.panel = #141820\nday.line = #232a35\n\
+        day.ink = #e6ebf2\nday.dim = #8d97a5\nday.faint = #58616e\nnight.bg = #000000\n\
+        night.panel = #0a0c10\nnight.line = #151a21\nnight.ink = #8a93a0\nnight.dim = #57606c\n\
+        night.faint = #373d46\n";
+    const PAPER: &str = "name = Paper\nday.bg = #f4f1ea\nday.panel = #ebe6dc\nday.line = #d6d0c4\n\
+        day.ink = #1c1a17\nday.dim = #5f5a52\nday.faint = #8f887d\nnight.bg = #000000\n\
+        night.panel = #0a0908\nnight.line = #161310\nnight.ink = #8d8170\nnight.dim = #5b5347\n\
+        night.faint = #3b362d\nday.accent = #c4471a\nday.accent_ink = #ffffff\n\
+        day.row_select = #e9e2d4\nnight.accent = #863810\nnight.accent_ink = #000000\n\
+        night.row_select = #0f0c0a\n";
+    const MOSS: &str = "name = Moss\nday.bg = #0f130f\nday.panel = #151a15\nday.line = #243024\n\
+        day.ink = #e4efe4\nday.dim = #8ea08e\nday.faint = #5a685a\nnight.bg = #000000\n\
+        night.panel = #0a0d0a\nnight.line = #151c15\nnight.ink = #8a9a8a\nnight.dim = #576557\n\
+        night.faint = #374237\n";
+    const DUSK: &str = "name = Dusk\nday.bg = #13101a\nday.panel = #1a1622\nday.line = #2a2436\n\
+        day.ink = #ece6f4\nday.dim = #9a90aa\nday.faint = #635a72\nnight.bg = #000000\n\
+        night.panel = #0c0a10\nnight.line = #1a1621\nnight.ink = #948aa3\nnight.dim = #5f576c\n\
+        night.faint = #3d3746\n";
+    // Grey on grey: readable on its author's bright monitor, not on the player in daylight.
+    const FOG: &str = "name = Fog\nday.bg = #9a9a9a\nday.panel = #a4a4a4\nday.line = #8c8c8c\n\
+        day.ink = #d8d8d8\nday.dim = #c0c0c0\nday.faint = #b0b0b0\nnight.bg = #000000\n\
+        night.panel = #0a0a0a\nnight.line = #151515\nnight.ink = #8a8a8a\nnight.dim = #575757\n\
+        night.faint = #373737\n";
+    let files = |list: &[(&str, &str)]| list.iter().map(|(f, b)| (f.to_string(), b.to_string())).collect();
+    let old_moss = MOSS.replace("#8ea08e", "#8a9a8a");
+    (
+        files(&[("slate.palette", SLATE), ("paper.palette", PAPER), ("moss.palette", MOSS), ("fog.palette", FOG)]),
+        files(&[("slate.palette", SLATE), ("moss.palette", &old_moss), ("dusk.palette", DUSK)]),
+    )
 }
 
 /// Draw the window to an SVG. This is how the window is designed and reviewed on a machine with no

@@ -12,6 +12,7 @@ pub mod likes;
 pub mod lossless;
 pub mod md5;
 pub mod musiccenter;
+pub mod palette;
 pub mod scrobblelog;
 pub mod smfmf;
 pub mod space;

@@ -558,6 +558,23 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
                 face: Face::Figure,
                 align: Align::Left,
             }),
+            Kind::Swatch(cells) => {
+                let cw = (r.w / cells.len() as i32).max(1);
+                for (i, c) in cells.iter().enumerate() {
+                    out.push(Cmd::Rect {
+                        rect: Rect::new(r.x + i as i32 * cw, r.y, cw, r.h),
+                        fill: Some(*c),
+                        border: None,
+                        radius: 0,
+                    });
+                }
+                out.push(Cmd::Rect {
+                    rect: Rect::new(r.x, r.y, cw * cells.len() as i32, r.h),
+                    fill: None,
+                    border: Some(t.button_border),
+                    radius: 0,
+                });
+            }
             Kind::Cell { tone, strong, mono } => {
                 let face = if *mono {
                     Face::Mono
@@ -764,6 +781,9 @@ mod tests {
     fn every_job_has_a_button() {
         let mut m = ready();
         m.planned = true;
+        // Send is only offered with something to send.
+        m.palette_dir = Some("/palettes".into());
+        m.palette_rows = flint_core::palette::compare(&[("slate.palette".into(), "name = Slate\n".into())], &[]);
         // Across every page: since 0.2 the tools live on the pages they belong to.
         let ids: Vec<Id> = crate::Tab::ALL
             .iter()
@@ -780,6 +800,8 @@ mod tests {
             (Id::Import, Job::Import),
             (Id::Check, Job::Check),
             (Id::ReadPlayer, Job::ReadPlayer),
+            (Id::CheckPalettes, Job::CheckPalettes),
+            (Id::SendPalettes, Job::SendPalettes),
         ] {
             assert!(ids.contains(&id), "{job:?} has no button");
             let mut m2 = m.clone();

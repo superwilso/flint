@@ -105,6 +105,12 @@ pub enum Id {
     Theme(ThemePref),
     /// Read what is on the player: albums and who put them there, plays, likes, palettes.
     ReadPlayer,
+    /// Choose the folder of `.palette` files on this PC.
+    PickPalettes,
+    /// Check the PC's palettes with Cinder's own rules, against what the player holds.
+    CheckPalettes,
+    /// Copy the new and changed palettes to the player.
+    SendPalettes,
 }
 
 /// The window's pages, in the order the tabs are drawn — the same order in every page, so a tab
@@ -254,6 +260,10 @@ pub enum Job {
     Check,
     /// Read the player: what is on it and who put it there, plays, likes, palettes. Writes nothing.
     ReadPlayer,
+    /// Check the palette folder with Cinder's rules, against the player's. Writes nothing.
+    CheckPalettes,
+    /// Copy the new and changed palettes to the player's `cinder_palettes`.
+    SendPalettes,
 }
 
 /// What a destination volume is holding, and what this plan would add to it.
@@ -320,6 +330,10 @@ pub struct Model {
     pub lastfm: String,
     /// Where the analysis cache lives, for Settings.
     pub cache_dir: String,
+    /// The folder of `.palette` files on this PC.
+    pub palette_dir: Option<PathBuf>,
+    /// The last palette check: the built-in palette first, then every file by name.
+    pub palette_rows: Vec<flint_core::palette::Row>,
 }
 
 impl Model {
@@ -433,6 +447,8 @@ pub enum Kind {
         primary: bool,
         enabled: bool,
     },
+    /// A palette's colours as the player draws them by day — bg, line, dim, ink, accent.
+    Swatch([u32; 5]),
     /// A button for something that changes nothing on the player. Outlined, never filled: the
     /// library tools are not the transfer and should not look like it.
     Tool {
@@ -571,6 +587,7 @@ fn tab_count(m: &Model, tab: Tab) -> String {
         Tab::Check if !m.findings.is_empty() => thousands(m.findings.len()),
         Tab::Player if m.player.read => thousands(m.player.albums.len()),
         Tab::Likes if m.player.read => thousands(m.player.plays.len()),
+        Tab::Palettes if m.palette_rows.len() > 1 => thousands(m.palette_rows.len() - 1),
         Tab::Palettes if m.player.read && !m.player.palettes.is_empty() => thousands(m.player.palettes.len()),
         _ => String::new(),
     }
@@ -970,6 +987,12 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
         Id::Import => (m.phase == Phase::Idle).then_some(Job::Import),
         Id::Check => (m.phase == Phase::Idle && m.library.is_some()).then_some(Job::Check),
         Id::ReadPlayer => (m.phase == Phase::Idle && m.volumes.iter().any(Option::is_some)).then_some(Job::ReadPlayer),
+        Id::CheckPalettes => (m.phase == Phase::Idle && (m.palette_dir.is_some() || m.volumes[0].is_some()))
+            .then_some(Job::CheckPalettes),
+        Id::SendPalettes => (m.phase == Phase::Idle
+            && m.volumes[0].is_some()
+            && !flint_core::palette::to_send(&m.palette_rows).is_empty())
+        .then_some(Job::SendPalettes),
         Id::Tab(t) => {
             m.tab = t;
             None
@@ -988,6 +1011,12 @@ pub fn set_path(m: &mut Model, id: Id, path: PathBuf) {
         Id::PickLibrary => m.library = Some(path),
         Id::PickVolume(i) => m.volumes[i] = Some(path),
         Id::PickPlaylists => m.playlists = Some(path),
+        Id::PickPalettes => {
+            // A new folder is a new comparison; the old rows describe the old one.
+            m.palette_dir = Some(path);
+            m.palette_rows.clear();
+            return;
+        }
         _ => return,
     }
     m.invalidate_plan();

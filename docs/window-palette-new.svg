@@ -30,9 +30,7 @@
 <rect x="786.5" y="200.5" width="111" height="29" rx="5" fill="none" stroke="#f0f0f3" stroke-width="1"/>
 <text x="842" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#afb0ba" text-anchor="middle" dominant-baseline="central">Your palette</text>
 <rect x="634.5" y="200.5" width="141" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
-<text x="705" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Download shared</text>
-<rect x="540.5" y="200.5" width="83" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
-<text x="582" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Browse</text>
+<text x="705" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Shared palettes</text>
 <text x="22" y="279" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#3a3b44" text-anchor="start" dominant-baseline="central">New palette</text>
 <rect x="818.5" y="264.5" width="79" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
 <text x="858" y="279" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Close</text>

@@ -49,6 +49,8 @@ pub struct Settings {
     pub palette_draft: Option<(String, String)>,
     /// The file that draft was last saved as: the one file Save may replace.
     pub palette_saved: Option<String>,
+    /// Palettes ▸ the shared palettes ▸ `(file name, contents)` for Install.
+    pub shop_install: Option<(String, String)>,
     /// Settings ▸ Last.fm ▸ what was typed, for Save.
     pub api_key: String,
     pub api_secret: String,
@@ -70,6 +72,7 @@ impl Settings {
             palette_dir: None,
             palette_draft: None,
             palette_saved: None,
+            shop_install: None,
             api_key: String::new(),
             api_secret: String::new(),
         }
@@ -105,6 +108,10 @@ pub enum Update {
     Palettes(Vec<flint_core::palette::Row>),
     /// The editor's palette was written as this file.
     PaletteSaved(String),
+    /// The shared palettes, as the shop shows them.
+    Shop(Vec<flint_core::palette::SharedPalette>),
+    /// A shared palette is in the folder now, and on the player too when `on_player`.
+    Installed { file: String, on_player: bool },
     /// The Last.fm account changed: a key saved, a sign-in, a sign-out.
     Lastfm(crate::Lastfm),
     /// Open this page in the browser. Only the platform can.
@@ -131,6 +138,8 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::SendPalettes => palettes_job(s, true, emit),
         Job::SavePalette => save_palette_job(s, emit),
         Job::FetchPalettes => fetch_palettes_job(s, cancel, emit),
+        Job::FetchShop => shop_job(s, cancel, emit),
+        Job::InstallShared => install_shared_job(s, emit),
         Job::LastfmKey => lastfm_key_job(s, emit),
         Job::LastfmSignIn => lastfm_sign_in_job(s, cancel, emit),
         Job::LastfmSignOut => lastfm_sign_out_job(s, emit),
@@ -461,6 +470,98 @@ fn fetch_palettes_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Up
         parts.push(format!("{refused} refused"));
     }
     Ok(format!("{}; {word}", parts.join(", ")))
+}
+
+/// Read the shared list and every file on it, check each with the player's rules, and say where a
+/// copy already is. Writes nothing.
+fn shop_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::http::get_form;
+    use flint_core::palette::{shared_index, Have, SharedPalette, DIR_NAME, SHARED_INDEX, SHARED_RAW};
+    emit(Update::Say("reading the list of shared palettes".into()));
+    let index = get_form(SHARED_INDEX, &[]).map_err(|e| format!("could not reach the shared palettes: {e}"))?;
+    if index.status != 200 {
+        return Err(format!("the shared palettes answered {}", index.status));
+    }
+    let files = shared_index(&index.body);
+    let player_dir = s.internal.as_ref().map(|v| v.join(DIR_NAME));
+    let read = |dir: Option<&PathBuf>, file: &str| dir.and_then(|d| std::fs::read_to_string(d.join(file)).ok());
+    let mut items = Vec::new();
+    for (i, file) in files.iter().enumerate() {
+        if stopped(cancel) {
+            break;
+        }
+        emit(Update::Progress(Some(i as f32 / files.len().max(1) as f32)));
+        let body = match get_form(&format!("{SHARED_RAW}{file}"), &[]) {
+            Ok(r) if r.status == 200 => r.body,
+            Ok(r) => {
+                emit(Update::Log(format!("{file}: the server answered {}", r.status)));
+                continue;
+            }
+            Err(e) => {
+                emit(Update::Log(format!("{file}: {e}")));
+                continue;
+            }
+        };
+        let mut p = SharedPalette::new(file, &body);
+        p.folder = Have::of(read(s.palette_dir.as_ref(), file).as_deref(), &body);
+        p.player = Have::of(read(player_dir.as_ref(), file).as_deref(), &body);
+        items.push(p);
+    }
+    emit(Update::Progress(None));
+    let n = items.len();
+    emit(Update::Shop(items));
+    Ok(format!("{n} shared palette{}", if n == 1 { "" } else { "s" }))
+}
+
+/// Put one shared palette in the folder, then on the player when its internal memory is chosen and
+/// there, then check the folder so the table agrees. A different file of the same name in the
+/// folder is someone's own and is never replaced.
+fn install_shared_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::palette::{check_file, DIR_NAME};
+    let dir = s.palette_dir.as_ref().ok_or("choose the palettes folder first")?;
+    let (file, body) = s.shop_install.as_ref().ok_or("there is no palette to install")?;
+    match check_file(file, body) {
+        Some((_, Ok(_))) => {}
+        Some((_, Err(errs))) => return Err(errs.first().cloned().unwrap_or_default()),
+        None => return Err(format!("{file} is not a palette file name")),
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dest = dir.join(file);
+    match std::fs::read_to_string(&dest) {
+        Ok(have) if have == *body => {}
+        Ok(_) => return Err(format!("a different {file} is already in the folder; rename it to install this one")),
+        Err(_) => {
+            write_whole(&dest, body.as_bytes())?;
+            emit(Update::Log(format!("downloaded {file}")));
+        }
+    }
+    let mut on_player = false;
+    let mut word = format!("{file} is in the folder");
+    if let Some(root) = &s.internal {
+        if root.is_dir() {
+            let pdir = root.join(DIR_NAME);
+            std::fs::create_dir_all(&pdir).map_err(|e| format!("{}: {e}", pdir.display()))?;
+            let pdest = pdir.join(file.to_ascii_lowercase());
+            match std::fs::read_to_string(&pdest) {
+                Ok(have) if have != *body => {
+                    word.push_str("; a different one of that name is on the player, so it was left alone");
+                }
+                have => {
+                    if have.is_err() {
+                        write_whole(&pdest, body.as_bytes())?;
+                        emit(Update::Log(format!("sent {file}")));
+                    }
+                    on_player = true;
+                    word = format!("installed {file}: pick it on the player in Settings ▸ Display ▸ Palette");
+                }
+            }
+        } else {
+            word.push_str("; the player is not connected, so Send it later");
+        }
+    }
+    emit(Update::Installed { file: file.clone(), on_player });
+    palettes_job(s, false, emit)?;
+    Ok(word)
 }
 
 fn stopped(cancel: &AtomicBool) -> bool {
@@ -1240,6 +1341,73 @@ mod tests {
         s.palette_draft = Some((d.file(), d.body()));
         assert!(run(Job::SavePalette, &s, &AtomicBool::new(false), &mut |_| {}).is_err());
         assert!(!std::fs::read_to_string(dir.join("night-owl.palette")).unwrap().contains("#15191e"));
+    }
+
+    #[test]
+    fn install_puts_a_shared_palette_in_the_folder_and_on_the_player_and_replaces_nothing() {
+        use flint_core::palette::{DIR_NAME, EXAMPLES};
+        let root = tmp("palette-install");
+        let dir = root.join("palettes");
+        let player = root.join("player");
+        fs::create_dir_all(&player).unwrap();
+        let mut s = Settings::new(PathBuf::new());
+        s.palette_dir = Some(dir.clone());
+        s.internal = Some(player.clone());
+        let (id, body) = EXAMPLES[0];
+        let file = format!("{id}.palette");
+        s.shop_install = Some((file.clone(), body.to_string()));
+        let mut said = None;
+        let word = run(Job::InstallShared, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::Installed { file, on_player } = u {
+                said = Some((file, on_player));
+            }
+        })
+        .unwrap();
+        assert!(word.starts_with("installed"), "{word}");
+        assert_eq!(said, Some((file.clone(), true)));
+        assert_eq!(fs::read_to_string(dir.join(&file)).unwrap(), body);
+        assert_eq!(fs::read_to_string(player.join(DIR_NAME).join(&file)).unwrap(), body);
+
+        // Someone's own file of that name, on the player: left alone, and said so.
+        fs::write(player.join(DIR_NAME).join(&file), "mine").unwrap();
+        let word = run(Job::InstallShared, &s, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(word.contains("left alone"), "{word}");
+        assert_eq!(fs::read_to_string(player.join(DIR_NAME).join(&file)).unwrap(), "mine");
+
+        // …and in the folder: refused outright.
+        fs::write(dir.join(&file), "mine").unwrap();
+        let err = run(Job::InstallShared, &s, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        assert!(err.contains("already in the folder"), "{err}");
+        assert_eq!(fs::read_to_string(dir.join(&file)).unwrap(), "mine");
+
+        // A player that is not plugged in: the folder only.
+        let (id2, body2) = EXAMPLES[1];
+        s.internal = Some(root.join("unplugged"));
+        s.shop_install = Some((format!("{id2}.palette"), body2.to_string()));
+        let word = run(Job::InstallShared, &s, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(word.contains("not connected"), "{word}");
+
+        // One the player would refuse is never written.
+        s.shop_install = Some(("bad.palette".into(), "name = Bad\nday.bg = #000000\nday.bg = #000000\n".into()));
+        assert!(run(Job::InstallShared, &s, &AtomicBool::new(false), &mut |_| {}).is_err());
+        assert!(!dir.join("bad.palette").exists());
+    }
+
+    /// Against the real repository: every shared palette comes back, checked and loading. Run by
+    /// hand: `cargo test -p flint-gui -- --ignored shop`.
+    #[test]
+    #[ignore]
+    fn shop_reads_the_shared_palettes() {
+        let s = Settings::new(PathBuf::new());
+        let mut items = Vec::new();
+        run(Job::FetchShop, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::Shop(v) = u {
+                items = v;
+            }
+        })
+        .unwrap();
+        assert!(items.len() >= 3, "{items:?}");
+        assert!(items.iter().all(|p| p.loads()), "{items:?}");
     }
 
     fn walk(dir: &Path) -> Vec<(PathBuf, u64)> {

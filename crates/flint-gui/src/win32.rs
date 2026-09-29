@@ -453,6 +453,9 @@ impl State {
             s.palette_draft = Some((self.model.draft.file(), self.model.draft.body()));
             s.palette_saved = self.model.draft.saved.clone();
         }
+        if let Some(p) = self.model.shop.installing.and_then(|i| self.model.shop.items.get(i)) {
+            s.shop_install = Some((p.file.clone(), p.body.clone()));
+        }
         s.api_key = self.model.key_input.clone();
         s.api_secret = self.model.secret_input.clone();
         if let Some(dir) = &self.settings_cache {

@@ -637,6 +637,89 @@ pub fn shared_index(body: &str) -> Vec<String> {
     out
 }
 
+/// Where a copy of a shared palette already is: in the PC's folder, or on the player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Have {
+    #[default]
+    Absent,
+    /// A file of the same name with exactly this content.
+    Same,
+    /// A file of the same name with other content: someone's own, never replaced.
+    Different,
+}
+
+impl Have {
+    /// What a file already there, if any, is to `body`.
+    pub fn of(existing: Option<&str>, body: &str) -> Have {
+        match existing {
+            None => Have::Absent,
+            Some(e) if e == body => Have::Same,
+            Some(_) => Have::Different,
+        }
+    }
+}
+
+/// One palette in the shared repository, as the shop shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct SharedPalette {
+    pub file: String,
+    /// The name the player shows; the file's id while it does not load.
+    pub name: String,
+    pub body: String,
+    /// bg, line, dim, ink, accent as the player draws them: by day, and by night (dimmed).
+    pub day: [u32; 5],
+    pub night: [u32; 5],
+    pub own_accent: bool,
+    /// Its day background is light.
+    pub light: bool,
+    /// The first reason the player would refuse it. Empty when it loads.
+    pub why: String,
+    pub folder: Have,
+    pub player: Have,
+}
+
+impl SharedPalette {
+    /// `body`, fetched as `file`, checked with the player's rules.
+    pub fn new(file: &str, body: &str) -> SharedPalette {
+        let mut out = SharedPalette {
+            file: file.to_string(),
+            name: palette_stem(file).unwrap_or(file).to_string(),
+            body: body.to_string(),
+            ..SharedPalette::default()
+        };
+        if body.len() as u64 > MAX_BYTES {
+            out.why = format!("larger than {MAX_BYTES} bytes");
+            return out;
+        }
+        match check_file(file, body) {
+            Some((_, Ok(p))) => {
+                let four = |s: Shown| [s.bg, s.line, s.dim, s.ink, s.acc];
+                out.name = p.name;
+                out.day = four(p.tokens.shown(false, 0));
+                out.night = four(p.tokens.shown(true, 0));
+                out.own_accent = p.tokens.accent.is_some();
+                out.light = luminance(p.tokens.day.bg) > 0.4;
+            }
+            Some((_, Err(errs))) => out.why = errs.first().cloned().unwrap_or_default(),
+            None => out.why = "not a palette file name".into(),
+        }
+        out
+    }
+
+    pub fn loads(&self) -> bool {
+        self.why.is_empty()
+    }
+
+    /// Every word of `query` is in its name, its file, or what it is: light or dark, an accent of
+    /// its own or any of the six.
+    pub fn matches(&self, query: &str) -> bool {
+        let tone = if self.light { "light" } else { "dark" };
+        let accent = if self.own_accent { "own accent" } else { "any accent six" };
+        let hay = format!("{} {} {tone} {accent}", self.name, self.file).to_lowercase();
+        query.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
+    }
+}
+
 /// `body` without its comments and alignment: the same palette in the fewest characters, because
 /// the whole file rides in a link and a browser may cut a long one short.
 fn share_text(body: &str) -> String {
@@ -802,5 +885,40 @@ mod tests {
         let url = share_url("Slate", "name = Slate\nday.bg = #0e1116\n");
         assert!(url.starts_with("https://github.com/superwilso/cinder-themes/issues/new?template=palette.yml"));
         assert!(url.contains("&palette=name%20%3D%20Slate%0Aday.bg%20%3D%20%230e1116%0A"), "{url}");
+    }
+
+    #[test]
+    fn a_shared_palette_is_checked_described_and_searchable() {
+        let paper = SharedPalette::new("paper.palette", PAPER);
+        assert!(paper.loads(), "{}", paper.why);
+        assert_eq!((paper.name.as_str(), paper.light, paper.own_accent), ("Paper", true, true));
+        assert_eq!(paper.day[0], 0xf4f1ea);
+        assert!(paper.night[0] < 0x101010, "night is dark");
+        let slate = SharedPalette::new("slate.palette", SLATE);
+        assert!(!slate.light && !slate.own_accent);
+        for (q, paper_hit, slate_hit) in [
+            ("", true, true),
+            ("pap", true, false),
+            ("LIGHT", true, false),
+            ("dark", false, true),
+            ("own accent", true, false),
+            ("any", false, true),
+            ("slate dark", false, true),
+            ("slate light", false, false),
+        ] {
+            assert_eq!(paper.matches(q), paper_hit, "paper on {q:?}");
+            assert_eq!(slate.matches(q), slate_hit, "slate on {q:?}");
+        }
+        let bad = SharedPalette::new("bad.palette", "name = Bad\nday.bg = #000000\nday.bg = #000000\n");
+        assert!(!bad.loads() && bad.name == "bad");
+        let big = SharedPalette::new("big.palette", &"#".repeat(MAX_BYTES as usize + 1));
+        assert!(big.why.contains("larger"));
+    }
+
+    #[test]
+    fn a_file_already_there_is_the_same_or_someone_elses() {
+        assert_eq!(Have::of(None, "a"), Have::Absent);
+        assert_eq!(Have::of(Some("a"), "a"), Have::Same);
+        assert_eq!(Have::of(Some("b"), "a"), Have::Different);
     }
 }

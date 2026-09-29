@@ -63,9 +63,11 @@
 <text x="34" y="581" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">4 playlists</text>
 <text x="34" y="599" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">E:\: 96 albums, 39.2 GB to copy</text>
 <text x="34" y="617" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">F:\: 154 albums, 74.9 GB to copy</text>
-<text x="34" y="635" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would remove  E:\Bonobo - Migration/03 Break Apart.flac</text>
-<text x="34" y="653" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Aphex Twin - Selected Ambient Works 85-92/01 Xtal.flac  +SensMe</text>
-<text x="34" y="671" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Aphex Twin - Selected Ambient Works 85-92/02 Tha.flac  +SensMe</text>
-<text x="34" y="689" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Bicep - Isles/01 Atlas.flac  +SensMe</text>
-<text x="34" y="707" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">…and 2,187 more</text>
+<text x="34" y="635" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Aphex Twin - Selected Ambient Works 85-92/01 Xtal.flac  +SensMe</text>
+<text x="34" y="653" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Aphex Twin - Selected Ambient Works 85-92/02 Tha.flac  +SensMe</text>
+<text x="34" y="671" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would copy    Bicep - Isles/01 Atlas.flac  +SensMe</text>
+<text x="34" y="689" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">would remove  E:\Bonobo - Migration/03 Break Apart.flac</text>
+<text x="34" y="707" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">in all: 2,190 to copy, 1 to remove — scroll up to see each one</text>
+<rect x="887" y="572" width="8" height="144" rx="4" fill="#2e2b29"/>
+<rect x="887" y="628" width="8" height="88" rx="4" fill="#9a938d"/>
 </svg>

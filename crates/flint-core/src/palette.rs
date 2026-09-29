@@ -517,6 +517,151 @@ pub fn to_send(rows: &[Row]) -> Vec<&str> {
         .collect()
 }
 
+// ── Making one ─────────────────────────────────────────────────────────────────────────────────
+
+/// Every colour key, in the order a new file lists them: the twelve neutrals, then the six accent
+/// keys a palette with an accent of its own adds.
+pub const KEYS: [&str; 18] = [
+    "day.bg",
+    "day.panel",
+    "day.line",
+    "day.ink",
+    "day.dim",
+    "day.faint",
+    "night.bg",
+    "night.panel",
+    "night.line",
+    "night.ink",
+    "night.dim",
+    "night.faint",
+    "day.accent",
+    "day.accent_ink",
+    "day.row_select",
+    "night.accent",
+    "night.accent_ink",
+    "night.row_select",
+];
+
+/// Cinder's example palettes, the starting points for a new one besides Cinder itself. The same
+/// files the player ships with in `player/cinder-ui/palettes/`.
+pub const EXAMPLES: [(&str, &str); 3] = [
+    ("slate", include_str!("../palettes/slate.palette")),
+    ("paper", include_str!("../palettes/paper.palette")),
+    ("sony", include_str!("../palettes/sony.palette")),
+];
+
+/// `t`'s colours in [`KEYS`] order. The accent slots are Amber's when it brings none of its own,
+/// which is what the player shows by default.
+pub fn values(t: &Tokens) -> [u32; 18] {
+    let n = |m: &Neutrals| [m.bg, m.panel, m.line, m.ink, m.dim, m.faint];
+    let (d, ni) = t.accent.unwrap_or((ACCENTS[0].1, ACCENTS[0].2));
+    let mut out = [0; 18];
+    out[..6].copy_from_slice(&n(&t.day));
+    out[6..12].copy_from_slice(&n(&t.night));
+    out[12..].copy_from_slice(&[d.acc, d.acc_ink, d.row_sel, ni.acc, ni.acc_ink, ni.row_sel]);
+    out
+}
+
+/// The id a palette called `name` is saved under: lowercase, spaces as `-`, anything else the
+/// player would refuse left out. `My Palette!` → `my-palette`. Empty when nothing is left.
+pub fn id_for(name: &str) -> String {
+    let mut id = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' {
+            id.push(c);
+        } else if (c == '-' || c.is_whitespace()) && !id.is_empty() && !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    let id = id.trim_end_matches('-');
+    let mut id: String = id.chars().take(MAX_ID - 2).collect();
+    // Taken by the built-in, or a name Windows keeps for a device and will not create a file by.
+    const DEVICES: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1",
+        "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    if id == BUILTIN_ID || DEVICES.contains(&id.as_str()) {
+        id.push_str("-2");
+    }
+    id
+}
+
+/// A palette file: `name`, then each `(key, value)` as written. The values are not checked here —
+/// [`parse`] does that, with the player's words, on exactly this text.
+pub fn file_text(name: &str, pairs: &[(&str, &str)]) -> String {
+    let mut out = format!("# {name} — made in Flint. Checked with Cinder's readability rules.\n\nname = {name}\n");
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        // A blank line between day, night and the accent, as in Cinder's own files.
+        if i > 0 && (k.starts_with("night.") && !pairs[i - 1].0.starts_with("night.") || *k == "day.accent") {
+            out.push('\n');
+        }
+        let v = v.trim();
+        let v = if !v.is_empty() && !v.starts_with('#') { format!("#{v}") } else { v.to_string() };
+        out.push_str(&format!("{k:<16} = {}\n", v.to_ascii_lowercase()));
+    }
+    out
+}
+
+// ── Sharing ────────────────────────────────────────────────────────────────────────────────────
+
+/// Where people share palettes: a public GitHub repository, one `.palette` file each.
+pub const SHARED_REPO: &str = "https://github.com/superwilso/cinder-themes";
+/// The list of shared files, one file name a line. Kept by the repository's CI, never by hand.
+pub const SHARED_INDEX: &str = "https://raw.githubusercontent.com/superwilso/cinder-themes/main/palettes/index.txt";
+/// A shared file is this plus its name.
+pub const SHARED_RAW: &str = "https://raw.githubusercontent.com/superwilso/cinder-themes/main/palettes/";
+/// At most this many are fetched from the index. More than the player loads, so a choice is left.
+pub const SHARED_MAX: usize = 200;
+
+/// The palette file names in the shared index. Anything that is not one is left out, so a bad
+/// line in the index can never become a path outside the folder.
+pub fn shared_index(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in body.lines().map(str::trim) {
+        if line.starts_with('#') || line.contains('/') || line.contains('\\') {
+            continue;
+        }
+        let Some(stem) = palette_stem(line) else { continue };
+        let id = stem.to_ascii_lowercase();
+        if !valid_id(&id) || id == BUILTIN_ID {
+            continue;
+        }
+        let file = format!("{id}.{EXTENSION}");
+        if !out.contains(&file) {
+            out.push(file);
+        }
+        if out.len() == SHARED_MAX {
+            break;
+        }
+    }
+    out
+}
+
+/// `body` without its comments and alignment: the same palette in the fewest characters, because
+/// the whole file rides in a link and a browser may cut a long one short.
+fn share_text(body: &str) -> String {
+    let mut out = String::new();
+    for line in body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        match line.split_once('=') {
+            Some((k, v)) => out.push_str(&format!("{} = {}\n", k.trim(), v.trim())),
+            None => out.push_str(&format!("{line}\n")),
+        }
+    }
+    out
+}
+
+/// The shared repository's "new palette" form, filled in with this file: one click on GitHub
+/// shares it. The form's field ids are `name` and `palette` (`.github/ISSUE_TEMPLATE/palette.yml`).
+pub fn share_url(name: &str, body: &str) -> String {
+    use crate::http::percent_encode;
+    format!(
+        "{SHARED_REPO}/issues/new?template=palette.yml&title={}&name={}&palette={}",
+        percent_encode(&format!("Palette: {name}")),
+        percent_encode(name),
+        percent_encode(&share_text(body))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,5 +753,54 @@ mod tests {
         assert_eq!(palette_stem("._slate.palette"), None);
         assert_eq!(palette_stem("slate.txt"), None);
         assert_eq!(check_file("Slate.palette", SLATE).map(|(id, v)| (id, v.is_ok())), Some(("slate".into(), true)));
+    }
+
+    #[test]
+    fn a_made_file_says_what_it_was_made_from() {
+        let pairs: Vec<(&str, String)> =
+            KEYS.iter().zip(values(&CINDER)).take(12).map(|(k, v)| (*k, format!("{v:06x}"))).collect();
+        let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let body = file_text("Ember", &pairs);
+        let p = parse("ember", &body).expect("Cinder's own colours pass");
+        assert_eq!(p.name, "Ember");
+        assert_eq!(p.tokens, CINDER);
+        assert!(body.contains("day.bg           = #0d0c0b"), "{body}");
+    }
+
+    #[test]
+    fn the_examples_pass_and_their_values_round_trip() {
+        for (id, body) in EXAMPLES {
+            let p = parse(id, body).unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            let v = values(&p.tokens);
+            let own = p.tokens.accent.is_some();
+            let n = if own { 18 } else { 12 };
+            let hex: Vec<String> = v.iter().map(|c| format!("{c:06x}")).collect();
+            let pairs: Vec<(&str, &str)> = KEYS.iter().zip(hex.iter()).take(n).map(|(k, v)| (*k, v.as_str())).collect();
+            assert_eq!(parse(id, &file_text(&p.name, &pairs)).map(|q| q.tokens), Ok(p.tokens), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_name_becomes_an_id_the_player_takes() {
+        assert_eq!(id_for("My Palette!"), "my-palette");
+        assert_eq!(id_for("  Late  Night "), "late-night");
+        assert_eq!(id_for("Cinder"), "cinder-2");
+        assert_eq!(id_for("Con"), "con-2", "a name Windows keeps for a device");
+        assert_eq!(id_for("日本"), "");
+        assert!(valid_id(&id_for("A very long palette name that goes on and on")));
+    }
+
+    #[test]
+    fn the_shared_index_yields_only_file_names() {
+        let idx = "# shared\nslate.palette\n../evil.palette\nsub/x.palette\nREADME.md\nNight-Owl.palette\n\
+                   cinder.palette\nslate.palette\n";
+        assert_eq!(shared_index(idx), vec!["slate.palette", "night-owl.palette"]);
+    }
+
+    #[test]
+    fn a_share_link_carries_the_whole_file() {
+        let url = share_url("Slate", "name = Slate\nday.bg = #0e1116\n");
+        assert!(url.starts_with("https://github.com/superwilso/cinder-themes/issues/new?template=palette.yml"));
+        assert!(url.contains("&palette=name%20%3D%20Slate%0Aday.bg%20%3D%20%230e1116%0A"), "{url}");
     }
 }

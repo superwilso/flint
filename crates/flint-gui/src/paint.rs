@@ -607,6 +607,17 @@ pub fn commands(m: &Model, w: i32, h: i32, t: &Theme) -> Vec<Cmd> {
                     });
                 }
             }
+            // A quiet track and a thumb in the dim ink: there to be found and dragged, never the
+            // thing the eye goes to.
+            Kind::Scrollbar { first, visible, total, .. } => {
+                out.push(Cmd::Rect { rect: r, fill: Some(t.trough), border: None, radius: 4 });
+                out.push(Cmd::Rect {
+                    rect: crate::thumb(r, *first, *visible, *total),
+                    fill: Some(t.dim),
+                    border: None,
+                    radius: 4,
+                });
+            }
             // A card that is a choice: the chosen one is outlined twice in the ink.
             Kind::Pick { on } => {
                 out.push(Cmd::Rect {
@@ -857,8 +868,13 @@ mod tests {
         let mut typing = m.clone();
         typing.key_input = "k".into();
         typing.secret_input = "s".into();
+        // The palette editor's Save, with a palette the player would load.
+        let mut editing = m.clone();
+        editing.palette_dir = Some("/palettes".into());
+        editing.draft = crate::Draft::from_start(1);
+        editing.draft.name = "Mine".into();
         let mut ids = ids;
-        for model in [&signed_in, &no_session, &typing] {
+        for model in [&signed_in, &no_session, &typing, &editing] {
             for t in crate::Tab::ALL {
                 let mut on = model.clone();
                 on.tab = t;
@@ -868,7 +884,7 @@ mod tests {
         for job in Job::ALL {
             let id = ids.iter().copied().find(|id| crate::job_of(*id) == Some(job));
             let id = id.unwrap_or_else(|| panic!("{job:?} has no button"));
-            let mut m2 = [&m, &signed_in, &no_session, &typing]
+            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing]
                 .into_iter()
                 .find(|model| crate::live(model, id))
                 .unwrap_or_else(|| panic!("{job:?}'s button is never live"))

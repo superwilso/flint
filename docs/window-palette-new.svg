@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="760" viewBox="0 0 920 760" font-kerning="normal">
+<!-- Written by `flint gui-preview`. Every rectangle and colour here is what the Windows window paints; the glyphs are whatever your viewer substitutes for Segoe UI. -->
+<rect x="0" y="0" width="920" height="760" fill="#f2f3f6"/>
+<rect x="0" y="0" width="920" height="64" fill="#1a1818"/>
+<rect x="0" y="61" width="920" height="3" fill="#e0551b"/>
+<text x="22" y="23" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="20" font-weight="600" fill="#f2efec" text-anchor="start" dominant-baseline="central">Flint</text>
+<text x="22" y="45" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#8e8884" text-anchor="start" dominant-baseline="central">Player · E:\ and F:\</text>
+<text x="266" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#cfcbc7" text-anchor="middle" dominant-baseline="central">Sync</text>
+<text x="309" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">On the player</text>
+<text x="409" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#8e8884" text-anchor="start" dominant-baseline="central">8</text>
+<text x="471" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#cfcbc7" text-anchor="middle" dominant-baseline="central">Check</text>
+<text x="544" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#cfcbc7" text-anchor="middle" dominant-baseline="central">SensMe</text>
+<text x="594" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#cfcbc7" text-anchor="start" dominant-baseline="central">Likes &amp; plays</text>
+<text x="694" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#8e8884" text-anchor="start" dominant-baseline="central">7</text>
+<rect x="718" y="15" width="98" height="34" rx="5" fill="#f2f3f6"/>
+<text x="732" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#191a1e" text-anchor="start" dominant-baseline="central">Palettes</text>
+<text x="796" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">5</text>
+<text x="859" y="32" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#cfcbc7" text-anchor="middle" dominant-baseline="central">Settings</text>
+<text x="22" y="97" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#3a3b44" text-anchor="start" dominant-baseline="central">Palettes</text>
+<text x="22" y="119" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Colour schemes for Cinder. Each .palette file is checked with the player&apos;s own readability rules before it is sent.</text>
+<text x="22" y="139" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Cinder reads them from cinder_palettes on the player&apos;s internal memory, and refuses any it could not draw legibly.</text>
+<text x="22" y="173" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">On this PC</text>
+<text x="202" y="172" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="15" fill="#191a1e" text-anchor="start" dominant-baseline="central">D:\Walkman\Palettes</text>
+<rect x="802.5" y="158.5" width="95" height="29" rx="5" fill="#ececf1" stroke="#d3d4dc" stroke-width="1"/>
+<text x="850" y="173" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Choose…</text>
+<rect x="22.5" y="200.5" width="119" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="82" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Check</text>
+<rect x="156.5" y="200.5" width="195" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="254" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Send 2 to the player</text>
+<rect x="786.5" y="200.5" width="111" height="29" rx="5" fill="none" stroke="#f0f0f3" stroke-width="1"/>
+<text x="842" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#afb0ba" text-anchor="middle" dominant-baseline="central">Your palette</text>
+<rect x="634.5" y="200.5" width="141" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="705" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Download shared</text>
+<rect x="540.5" y="200.5" width="83" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="582" y="215" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Browse</text>
+<text x="22" y="279" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#3a3b44" text-anchor="start" dominant-baseline="central">New palette</text>
+<rect x="818.5" y="264.5" width="79" height="29" rx="5" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="858" y="279" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Close</text>
+<rect x="712.5" y="264.5" width="95" height="29" rx="5" fill="none" stroke="#f0f0f3" stroke-width="1"/>
+<text x="760" y="279" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#afb0ba" text-anchor="middle" dominant-baseline="central">Share…</text>
+<rect x="562.5" y="264.5" width="139" height="29" rx="5" fill="none" stroke="#f0f0f3" stroke-width="1"/>
+<text x="632" y="279" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#afb0ba" text-anchor="middle" dominant-baseline="central">Save to folder</text>
+<text x="22" y="321" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Name</text>
+<rect x="102.5" y="306.5" width="219" height="29" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="112" y="321" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">Late Night</text>
+<text x="334" y="321" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Start from</text>
+<rect x="424.5" y="306.5" width="75" height="29" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="462" y="321" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Cinder</text>
+<rect x="500.5" y="306.5" width="75" height="29" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="538" y="321" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Slate</text>
+<rect x="576.5" y="306.5" width="75" height="29" fill="#2a2a31" stroke="#2a2a31" stroke-width="1"/>
+<text x="614" y="321" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle" dominant-baseline="central">Paper</text>
+<rect x="652.5" y="306.5" width="75" height="29" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="690" y="321" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#191a1e" text-anchor="middle" dominant-baseline="central">Sony</text>
+<text x="102" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Background</text>
+<text x="198" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Panel</text>
+<text x="294" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Lines</text>
+<text x="390" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Text</text>
+<text x="486" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Dim text</text>
+<text x="582" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Faint text</text>
+<text x="22" y="388" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Day</text>
+<rect x="102.5" y="374.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="112" y="388" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#f4f1ea</text>
+<rect x="198.5" y="374.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="208" y="388" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#ebe6dc</text>
+<rect x="294.5" y="374.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="304" y="388" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#d6d0c4</text>
+<rect x="390.5" y="374.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="400" y="388" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#1c1a17</text>
+<rect x="486.5" y="374.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#2a2a31" stroke-width="1"/>
+<text x="496" y="388" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#b0a89c|</text>
+<rect x="582.5" y="374.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="592" y="388" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#8f887d</text>
+<text x="22" y="422" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Night</text>
+<rect x="102.5" y="408.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="112" y="422" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#000000</text>
+<rect x="198.5" y="408.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="208" y="422" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#0a0908</text>
+<rect x="294.5" y="408.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="304" y="422" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#161310</text>
+<rect x="390.5" y="408.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="400" y="422" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#8d8170</text>
+<rect x="486.5" y="408.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="496" y="422" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#5b5347</text>
+<rect x="582.5" y="408.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="592" y="422" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#3b362d</text>
+<rect x="22.5" y="453.5" width="15" height="15" rx="3" fill="#2a2a31" stroke="#2a2a31" stroke-width="1"/>
+<polyline points="26,461 29,464 34,458" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="46" y="461" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#191a1e" text-anchor="start" dominant-baseline="central">An accent of its own</text>
+<text x="252" y="461" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">On: the player uses these three colours for its accent. A light pal…</text>
+<text x="102" y="491" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Accent</text>
+<text x="198" y="491" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Text on it</text>
+<text x="294" y="491" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Selected row</text>
+<text x="22" y="518" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Day</text>
+<rect x="102.5" y="504.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="112" y="518" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#c4471a</text>
+<rect x="198.5" y="504.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="208" y="518" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#ffffff</text>
+<rect x="294.5" y="504.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="304" y="518" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#e9e2d4</text>
+<text x="22" y="552" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Night</text>
+<rect x="102.5" y="538.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="112" y="552" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#863810</text>
+<rect x="198.5" y="538.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="208" y="552" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#000000</text>
+<rect x="294.5" y="538.5" width="87" height="27" rx="5" fill="#ffffff" stroke="#d3d4dc" stroke-width="1"/>
+<text x="304" y="552" font-family="Consolas,Cascadia Mono,DejaVu Sans Mono,Menlo,monospace" font-size="12" fill="#191a1e" text-anchor="start" dominant-baseline="central">#0f0c0a</text>
+<text x="694" y="361" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Day</text>
+<rect x="694" y="372" width="40" height="22" fill="#f4f1ea"/>
+<rect x="734" y="372" width="40" height="22" fill="#d6d0c4"/>
+<rect x="774" y="372" width="40" height="22" fill="#b0a89c"/>
+<rect x="814" y="372" width="40" height="22" fill="#1c1a17"/>
+<rect x="854" y="372" width="40" height="22" fill="#c4471a"/>
+<rect x="694.5" y="372.5" width="199" height="21" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="694" y="411" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#5f6069" text-anchor="start" dominant-baseline="central">Night</text>
+<rect x="694" y="422" width="40" height="22" fill="#000000"/>
+<rect x="734" y="422" width="40" height="22" fill="#0c0a08"/>
+<rect x="774" y="422" width="40" height="22" fill="#322d27"/>
+<rect x="814" y="422" width="40" height="22" fill="#4d463d"/>
+<rect x="854" y="422" width="40" height="22" fill="#491e08"/>
+<rect x="694.5" y="422.5" width="199" height="21" fill="none" stroke="#d3d4dc" stroke-width="1"/>
+<text x="22" y="588" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#b32e14" text-anchor="start" dominant-baseline="central">Cinder would refuse it:</text>
+<text x="34" y="610" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#b32e14" text-anchor="start" dominant-baseline="central">Day dim text on Day background: contrast 2.09, needs at least 3.00</text>
+<text x="34" y="630" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#b32e14" text-anchor="start" dominant-baseline="central">Day faint text stands out as much as Day dim text (3.11 vs 2.09)</text>
+<text x="22" y="728" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#5f6069" text-anchor="start" dominant-baseline="central">palettes: 1 new, 1 changed, 1 refused</text>
+</svg>

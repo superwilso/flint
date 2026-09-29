@@ -45,6 +45,10 @@ pub struct Settings {
     pub internal: Option<PathBuf>,
     /// The folder of `.palette` files on this PC.
     pub palette_dir: Option<PathBuf>,
+    /// Palettes ▸ the editor ▸ `(file name, contents)` for Save.
+    pub palette_draft: Option<(String, String)>,
+    /// The file that draft was last saved as: the one file Save may replace.
+    pub palette_saved: Option<String>,
     /// Settings ▸ Last.fm ▸ what was typed, for Save.
     pub api_key: String,
     pub api_secret: String,
@@ -64,6 +68,8 @@ impl Settings {
             music_center: None,
             internal: None,
             palette_dir: None,
+            palette_draft: None,
+            palette_saved: None,
             api_key: String::new(),
             api_secret: String::new(),
         }
@@ -97,6 +103,8 @@ pub enum Update {
     Player(Box<crate::PlayerFacts>),
     /// The palette check's rows.
     Palettes(Vec<flint_core::palette::Row>),
+    /// The editor's palette was written as this file.
+    PaletteSaved(String),
     /// The Last.fm account changed: a key saved, a sign-in, a sign-out.
     Lastfm(crate::Lastfm),
     /// Open this page in the browser. Only the platform can.
@@ -121,6 +129,8 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::ReadPlayer => read_player_job(s, emit),
         Job::CheckPalettes => palettes_job(s, false, emit),
         Job::SendPalettes => palettes_job(s, true, emit),
+        Job::SavePalette => save_palette_job(s, emit),
+        Job::FetchPalettes => fetch_palettes_job(s, cancel, emit),
         Job::LastfmKey => lastfm_key_job(s, emit),
         Job::LastfmSignIn => lastfm_sign_in_job(s, cancel, emit),
         Job::LastfmSignOut => lastfm_sign_out_job(s, emit),
@@ -356,6 +366,103 @@ fn palettes_job(s: &Settings, send: bool, emit: &mut dyn FnMut(Update)) -> Resul
     Ok(word)
 }
 
+/// Write `path` whole or not at all: a temporary name, then a rename.
+fn write_whole(path: &Path, body: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("palette.tmp");
+    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Save the editor's palette into the folder, then check the folder so the table shows it.
+///
+/// It replaces only the file this palette was last saved as. Any other file of the same name is
+/// someone's own work — a palette they downloaded or wrote by hand — and is never overwritten.
+fn save_palette_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::palette::check_file;
+    let dir = s.palette_dir.as_ref().ok_or("choose the palettes folder first")?;
+    let (file, body) = s.palette_draft.as_ref().ok_or("there is no palette to save")?;
+    match check_file(file, body) {
+        Some((_, Ok(_))) => {}
+        Some((_, Err(errs))) => return Err(errs.first().cloned().unwrap_or_default()),
+        None => return Err(format!("{file} is not a palette file name")),
+    }
+    let dest = dir.join(file);
+    let ours = s.palette_saved.as_deref() == Some(file.as_str());
+    if dest.exists() && !ours && std::fs::read_to_string(&dest).ok().as_deref() != Some(body.as_str()) {
+        return Err(format!("{file} is already in the folder — give the palette another name"));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    write_whole(&dest, body.as_bytes())?;
+    emit(Update::PaletteSaved(file.clone()));
+    emit(Update::Log(format!("saved {}", dest.display())));
+    let word = palettes_job(s, false, emit)?;
+    Ok(format!("saved {file}; {word}"))
+}
+
+/// Download the shared palettes into the folder, then check it.
+///
+/// A file already in the folder is kept whatever the shared copy says: the folder is the person's,
+/// and one they have edited must not be put back. Every download is checked with the player's rules
+/// before it is written, so a palette the player would refuse never lands in the folder.
+fn fetch_palettes_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::http::get_form;
+    use flint_core::palette::{check_file, shared_index, MAX_BYTES, SHARED_INDEX, SHARED_RAW};
+    let dir = s.palette_dir.as_ref().ok_or("choose the palettes folder first")?;
+    emit(Update::Say("reading the list of shared palettes".into()));
+    let index = get_form(SHARED_INDEX, &[]).map_err(|e| format!("could not reach the shared palettes: {e}"))?;
+    if index.status != 200 {
+        return Err(format!("the shared palettes answered {}", index.status));
+    }
+    let files = shared_index(&index.body);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let (mut got, mut kept, mut refused) = (0, 0, 0);
+    for (i, file) in files.iter().enumerate() {
+        if stopped(cancel) {
+            break;
+        }
+        emit(Update::Progress(Some(i as f32 / files.len().max(1) as f32)));
+        let dest = dir.join(file);
+        if dest.exists() {
+            kept += 1;
+            continue;
+        }
+        let r = match get_form(&format!("{SHARED_RAW}{file}"), &[]) {
+            Ok(r) if r.status == 200 => r,
+            Ok(r) => {
+                emit(Update::Log(format!("{file}: the server answered {}", r.status)));
+                continue;
+            }
+            Err(e) => {
+                emit(Update::Log(format!("{file}: {e}")));
+                continue;
+            }
+        };
+        if r.body.len() as u64 > MAX_BYTES {
+            emit(Update::Log(format!("{file}: too large to be a palette")));
+            refused += 1;
+            continue;
+        }
+        if let Some((_, Err(errs))) = check_file(file, &r.body) {
+            emit(Update::Log(format!("{file}: not downloaded — {}", errs.first().cloned().unwrap_or_default())));
+            refused += 1;
+            continue;
+        }
+        write_whole(&dest, r.body.as_bytes())?;
+        emit(Update::Log(format!("downloaded {file}")));
+        got += 1;
+    }
+    emit(Update::Progress(None));
+    let word = palettes_job(s, false, emit)?;
+    let mut parts = vec![format!("downloaded {got} shared palette{}", if got == 1 { "" } else { "s" })];
+    if kept > 0 {
+        parts.push(format!("{kept} already in the folder"));
+    }
+    if refused > 0 {
+        parts.push(format!("{refused} refused"));
+    }
+    Ok(format!("{}; {word}", parts.join(", ")))
+}
+
 fn stopped(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
 }
@@ -491,17 +598,34 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     }
 
     if !write {
-        // The preview: the first few of each, which is what the terminal prints too. The whole list
-        // would be thousands of lines and the pane shows the tail, so it would show only the end.
-        for (v, rel) in plan.stale_files.iter().take(12) {
-            emit(Update::Log(format!("would remove  {}/{rel}", volumes[*v].root.display())));
-        }
-        for c in plan.copies.iter().take(12) {
+        // The preview. Every removal is listed, because deleting is the one thing a sync does that
+        // cannot be taken back, and a list cut short would ask for a Copy nobody has checked. The
+        // copies are listed up to a point — past it the count says what the list cannot. The log
+        // scrolls, and it ends on the totals, so the tail it opens on says what the whole plan does.
+        const COPIES_LISTED: usize = 500;
+        const REMOVALS_LISTED: usize = 1_500;
+        for c in plan.copies.iter().take(COPIES_LISTED) {
             emit(Update::Log(format!("would copy    {}{}", c.rel, if c.tag.is_empty() { "" } else { "  +SensMe" })));
         }
-        if plan.copies.len() > 12 {
-            emit(Update::Log(format!("…and {} more", plan.copies.len() - 12)));
+        if plan.copies.len() > COPIES_LISTED {
+            emit(Update::Log(format!("…and {} more to copy", plan.copies.len() - COPIES_LISTED)));
         }
+        for (v, rel) in plan.stale_files.iter().take(REMOVALS_LISTED) {
+            emit(Update::Log(format!("would remove  {}/{rel}", volumes[*v].root.display())));
+        }
+        if plan.stale_files.len() > REMOVALS_LISTED {
+            emit(Update::Log(format!("…and {} more to remove", plan.stale_files.len() - REMOVALS_LISTED)));
+        }
+        for (v, name) in &plan.stale_playlists {
+            emit(Update::Log(format!("would remove  playlist {name} ({})", volumes[*v].root.display())));
+        }
+        let removes = plan.stale_files.len() + plan.stale_playlists.len();
+        emit(Update::Log(format!(
+            "in all: {} to copy, {} to remove{}",
+            crate::thousands(plan.copies.len()),
+            crate::thousands(removes),
+            if plan.copies.len() + removes > 20 { " — scroll up to see each one" } else { "" }
+        )));
         emit(Update::Planned);
         emit(Update::Progress(Some(1.0)));
         return Ok(format!(
@@ -1032,6 +1156,90 @@ mod tests {
         let err = run(Job::SendPalettes, &s, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
         assert!(err.contains("internal memory"), "{err}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Download shared, against the real repository. Needs the network, so it only runs when
+    /// asked: `cargo test -p flint-gui -- --ignored fetch`.
+    #[test]
+    #[ignore]
+    fn fetch_downloads_the_shared_palettes_and_keeps_what_is_there() {
+        let root = tmp("fetch");
+        let dir = root.join("palettes");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("slate.palette"), "name = My Slate\n").unwrap();
+        let mut s = Settings::new(PathBuf::new());
+        s.palette_dir = Some(dir.clone());
+        let word = run(Job::FetchPalettes, &s, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(word.contains("1 already in the folder"), "{word}");
+        assert_eq!(fs::read_to_string(dir.join("slate.palette")).unwrap(), "name = My Slate\n", "kept");
+        assert!(dir.join("paper.palette").is_file() && dir.join("sony.palette").is_file(), "{word}");
+    }
+
+    /// The preview lists every file a copy would delete, not the first dozen: a removal the user
+    /// was never shown is a removal they did not agree to.
+    #[test]
+    fn the_preview_lists_every_removal() {
+        let root = tmp("removals");
+        let library = root.join("music");
+        let volume = root.join("player");
+        fs::create_dir_all(&volume).unwrap();
+        for i in 0..20 {
+            write_flac(&library.join(format!("Artist - Gone/{i:02} Track.flac")), 256);
+        }
+        write_flac(&library.join("Artist - Kept/01 One.flac"), 256);
+        let s = settings(library.clone(), volume.clone(), root.join("cache"));
+        let cancel = AtomicBool::new(false);
+        run(Job::Plan, &s, &cancel, &mut |_| {}).unwrap();
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        fs::remove_dir_all(library.join("Artist - Gone")).unwrap();
+        let mut lines = Vec::new();
+        run(Job::Plan, &s, &cancel, &mut |u| {
+            if let Update::Log(l) = u {
+                lines.push(l)
+            }
+        })
+        .unwrap();
+        let removals = lines.iter().filter(|l| l.starts_with("would remove")).count();
+        assert_eq!(removals, 20, "{lines:#?}");
+        assert!(lines.last().unwrap().starts_with("in all: 0 to copy, 20 to remove"), "{lines:#?}");
+    }
+
+    #[test]
+    fn save_writes_the_draft_and_never_replaces_someone_elses_file() {
+        let root = tmp("palette-save");
+        let dir = root.join("palettes");
+        let mut s = Settings::new(PathBuf::new());
+        s.palette_dir = Some(dir.clone());
+        let mut d = crate::Draft::from_start(1);
+        d.name = "Night Owl".into();
+        s.palette_draft = Some((d.file(), d.body()));
+        let mut saved = None;
+        let word = run(Job::SavePalette, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::PaletteSaved(f) = u {
+                saved = Some(f);
+            }
+        })
+        .unwrap();
+        assert_eq!(saved.as_deref(), Some("night-owl.palette"));
+        assert!(word.starts_with("saved night-owl.palette; palettes: 1 new"), "{word}");
+        let body = std::fs::read_to_string(dir.join("night-owl.palette")).unwrap();
+        assert_eq!(flint_core::palette::parse("night-owl", &body).map(|p| p.name), Ok("Night Owl".into()));
+
+        // A second draft by the same name is someone else's file as far as Save knows…
+        d.hex[0] = "#101418".into();
+        s.palette_draft = Some((d.file(), d.body()));
+        let err = run(Job::SavePalette, &s, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        assert!(err.contains("already in the folder"), "{err}");
+        // …until it is the one this draft was saved as.
+        s.palette_saved = Some("night-owl.palette".into());
+        run(Job::SavePalette, &s, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(std::fs::read_to_string(dir.join("night-owl.palette")).unwrap().contains("#101418"));
+
+        // A palette the player would refuse is never written.
+        d.hex[3] = "#15191e".into(); // ink on its own background
+        s.palette_draft = Some((d.file(), d.body()));
+        assert!(run(Job::SavePalette, &s, &AtomicBool::new(false), &mut |_| {}).is_err());
+        assert!(!std::fs::read_to_string(dir.join("night-owl.palette")).unwrap().contains("#15191e"));
     }
 
     fn walk(dir: &Path) -> Vec<(PathBuf, u64)> {

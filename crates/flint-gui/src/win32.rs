@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::job::{self, Settings, Update};
 use crate::paint::{b_of, commands, g_of, r_of, Align, Cmd, Face, Theme};
-use crate::{click, hit, layout, set_path, Id, Job, Key, Model, ThemePref, H, MIN_H, MIN_W, W};
+use crate::{click, hit, layout, set_path, Id, Job, Key, Model, Nav, ThemePref, H, MIN_H, MIN_W, W};
 
 // ── the Win32 surface, declared rather than depended on ────────────────────────────────────────
 
@@ -150,6 +150,10 @@ extern "system" {
     fn FillRect(hdc: Hdc, r: *const RectW, brush: Hgdi) -> i32;
     fn GetDpiForWindow(hwnd: Hwnd) -> u32;
     fn SetProcessDpiAwarenessContext(ctx: isize) -> i32;
+    fn SetCapture(hwnd: Hwnd) -> Hwnd;
+    fn ReleaseCapture() -> i32;
+    fn ScreenToClient(hwnd: Hwnd, p: *mut Point) -> i32;
+    fn GetKeyState(key: i32) -> i16;
 }
 
 #[link(name = "gdi32")]
@@ -251,6 +255,13 @@ const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_CHAR: u32 = 0x0102;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_MOUSEWHEEL: u32 = 0x020A;
+const WM_CAPTURECHANGED: u32 = 0x0215;
+const MK_LBUTTON: usize = 0x0001;
+const VK_CONTROL: i32 = 0x11;
+/// Rows the wheel moves a list per notch, as Windows does by default.
+const WHEEL_ROWS: i32 = 3;
 /// A worker thread has put something in its queue.
 const WM_JOB: u32 = 0x8000 + 1;
 /// A worker thread has finished. `wparam` is its job's [`Job::code`].
@@ -399,6 +410,10 @@ struct State {
     hot: Option<Id>,
     /// What the pointer went down on, so a press that slides off does not fire.
     down: Option<Id>,
+    /// A scrollbar thumb being dragged, and how far below its top it was caught.
+    drag: Option<(crate::Area, i32)>,
+    /// Wheel movement not yet a whole row: a touchpad sends it in small pieces.
+    wheel: i32,
     /// One per running job.
     workers: Vec<(Job, Arc<Shared>)>,
     fonts: Vec<(Face, Hgdi)>,
@@ -434,6 +449,10 @@ impl State {
         s.extras = self.model.extras;
         s.internal = self.model.volumes[0].clone();
         s.palette_dir = self.model.palette_dir.clone();
+        if self.model.draft.open {
+            s.palette_draft = Some((self.model.draft.file(), self.model.draft.body()));
+            s.palette_saved = self.model.draft.saved.clone();
+        }
         s.api_key = self.model.key_input.clone();
         s.api_secret = self.model.secret_input.clone();
         if let Some(dir) = &self.settings_cache {
@@ -708,8 +727,9 @@ fn launch(hwnd: Hwnd, job: Job) {
 /// A click that landed on `id`, outside the state's borrow: a folder chooser and the browser both
 /// run message loops of their own.
 unsafe fn press(hwnd: Hwnd, id: Id) {
-    if let Some(url) = crate::url_for(id) {
-        open_url(hwnd, url);
+    let url = STATE.with(|st| st.borrow().as_ref().and_then(|state| crate::url_for(&state.model, id)));
+    if let Some(url) = url {
+        open_url(hwnd, &url);
         return;
     }
     match id {
@@ -832,6 +852,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
             0
         }
         WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP => {
+            let buttons = w;
             let x = (l & 0xFFFF) as i16 as i32;
             let y = ((l >> 16) & 0xFFFF) as i16 as i32;
             let mut pressed: Option<Id> = None;
@@ -841,6 +862,33 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                 let Some(state) = st.as_mut() else { return };
                 let (lx, ly) = (state.unscale(x), state.unscale(y));
                 let (w, h) = state.size;
+                // A thumb being dragged owns the pointer until the button comes up.
+                if let Some((area, grab)) = state.drag {
+                    match msg {
+                        // The button came up where this window did not hear it: the drag is over.
+                        WM_MOUSEMOVE if buttons & MK_LBUTTON == 0 => {
+                            state.drag = None;
+                            ReleaseCapture();
+                        }
+                        WM_MOUSEMOVE => repaint = crate::drag_bar(&mut state.model, w, h, area, grab, ly),
+                        WM_LBUTTONUP => {
+                            state.drag = None;
+                            ReleaseCapture();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                if msg == WM_LBUTTONDOWN {
+                    if let Some(caught) = crate::press_bar(&mut state.model, w, h, lx, ly) {
+                        if caught.is_some() {
+                            state.drag = caught;
+                            SetCapture(hwnd);
+                        }
+                        repaint = true;
+                        return;
+                    }
+                }
                 let over = hit(&state.model, w, h, lx, ly);
                 if over != state.hot {
                     state.hot = over;
@@ -868,6 +916,74 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                 InvalidateRect(hwnd, std::ptr::null(), 0);
             }
             0
+        }
+        // Capture taken away mid-drag — Alt+Tab, or a job's message box — ends the drag.
+        //
+        // SetCapture and ReleaseCapture send this synchronously, from inside the state's borrow in
+        // the mouse handler — which has already set `drag` itself — so a borrow that is taken is
+        // left alone rather than panicking.
+        WM_CAPTURECHANGED => {
+            STATE.with(|st| {
+                if let Ok(mut b) = st.try_borrow_mut() {
+                    if let Some(state) = b.as_mut() {
+                        state.drag = None;
+                    }
+                }
+            });
+            0
+        }
+        WM_MOUSEWHEEL => {
+            // The delta is in 120ths of a notch, up positive; the point is on the screen.
+            let delta = ((w >> 16) & 0xFFFF) as i16 as i32;
+            let mut p = Point { x: (l & 0xFFFF) as i16 as i32, y: ((l >> 16) & 0xFFFF) as i16 as i32 };
+            ScreenToClient(hwnd, &mut p);
+            let moved = STATE.with(|st| {
+                let mut b = st.borrow_mut();
+                let Some(state) = b.as_mut() else { return false };
+                let (lx, ly) = (state.unscale(p.x), state.unscale(p.y));
+                // Rows in whole numbers, the remainder kept for the next message: a notch is 120,
+                // and a precision touchpad sends a few units at a time.
+                state.wheel += -delta * WHEEL_ROWS;
+                let rows = state.wheel / 120;
+                state.wheel -= rows * 120;
+                let (w, h) = state.size;
+                rows != 0 && crate::wheel(&mut state.model, w, h, lx, ly, rows)
+            });
+            if moved {
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
+        WM_KEYDOWN => {
+            // The keys that move a list. They make no WM_CHAR, so a field with the caret in it is
+            // not in their way — except Home and End, which a field may want one day; they wait
+            // until nothing is being typed into.
+            let k = match w as u32 {
+                0x21 => Some(Nav::PageUp),
+                0x22 => Some(Nav::PageDown),
+                0x23 => Some(Nav::End),
+                0x24 => Some(Nav::Home),
+                0x26 => Some(Nav::Up),
+                0x28 => Some(Nav::Down),
+                _ => None,
+            };
+            let ctrl = GetKeyState(VK_CONTROL) < 0;
+            let moved = k.is_some_and(|k| {
+                STATE.with(|st| {
+                    let mut b = st.borrow_mut();
+                    let Some(state) = b.as_mut() else { return false };
+                    if state.model.focus.is_some() && matches!(k, Nav::Home | Nav::End) && !ctrl {
+                        return false;
+                    }
+                    let (w, h) = state.size;
+                    crate::nav(&mut state.model, w, h, k)
+                })
+            });
+            if moved {
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, w, l)
         }
         WM_CHAR => {
             // Keys arrive as characters: `TranslateMessage` has already turned Backspace, Enter,
@@ -1081,6 +1197,8 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
                 dpi,
                 hot: None,
                 down: None,
+                drag: None,
+                wheel: 0,
                 workers: Vec::new(),
                 fonts,
                 settings_cache: None,

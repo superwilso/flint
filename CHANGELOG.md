@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Make and share palettes
+
+- **Palettes ▸ New palette** opens an editor. Start from Cinder, Slate, Paper or Sony, give the
+  palette a name and change its twelve colours, plus six more if it has an accent of its own. A
+  preview shows day and night as the panel draws them. Under it, the player's verdict updates with
+  every key, in the player's own words.
+- **Save to folder** writes `<name>.palette` into the palettes folder and checks the folder. It
+  only ever replaces the file it saved last. Any other file with that name is left alone.
+- **Close** keeps the draft. **Your palette** opens it again.
+- Choosing another starting point after you have typed colours asks for a second click before it
+  replaces them.
+- The player's reasons name colours the way the editor labels them: *Day dim text on Day
+  background*.
+- **Share…** opens the shared repository's form,
+  [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes), with the palette already
+  filled in.
+- **Download shared** downloads every shared palette that is not already in the folder. Each one is
+  checked with the player's rules before it is written, and a file already there is never replaced.
+  **Browse** opens the gallery.
+
+### Lists scroll
+
+Every table and log scrolls: Check's findings, the player's albums, the plays, the palettes, and
+the Sync, SensMe and Last.fm logs.
+
+- Scroll with the mouse wheel, drag the thumb, or click the track to move a page.
+- The keyboard also works: Page Up, Page Down, Home, End and the arrow keys.
+- A log follows its newest line. Scrolled up, it stays on the lines you are reading while more
+  arrive, and End brings it back.
+- "…and N more" is gone. Every row can be reached.
+
+### The preview lists every removal
+
+**Show what would happen** used to list the first 12 files a copy would delete and drop the rest
+without saying so. Now it lists every removal, up to 1,500, plus the playlists it would remove, and
+ends on the totals. Deleting is the one thing a sync cannot undo. `flint sync` without `--apply` had
+the same gap, with 10 in place of 12: it now prints every removal, then `in all: N to copy, M to
+remove`.
+
 ## 0.2.1 — 2026-09-28
 
 ### No terminal window

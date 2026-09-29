@@ -134,6 +134,7 @@ PICS=(
     "docs/window-dark.svg:planned:--dark"
     "docs/window-check.svg:check:"
     "docs/window-palettes.svg:palettes:"
+    "docs/window-palette-new.svg:palette-new:"
 )
 SHOTS_TMP="$(mktemp -d)"
 trap 'rm -rf "$SHOTS_TMP"' EXIT

@@ -134,6 +134,22 @@ pub enum Id {
     CompareLikes,
     /// Likes & plays ▸ make those changes.
     SyncLikes,
+    /// Palettes ▸ open the editor on a new palette, starting from Cinder's colours.
+    NewPalette,
+    /// Palettes ▸ the editor ▸ start again from this palette: 0 is Cinder, then `palette::EXAMPLES`.
+    PaletteStart(usize),
+    /// Palettes ▸ the editor ▸ bring an accent of its own, or offer all six of Cinder's.
+    ToggleOwnAccent,
+    /// Palettes ▸ the editor ▸ write it into the palettes folder as `<id>.palette`.
+    SavePalette,
+    /// Palettes ▸ the editor ▸ close it. What was typed is kept until the next New palette.
+    ClosePalette,
+    /// Palettes ▸ the editor ▸ open the shared repository's form, filled in with this palette.
+    SharePalette,
+    /// Palettes ▸ download the shared palettes into the folder. Never replaces a file.
+    FetchPalettes,
+    /// Palettes ▸ open the shared repository in the browser.
+    BrowsePalettes,
 }
 
 /// The lines of text the window takes typing into.
@@ -143,6 +159,10 @@ pub enum Field {
     ApiSecret,
     /// Check ▸ the filter over the flagged files.
     CheckFilter,
+    /// Palettes ▸ the editor ▸ the name the player shows.
+    PaletteName,
+    /// Palettes ▸ the editor ▸ one colour, by its place in `palette::KEYS`.
+    Colour(u8),
 }
 
 impl Field {
@@ -158,6 +178,30 @@ impl Field {
             Field::ApiKey => "Paste the API key",
             Field::ApiSecret => "Paste the shared secret",
             Field::CheckFilter => "Filter by file, folder or reason",
+            Field::PaletteName => "Name it",
+            Field::Colour(_) => "#rrggbb",
+        }
+    }
+
+    /// The most it takes. A colour is `#` and six digits; a name is what the player shows.
+    pub fn max(self) -> usize {
+        match self {
+            Field::Colour(_) => 7,
+            Field::PaletteName => flint_core::palette::MAX_NAME,
+            _ => Field::MAX,
+        }
+    }
+
+    /// Where Tab goes from here.
+    fn next(self, own_accent: bool) -> Field {
+        let colours = if own_accent { 18 } else { 12 };
+        match self {
+            Field::ApiKey => Field::ApiSecret,
+            Field::ApiSecret => Field::ApiKey,
+            Field::CheckFilter => Field::CheckFilter,
+            Field::PaletteName => Field::Colour(0),
+            Field::Colour(i) if (i as usize) + 1 < colours => Field::Colour(i + 1),
+            Field::Colour(_) => Field::PaletteName,
         }
     }
 
@@ -242,6 +286,11 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// Its place in [`Tab::ALL`].
+    pub fn index(self) -> usize {
+        Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
     pub const ALL: [Tab; 7] =
         [Tab::Sync, Tab::Player, Tab::Check, Tab::SensMe, Tab::Likes, Tab::Palettes, Tab::Settings];
 
@@ -381,6 +430,10 @@ pub enum Job {
     CompareLikes,
     /// Carry that out, both ways.
     SyncLikes,
+    /// Write the editor's palette into the palettes folder, then check the folder.
+    SavePalette,
+    /// Download the shared palettes into the palettes folder, then check the folder.
+    FetchPalettes,
 }
 
 /// Something a job needs to itself while it runs. Two jobs that need the same one cannot run at
@@ -408,7 +461,7 @@ pub enum Hold {
 
 impl Job {
     /// Every job, in the order `code` numbers them.
-    pub const ALL: [Job; 14] = [
+    pub const ALL: [Job; 16] = [
         Job::Plan,
         Job::Apply,
         Job::Scan,
@@ -423,6 +476,8 @@ impl Job {
         Job::Scrobble,
         Job::CompareLikes,
         Job::SyncLikes,
+        Job::SavePalette,
+        Job::FetchPalettes,
     ];
 
     /// A small number for the platform layer's messages.
@@ -440,7 +495,7 @@ impl Job {
             Job::Scan | Job::Import => &[Hold::Cache],
             Job::Check => &[Hold::Checks],
             Job::ReadPlayer => &[Hold::Player],
-            Job::CheckPalettes | Job::SendPalettes => &[Hold::Palettes],
+            Job::CheckPalettes | Job::SendPalettes | Job::SavePalette | Job::FetchPalettes => &[Hold::Palettes],
             Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Hold::Lastfm],
             Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Hold::Lastfm, Hold::Player],
         }
@@ -460,6 +515,8 @@ impl Job {
                 | Job::ReadPlayer
                 | Job::CheckPalettes
                 | Job::SendPalettes
+                | Job::SavePalette
+                | Job::FetchPalettes
                 | Job::Scrobble
                 | Job::CompareLikes
                 | Job::SyncLikes
@@ -473,7 +530,7 @@ impl Job {
             Job::Scan | Job::Import => &[Tab::SensMe],
             Job::Check => &[Tab::Check],
             Job::ReadPlayer => &[Tab::Player, Tab::Likes],
-            Job::CheckPalettes | Job::SendPalettes => &[Tab::Palettes],
+            Job::CheckPalettes | Job::SendPalettes | Job::SavePalette | Job::FetchPalettes => &[Tab::Palettes],
             Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Tab::Settings],
             Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Tab::Likes],
         }
@@ -490,6 +547,8 @@ impl Job {
             Job::ReadPlayer => "reading the player",
             Job::CheckPalettes => "checking palettes",
             Job::SendPalettes => "sending palettes",
+            Job::SavePalette => "saving the palette",
+            Job::FetchPalettes => "downloading shared palettes",
             Job::LastfmKey => "saving the Last.fm key",
             Job::LastfmSignIn => "signing in to Last.fm",
             Job::LastfmSignOut => "signing out of Last.fm",
@@ -564,6 +623,114 @@ pub struct LibraryFacts {
     pub bytes: u64,
 }
 
+/// A list that scrolls. Every page has at most one table and one log, so a page and one of these
+/// name a list exactly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Area {
+    Table,
+    Log,
+}
+
+/// A key that moves the page's list: the table if the page has one that scrolls, else the log.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Nav {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+/// Palettes ▸ the editor: a palette being made, as typed. Nothing here is checked until it is
+/// drawn — [`Draft::problems`] runs the player's own rules over exactly the text Save would write.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Draft {
+    /// The editor is showing, in place of the table.
+    pub open: bool,
+    pub name: String,
+    /// In `palette::KEYS` order. The last six count only with `own_accent`.
+    pub hex: [String; 18],
+    pub own_accent: bool,
+    /// The starting point last chosen: 0 is Cinder, then `palette::EXAMPLES`.
+    pub start: usize,
+    /// The file this draft was last saved as, which Save may replace. No other file is replaced.
+    pub saved: Option<String>,
+    /// A colour has been typed since the last starting point was chosen.
+    pub edited: bool,
+    /// A starting point clicked once over edited colours: a second click replaces them.
+    pub confirm_start: Option<usize>,
+}
+
+impl Draft {
+    /// Starting points, as the editor names them.
+    pub const STARTS: [&'static str; 4] = ["Cinder", "Slate", "Paper", "Sony"];
+
+    /// A fresh draft from starting point `start`, with its colours and no name.
+    pub fn from_start(start: usize) -> Draft {
+        use flint_core::palette::{parse, values, CINDER, EXAMPLES};
+        let tokens = start
+            .checked_sub(1)
+            .and_then(|i| EXAMPLES.get(i))
+            .and_then(|(id, body)| parse(id, body).ok())
+            .map_or(CINDER, |p| p.tokens);
+        let v = values(&tokens);
+        Draft {
+            open: true,
+            hex: std::array::from_fn(|i| format!("#{:06x}", v[i])),
+            own_accent: tokens.accent.is_some(),
+            start: start.min(Draft::STARTS.len() - 1),
+            ..Draft::default()
+        }
+    }
+
+    /// The file it saves as: `my-palette.palette`. Empty id when the name has nothing usable.
+    pub fn file(&self) -> String {
+        format!("{}.{}", flint_core::palette::id_for(&self.name), flint_core::palette::EXTENSION)
+    }
+
+    /// What Save writes.
+    pub fn body(&self) -> String {
+        let n = if self.own_accent { 18 } else { 12 };
+        let pairs: Vec<(&str, &str)> =
+            flint_core::palette::KEYS.iter().zip(self.hex.iter()).take(n).map(|(k, v)| (*k, v.as_str())).collect();
+        flint_core::palette::file_text(self.name.trim(), &pairs)
+    }
+
+    /// Why the player would refuse it, in its own words. Empty when it would load.
+    pub fn problems(&self) -> Vec<String> {
+        let id = flint_core::palette::id_for(&self.name);
+        if id.is_empty() {
+            return vec!["Give it a name with at least one letter or digit in it.".into()];
+        }
+        flint_core::palette::parse(&id, &self.body()).err().unwrap_or_default()
+    }
+
+    /// One colour, if what is typed is one.
+    pub fn colour(&self, i: usize) -> Option<u32> {
+        let h = self.hex.get(i)?.trim();
+        let h = h.strip_prefix('#').unwrap_or(h);
+        (h.len() == 6).then(|| u32::from_str_radix(h, 16).ok()).flatten()
+    }
+
+    /// The colours as the player would draw them, for the preview. `None` while any is not a
+    /// colour yet.
+    pub fn tokens(&self) -> Option<flint_core::palette::Tokens> {
+        use flint_core::palette::{AccentTokens, Neutrals, Tokens};
+        let c: Vec<u32> = (0..18).map(|i| self.colour(i)).collect::<Option<_>>()?;
+        let n = |o: usize| Neutrals {
+            bg: c[o],
+            panel: c[o + 1],
+            line: c[o + 2],
+            ink: c[o + 3],
+            dim: c[o + 4],
+            faint: c[o + 5],
+        };
+        let a = |o: usize| AccentTokens { acc: c[o], acc_ink: c[o + 1], row_sel: c[o + 2] };
+        Some(Tokens { day: n(0), night: n(6), accent: self.own_accent.then(|| (a(12), a(15))) })
+    }
+}
+
 /// Everything the window knows. Owned by the UI thread; the worker talks to it through the
 /// platform layer's mutex.
 #[derive(Clone, Debug, Default)]
@@ -621,6 +788,11 @@ pub struct Model {
     pub palette_dir: Option<PathBuf>,
     /// The last palette check: the built-in palette first, then every file by name.
     pub palette_rows: Vec<flint_core::palette::Row>,
+    /// Palettes ▸ the editor.
+    pub draft: Draft,
+    /// Each page's lists, by `Tab::index` then `Area`. A table's is the first row shown; a log's
+    /// is how many lines up from the newest, so 0 follows the log as it grows.
+    pub scroll: [[usize; 2]; 7],
 }
 
 impl Model {
@@ -728,6 +900,8 @@ impl Model {
             Field::ApiKey => &self.key_input,
             Field::ApiSecret => &self.secret_input,
             Field::CheckFilter => &self.check_filter,
+            Field::PaletteName => &self.draft.name,
+            Field::Colour(i) => self.draft.hex.get(i as usize).map_or("", String::as_str),
         }
     }
 
@@ -736,7 +910,27 @@ impl Model {
             Field::ApiKey => &mut self.key_input,
             Field::ApiSecret => &mut self.secret_input,
             Field::CheckFilter => &mut self.check_filter,
+            Field::PaletteName => &mut self.draft.name,
+            Field::Colour(i) => &mut self.draft.hex[(i as usize).min(17)],
         }
+    }
+
+    /// Something was typed into `f`: a filter starts its table at the top again, so no match is
+    /// left above the rows on show; a colour marks the draft as someone's work.
+    fn typed_into(&mut self, f: Field) {
+        match f {
+            Field::CheckFilter => self.scroll[Tab::Check.index()][Area::Table as usize] = 0,
+            Field::Colour(_) => {
+                self.draft.edited = true;
+                self.draft.confirm_start = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Where `a` on the page on show is scrolled to, as stored (see [`Model::scroll`]).
+    pub fn scrolled(&self, a: Area) -> usize {
+        self.scroll[self.tab.index()][a as usize]
     }
 
     /// The flagged files the Check page's table shows: the verdict chosen, if one is, and the
@@ -754,6 +948,24 @@ impl Model {
                     || r.verdict.to_lowercase().contains(&needle)
             })
             .collect()
+    }
+
+    /// The page that shows `p`'s log.
+    fn pane_tab(p: Pane) -> Tab {
+        match p {
+            Pane::Sync => Tab::Sync,
+            Pane::SensMe => Tab::SensMe,
+            Pane::Lastfm => Tab::Likes,
+        }
+    }
+
+    /// A line was added to `p`. A log scrolled up stays on the lines being read; one at the bottom
+    /// follows the new line.
+    fn log_grew(&mut self, p: Pane) {
+        let off = &mut self.scroll[Model::pane_tab(p).index()][Area::Log as usize];
+        if *off > 0 {
+            *off += 1;
+        }
     }
 
     /// Where a job's lines go.
@@ -902,6 +1114,16 @@ pub enum Kind {
     /// one chosen.
     Pick {
         on: bool,
+    },
+    /// The bar beside a list with more rows than fit. The widget's rect is the track; `list` is the
+    /// list it scrolls, where the wheel works. Rows, not pixels: a list only ever shows whole rows,
+    /// so nothing is ever drawn half inside it.
+    Scrollbar {
+        area: Area,
+        first: usize,
+        visible: usize,
+        total: usize,
+        list: Rect,
     },
 }
 
@@ -1324,40 +1546,16 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
 
     let log_y = status_y + 28;
     let log_h = (h - log_y - PAD).max(0);
-    if m.log.is_empty() {
-        // An empty pane is a place to say what happens next, not a black rectangle waiting to be
-        // filled. It is drawn as the panel outline the cards use, so it reads as "nothing here
-        // yet" rather than as a terminal that has died.
-        out.push(Widget {
-            id: Id::None,
-            rect: Rect::new(PAD, log_y, inner, log_h),
-            kind: Kind::Card { filled: false },
-            text: String::new(),
-        });
-        out.push(hint(
-            "Every file Flint would copy, remove or tag is listed here first. Nothing is written \
-             until you press Copy to the player.",
-            Rect::new(PAD + CARD_PAD, log_y + 14, inner - CARD_PAD * 2, 20),
-        ));
-    } else {
-        out.push(Widget {
-            id: Id::None,
-            rect: Rect::new(PAD, log_y, inner, log_h),
-            kind: Kind::LogPane,
-            text: String::new(),
-        });
-        let line_h = 18;
-        let visible = ((log_h - 16) / line_h).max(0) as usize;
-        let start = m.log.len().saturating_sub(visible);
-        for (i, line) in m.log[start..].iter().enumerate() {
-            out.push(Widget {
-                id: Id::None,
-                rect: Rect::new(PAD + 12, log_y + 8 + i as i32 * line_h, inner - 24, line_h),
-                kind: Kind::LogLine,
-                text: line.clone(),
-            });
-        }
-    }
+    // An empty pane is a place to say what happens next, not a black rectangle waiting to be
+    // filled: `log_pane` draws it as the outline the cards use.
+    pages::log_pane(
+        &mut out,
+        &m.log,
+        "Every file Flint would copy, remove or tag is listed here first. Nothing is written until you \
+         press Copy to the player.",
+        (PAD, log_y, inner, log_h),
+        m.scroll[Tab::Sync.index()][Area::Log as usize],
+    );
     out
 }
 
@@ -1381,6 +1579,92 @@ pub fn hit(m: &Model, w: i32, h: i32, x: i32, y: i32) -> Option<Id> {
     })
 }
 
+// ── Scrolling ──────────────────────────────────────────────────────────────────────────────────
+
+/// The thumb in a scrollbar's track: as tall as the share of rows on show, never under 24 px.
+pub fn thumb(track: Rect, first: usize, visible: usize, total: usize) -> Rect {
+    let (h, total) = (track.h as i64, total.max(1) as i64);
+    let th = (h * visible as i64 / total).clamp(24.min(h), h);
+    let span = (total - visible as i64).max(1);
+    let ty = ((h - th) * first as i64 / span).clamp(0, h - th);
+    Rect::new(track.x, track.y + ty as i32, track.w, th as i32)
+}
+
+/// A scrollbar the layout drew: `(area, track, list, first, visible, total)`.
+type Bar = (Area, Rect, Rect, usize, usize, usize);
+
+fn bars(m: &Model, w: i32, h: i32) -> Vec<Bar> {
+    layout(m, w, h)
+        .into_iter()
+        .filter_map(|wid| match wid.kind {
+            Kind::Scrollbar { area, first, visible, total, list } => {
+                Some((area, wid.rect, list, first, visible, total))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Show row `first` of `area` at the top, clamped. True when that moved anything.
+fn show_from(m: &mut Model, bar: &Bar, first: i64) -> bool {
+    let (area, _, _, _, visible, total) = *bar;
+    let max = total.saturating_sub(visible);
+    let first = first.clamp(0, max as i64) as usize;
+    let stored = match area {
+        Area::Table => first,
+        Area::Log => max - first,
+    };
+    let slot = &mut m.scroll[m.tab.index()][area as usize];
+    std::mem::replace(slot, stored) != stored
+}
+
+/// The mouse wheel at `(x, y)`: `rows` down (negative is up), in whichever list is under it.
+pub fn wheel(m: &mut Model, w: i32, h: i32, x: i32, y: i32, rows: i32) -> bool {
+    let Some(b) = bars(m, w, h).into_iter().find(|b| b.2.contains(x, y) || b.1.contains(x, y)) else {
+        return false;
+    };
+    show_from(m, &b, b.3 as i64 + rows as i64)
+}
+
+/// A key that moves the page's main list: its table if that scrolls, else its log.
+pub fn nav(m: &mut Model, w: i32, h: i32, k: Nav) -> bool {
+    let bs = bars(m, w, h);
+    let Some(b) = bs.iter().find(|b| b.0 == Area::Table).or(bs.first()).copied() else { return false };
+    let (first, page) = (b.3 as i64, (b.4 as i64 - 1).max(1));
+    let to = match k {
+        Nav::Up => first - 1,
+        Nav::Down => first + 1,
+        Nav::PageUp => first - page,
+        Nav::PageDown => first + page,
+        Nav::Home => 0,
+        Nav::End => i64::MAX / 2,
+    };
+    show_from(m, &b, to)
+}
+
+/// A press on a scrollbar at `(x, y)`. On the thumb, it starts a drag and returns the area and
+/// where on the thumb it was caught; on the track, it pages toward the press and returns `None`.
+pub fn press_bar(m: &mut Model, w: i32, h: i32, x: i32, y: i32) -> Option<Option<(Area, i32)>> {
+    let b = bars(m, w, h).into_iter().find(|b| b.1.contains(x, y))?;
+    let t = thumb(b.1, b.3, b.4, b.5);
+    if t.contains(x, y) {
+        return Some(Some((b.0, y - t.y)));
+    }
+    let page = (b.4 as i64 - 1).max(1);
+    show_from(m, &b, b.3 as i64 + if y < t.y { -page } else { page });
+    Some(None)
+}
+
+/// A thumb caught `grab` px below its top, dragged to `y`.
+pub fn drag_bar(m: &mut Model, w: i32, h: i32, area: Area, grab: i32, y: i32) -> bool {
+    let Some(b) = bars(m, w, h).into_iter().find(|b| b.0 == area) else { return false };
+    let t = thumb(b.1, b.3, b.4, b.5);
+    let range = (b.1.h - t.h).max(1) as i64;
+    let max = b.5.saturating_sub(b.4) as i64;
+    let top = (y - grab - b.1.y) as i64;
+    show_from(m, &b, (top.clamp(0, range) * max + range / 2) / range)
+}
+
 /// The job a control starts, if it starts one.
 pub fn job_of(id: Id) -> Option<Job> {
     Some(match id {
@@ -1398,6 +1682,8 @@ pub fn job_of(id: Id) -> Option<Job> {
         Id::Scrobble => Job::Scrobble,
         Id::CompareLikes => Job::CompareLikes,
         Id::SyncLikes => Job::SyncLikes,
+        Id::SavePalette => Job::SavePalette,
+        Id::FetchPalettes => Job::FetchPalettes,
         _ => return None,
     })
 }
@@ -1422,6 +1708,8 @@ fn ready(m: &Model, job: Job) -> bool {
         }
         Job::CompareLikes => m.lastfm.signed_in() && volume,
         Job::SyncLikes => m.lastfm.signed_in() && volume && m.likes_plan.is_some_and(|p| p.changes() > 0),
+        Job::SavePalette => m.draft.open && m.palette_dir.is_some() && m.draft.problems().is_empty(),
+        Job::FetchPalettes => m.palette_dir.is_some(),
     }
 }
 
@@ -1436,7 +1724,13 @@ pub fn live(m: &Model, id: Id) -> bool {
         Id::PickVolume(_) | Id::ClearVolume(_) => !m.volumes_locked(),
         Id::PickPlaylists | Id::ClearPlaylists | Id::ToggleSensMe | Id::ToggleExtras => !m.sync_running(),
         Id::PickPalettes => !m.held(Hold::Palettes),
-        Id::Field(Field::CheckFilter) => true,
+        Id::Field(Field::CheckFilter) | Id::BrowsePalettes => true,
+        Id::NewPalette => !m.draft.open,
+        Id::Field(Field::PaletteName | Field::Colour(_))
+        | Id::PaletteStart(_)
+        | Id::ToggleOwnAccent
+        | Id::ClosePalette => m.draft.open,
+        Id::SharePalette => m.draft.open && m.draft.problems().is_empty(),
         Id::Field(_) | Id::LastfmChangeKey | Id::LastfmKeepKey => !m.held(Hold::Lastfm),
         other => job_of(other).is_some_and(|job| ready(m, job) && m.can_start(job)),
     }
@@ -1474,10 +1768,14 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
         Id::Tab(t) => m.tab = t,
         Id::Theme(p) => m.theme = p,
         Id::Field(f) => m.focus = Some(f),
-        Id::Verdict(i) => m.check_verdict = if m.check_verdict == Some(i) { None } else { Some(i) },
+        Id::Verdict(i) => {
+            m.check_verdict = if m.check_verdict == Some(i) { None } else { Some(i) };
+            m.scroll[Tab::Check.index()][Area::Table as usize] = 0;
+        }
         Id::ClearFilter => {
             m.check_verdict = None;
             m.check_filter.clear();
+            m.scroll[Tab::Check.index()][Area::Table as usize] = 0;
         }
         Id::LastfmChangeKey => {
             m.lastfm.editing = true;
@@ -1488,6 +1786,31 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
             m.key_input.clear();
             m.secret_input.clear();
         }
+        // The draft closed last is still there: New palette opens it again. A fresh one starts
+        // from Cinder.
+        Id::NewPalette => {
+            if m.draft.hex[0].is_empty() {
+                m.draft = Draft::from_start(0);
+            }
+            m.draft.open = true;
+            m.draft.confirm_start = None;
+            m.focus = Some(Field::PaletteName);
+        }
+        // A new starting point replaces the colours, and keeps the name and where it was saved.
+        // Over colours someone has typed, it asks first: the first click says what it would do.
+        Id::PaletteStart(i) => {
+            if m.draft.edited && m.draft.confirm_start != Some(i) {
+                m.draft.confirm_start = Some(i);
+            } else {
+                let d = Draft::from_start(i);
+                m.draft = Draft { name: std::mem::take(&mut m.draft.name), saved: m.draft.saved.take(), ..d };
+            }
+        }
+        Id::ToggleOwnAccent => {
+            m.draft.own_accent = !m.draft.own_accent;
+            m.draft.edited = true;
+        }
+        Id::ClosePalette => m.draft.open = false,
         other => return job_of(other),
     }
     None
@@ -1504,22 +1827,21 @@ pub fn key(m: &mut Model, k: Key) -> Option<Job> {
     match k {
         Key::Char(c) if !c.is_control() => {
             let text = m.field_mut(f);
-            if text.chars().count() < Field::MAX {
+            if text.chars().count() < f.max() {
                 text.push(c);
             }
+            m.typed_into(f);
         }
         Key::Char(_) => {}
         Key::Backspace => {
             m.field_mut(f).pop();
+            m.typed_into(f);
         }
-        Key::Clear => m.field_mut(f).clear(),
-        Key::Tab => {
-            m.focus = match f {
-                Field::ApiKey => Some(Field::ApiSecret),
-                Field::ApiSecret => Some(Field::ApiKey),
-                Field::CheckFilter => Some(Field::CheckFilter),
-            }
+        Key::Clear => {
+            m.field_mut(f).clear();
+            m.typed_into(f);
         }
+        Key::Tab => m.focus = Some(f.next(m.draft.own_accent)),
         Key::Escape => m.focus = None,
         Key::Enter => {
             if matches!(f, Field::ApiKey | Field::ApiSecret) {
@@ -1539,20 +1861,23 @@ pub fn paste(m: &mut Model, text: &str) {
         return;
     }
     let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-    let line: String = if matches!(f, Field::ApiKey | Field::ApiSecret) {
+    let line: String = if matches!(f, Field::ApiKey | Field::ApiSecret | Field::Colour(_)) {
         line.chars().filter(|c| !c.is_whitespace()).collect()
     } else {
         line.to_string()
     };
     let field = m.field_mut(f);
-    let room = Field::MAX.saturating_sub(field.chars().count());
+    let room = f.max().saturating_sub(field.chars().count());
     field.extend(line.chars().filter(|c| !c.is_control()).take(room));
+    m.typed_into(f);
 }
 
 /// A page on the web a control opens in the browser, rather than a job.
-pub fn url_for(id: Id) -> Option<&'static str> {
+pub fn url_for(m: &Model, id: Id) -> Option<String> {
     match id {
-        Id::LastfmGetKey => Some(flint_core::lastfm::CREATE_KEY_URL),
+        Id::LastfmGetKey => Some(flint_core::lastfm::CREATE_KEY_URL.into()),
+        Id::BrowsePalettes => Some(format!("{}/tree/main/palettes", flint_core::palette::SHARED_REPO)),
+        Id::SharePalette if live(m, id) => Some(flint_core::palette::share_url(m.draft.name.trim(), &m.draft.body())),
         _ => None,
     }
 }
@@ -1569,6 +1894,16 @@ pub fn started(m: &mut Model, job: Job) {
         Job::Scan | Job::Import => m.sensme_log.clear(),
         Job::Scrobble | Job::CompareLikes | Job::SyncLikes => m.lastfm_log.clear(),
         _ => {}
+    }
+    // A cleared log starts at its newest line again.
+    if matches!(
+        job,
+        Job::Plan | Job::Apply | Job::Scan | Job::Import | Job::Scrobble | Job::CompareLikes | Job::SyncLikes
+    ) {
+        m.scroll[Model::pane_tab(job.pane()).index()][Area::Log as usize] = 0;
+    }
+    if job == Job::Check {
+        m.scroll[Tab::Check.index()][Area::Table as usize] = 0;
     }
     // Anything that changes the analysis cache changes what a copy would tag, so the shown plan
     // is spent: a copy only ever carries out a plan that is still true. A copy that has been
@@ -1598,9 +1933,13 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
             // whatever the Sync pane is showing.
             if job != Job::Check {
                 m.pane_mut(pane).push(line);
+                m.log_grew(pane);
             }
         }
-        Update::Log(line) => m.pane_mut(pane).push(line),
+        Update::Log(line) => {
+            m.pane_mut(pane).push(line);
+            m.log_grew(pane);
+        }
         Update::Progress(p) => {
             if let Some(r) = m.running.iter_mut().find(|r| r.job == job) {
                 r.progress = p;
@@ -1615,8 +1954,21 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
         }
         Update::Finding(row) => m.findings.push(row),
         Update::Checked(n) => m.checked = Some(n),
-        Update::Player(facts) => m.player = *facts,
-        Update::Palettes(rows) => m.palette_rows = rows,
+        // A table filled afresh starts at its top.
+        Update::Player(facts) => {
+            m.player = *facts;
+            m.scroll[Tab::Player.index()][Area::Table as usize] = 0;
+            m.scroll[Tab::Likes.index()][Area::Table as usize] = 0;
+        }
+        Update::Palettes(rows) => {
+            m.palette_rows = rows;
+            m.scroll[Tab::Palettes.index()][Area::Table as usize] = 0;
+        }
+        // Saved: the table comes back with the new row in it. New palette opens the draft again.
+        Update::PaletteSaved(file) => {
+            m.draft.saved = Some(file);
+            m.draft.open = false;
+        }
         Update::Lastfm(facts) => {
             m.lastfm = facts;
             if !m.lastfm.editing {
@@ -1741,6 +2093,241 @@ mod tests {
                 assert!(wid.rect.bottom() <= h, "{:?} runs past the bottom: {:?}", wid.kind, wid.rect);
             }
         }
+    }
+
+    /// The cell texts of a table's first column on show, top to bottom.
+    fn shown_files(m: &Model) -> Vec<String> {
+        layout(m, W, H)
+            .into_iter()
+            .filter(|w| matches!(w.kind, Kind::Cell { .. }) && w.text.starts_with("file "))
+            .map(|w| w.text)
+            .collect()
+    }
+
+    fn bar(m: &Model) -> (Rect, Rect) {
+        layout(m, W, H)
+            .into_iter()
+            .find_map(|w| match w.kind {
+                Kind::Scrollbar { list, .. } => Some((w.rect, list)),
+                _ => None,
+            })
+            .expect("a scrollbar")
+    }
+
+    /// A table longer than the window: every row can be reached by the wheel, the keys, the
+    /// track and the thumb, and none of them scrolls past either end.
+    #[test]
+    fn a_long_table_scrolls_every_way_and_stops_at_its_ends() {
+        let mut m = ready();
+        m.tab = Tab::Check;
+        m.checked = Some(500);
+        m.findings = (0..100)
+            .map(|i| CheckRow { verdict: "LOSSY".into(), file: format!("file {i:03}"), why: "cut at 16 kHz".into() })
+            .collect();
+        let first = shown_files(&m);
+        let visible = first.len();
+        assert!(visible > 5 && visible < 100, "{visible}");
+        assert_eq!(first[0], "file 000");
+        let (track, list) = bar(&m);
+        let (lx, ly) = (list.x + 40, list.y + 20);
+
+        assert!(wheel(&mut m, W, H, lx, ly, 3));
+        assert_eq!(shown_files(&m)[0], "file 003");
+        assert!(wheel(&mut m, W, H, lx, ly, -50));
+        assert_eq!(shown_files(&m)[0], "file 000");
+        assert!(!wheel(&mut m, W, H, lx, ly, -1), "nothing above the first row");
+        assert!(!wheel(&mut m, W, H, 5, 5, 3), "the wheel over no list does nothing");
+
+        assert!(nav(&mut m, W, H, Nav::End));
+        assert_eq!(shown_files(&m).last().unwrap(), "file 099");
+        assert_eq!(shown_files(&m).len(), visible);
+        assert!(!nav(&mut m, W, H, Nav::Down), "nothing below the last row");
+        nav(&mut m, W, H, Nav::PageUp);
+        assert_eq!(shown_files(&m).last().unwrap(), &format!("file {:03}", 99 - (visible - 1)));
+        nav(&mut m, W, H, Nav::Home);
+
+        // The track below the thumb pages down; the thumb drags to the end.
+        assert_eq!(press_bar(&mut m, W, H, track.x + 2, track.bottom() - 2), Some(None));
+        assert_eq!(shown_files(&m)[0], format!("file {:03}", visible - 1));
+        nav(&mut m, W, H, Nav::Home);
+        let t = thumb(track, 0, visible, 100);
+        let Some(Some((area, grab))) = press_bar(&mut m, W, H, t.x + 2, t.y + 5) else { panic!("the thumb") };
+        assert_eq!((area, grab), (Area::Table, 5));
+        drag_bar(&mut m, W, H, area, grab, track.bottom() + 200);
+        assert_eq!(shown_files(&m).last().unwrap(), "file 099");
+        drag_bar(&mut m, W, H, area, grab, track.y - 200);
+        assert_eq!(shown_files(&m)[0], "file 000");
+
+        // A filter that leaves fewer rows than fit shows them all, and no bar.
+        m.check_filter = "file 05".into();
+        assert_eq!(shown_files(&m).len(), 10);
+        assert!(!layout(&m, W, H).iter().any(|w| matches!(w.kind, Kind::Scrollbar { .. })));
+    }
+
+    /// A log follows its newest line; scrolled up, it stays on the lines being read while more
+    /// arrive, and End brings it back to following.
+    #[test]
+    fn a_log_follows_its_tail_until_it_is_scrolled_up() {
+        let mut m = ready();
+        m.log = (0..300).map(|i| format!("line {i}")).collect();
+        let last = |m: &Model| layout(m, W, H).into_iter().rfind(|w| w.kind == Kind::LogLine).unwrap().text;
+        assert_eq!(last(&m), "line 299");
+        let (_, list) = bar(&m);
+        wheel(&mut m, W, H, list.x + 20, list.y + 20, -5);
+        assert_eq!(last(&m), "line 294");
+        started(&mut m, Job::ReadPlayer); // a job that logs to this pane without clearing it
+        update(&mut m, Job::ReadPlayer, job::Update::Log("line 300".into()));
+        assert_eq!(last(&m), "line 294", "the lines being read stay put");
+        nav(&mut m, W, H, Nav::End);
+        assert_eq!(last(&m), "line 300");
+        update(&mut m, Job::ReadPlayer, job::Update::Log("line 301".into()));
+        assert_eq!(last(&m), "line 301", "and at the bottom it follows again");
+        wheel(&mut m, W, H, list.x + 20, list.y + 20, -1000);
+        assert_eq!(layout(&m, W, H).into_iter().find(|w| w.kind == Kind::LogLine).unwrap().text, "line 0");
+    }
+
+    /// The palette editor, in every state that changes its shape, at every size: on the window,
+    /// every live control hittable at its centre, no two overlapping.
+    #[test]
+    fn the_palette_editor_fits_at_every_size() {
+        let mut drafts = Vec::new();
+        for start in 0..Draft::STARTS.len() {
+            let mut d = Draft::from_start(start);
+            d.name = "Late Night".into();
+            drafts.push(d.clone());
+            d.hex[3] = d.hex[0].clone(); // text the colour of the background: refused, at length
+            d.hex[9] = "#zz".into();
+            drafts.push(d);
+        }
+        for d in drafts {
+            for (w, h) in [(W, H), (MIN_W, MIN_H), (1400, 900)] {
+                let mut m = ready();
+                m.tab = Tab::Palettes;
+                m.palette_dir = Some("/palettes".into());
+                m.draft = d.clone();
+                m.focus = Some(Field::Colour(2));
+                let widgets = layout(&m, w, h);
+                for wid in &widgets {
+                    assert!(wid.rect.x >= 0 && wid.rect.y >= 0, "{:?} at {:?}", wid.kind, wid.rect);
+                    assert!(
+                        wid.rect.right() <= w && wid.rect.bottom() <= h,
+                        "{w}x{h}: {:?} at {:?}",
+                        wid.kind,
+                        wid.rect
+                    );
+                }
+                let live: Vec<&Widget> = widgets.iter().filter(|x| x.id != Id::None).collect();
+                assert!(live.iter().any(|x| x.id == Id::Field(Field::Colour(11))));
+                assert_eq!(live.iter().any(|x| x.id == Id::Field(Field::Colour(17))), d.own_accent);
+                for (i, a) in live.iter().enumerate() {
+                    let (cx, cy) = (a.rect.x + a.rect.w / 2, a.rect.y + a.rect.h / 2);
+                    if !matches!(a.kind, Kind::Tool { enabled: false }) {
+                        assert_eq!(hit(&m, w, h, cx, cy), Some(a.id), "{w}x{h}: {:?} at {:?}", a.id, a.rect);
+                    }
+                    for b in &live[i + 1..] {
+                        let overlap = a.rect.x < b.rect.right()
+                            && b.rect.x < a.rect.right()
+                            && a.rect.y < b.rect.bottom()
+                            && b.rect.y < a.rect.bottom();
+                        assert!(!overlap, "{w}x{h}: {:?} overlaps {:?}", a.id, b.id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Typing a palette: New opens on Cinder's colours with the name focused, Tab walks the
+    /// colours, a colour takes seven characters, a paste loses its spaces, and Save and Share
+    /// wait for a palette the player would load.
+    #[test]
+    fn a_palette_is_typed_checked_and_saved() {
+        let mut m = ready();
+        m.tab = Tab::Palettes;
+        assert!(!live(&m, Id::SavePalette));
+        click(&mut m, Id::NewPalette);
+        assert!(m.draft.open && !live(&m, Id::NewPalette));
+        assert_eq!(m.focus, Some(Field::PaletteName));
+        assert_eq!(m.draft.problems(), vec!["Give it a name with at least one letter or digit in it.".to_string()]);
+        for c in "Late Night".chars() {
+            key(&mut m, Key::Char(c));
+        }
+        assert!(m.draft.problems().is_empty(), "{:?}", m.draft.problems());
+        assert!(live(&m, Id::SharePalette));
+        assert!(!live(&m, Id::SavePalette), "no folder to save into");
+        m.palette_dir = Some("/palettes".into());
+        assert!(live(&m, Id::SavePalette));
+        assert_eq!(m.draft.file(), "late-night.palette");
+
+        key(&mut m, Key::Tab);
+        assert_eq!(m.focus, Some(Field::Colour(0)));
+        key(&mut m, Key::Clear);
+        paste(&mut m, " #14 1820 99\n");
+        assert_eq!(m.draft.hex[0], "#141820", "seven characters, no spaces");
+        for _ in 0..11 {
+            key(&mut m, Key::Tab);
+        }
+        assert_eq!(m.focus, Some(Field::Colour(11)));
+        key(&mut m, Key::Tab);
+        assert_eq!(m.focus, Some(Field::PaletteName), "without an accent of its own, Tab skips its keys");
+
+        // Text the colour of the background: the player's reason, and nothing to save or share.
+        m.draft.hex[3] = m.draft.hex[0].clone();
+        assert!(!m.draft.problems().is_empty());
+        assert!(!live(&m, Id::SavePalette) && !live(&m, Id::SharePalette));
+        assert_eq!(url_for(&m, Id::SharePalette), None);
+
+        // A new starting point keeps the name; Paper brings its accent. Colours were typed, so
+        // it takes a second click.
+        click(&mut m, Id::PaletteStart(2));
+        click(&mut m, Id::PaletteStart(2));
+        assert_eq!(m.draft.name, "Late Night");
+        assert!(m.draft.own_accent && m.draft.problems().is_empty());
+        let url = url_for(&m, Id::SharePalette).expect("a share link");
+        assert!(url.contains("day.accent%20%3D%20%23c4471a"), "{url}");
+        click(&mut m, Id::ClosePalette);
+        assert!(!m.draft.open && live(&m, Id::NewPalette));
+
+        // Closing is not discarding: New palette opens the same draft again.
+        click(&mut m, Id::NewPalette);
+        assert_eq!(m.draft.name, "Late Night");
+        assert_eq!(m.draft.start, 2);
+
+        // Over typed colours, a starting point asks first; a second click replaces them.
+        m.focus = Some(Field::Colour(0));
+        key(&mut m, Key::Clear);
+        paste(&mut m, "#101010");
+        click(&mut m, Id::PaletteStart(1));
+        assert_eq!(m.draft.hex[0], "#101010", "nothing replaced on the first click");
+        assert_eq!(m.draft.confirm_start, Some(1));
+        assert!(layout(&m, W, H).iter().any(|w| w.text.contains("Click Slate again")));
+        click(&mut m, Id::PaletteStart(1));
+        assert_eq!(m.draft.hex[0], "#0e1116");
+        assert!(!m.draft.edited && m.draft.confirm_start.is_none());
+
+        // Saved: the editor closes so the table shows the new row.
+        update(&mut m, Job::SavePalette, job::Update::PaletteSaved("late-night.palette".into()));
+        assert!(!m.draft.open && m.draft.saved.is_some());
+    }
+
+    /// A filter typed while the table is scrolled down starts it at the top again, so no match
+    /// hides above the rows on show.
+    #[test]
+    fn a_new_filter_starts_the_table_at_the_top() {
+        let mut m = ready();
+        m.tab = Tab::Check;
+        m.checked = Some(500);
+        m.findings = (0..100)
+            .map(|i| CheckRow { verdict: "LOSSY".into(), file: format!("file {i:03}"), why: "x".into() })
+            .collect();
+        nav(&mut m, W, H, Nav::End);
+        click(&mut m, Id::Field(Field::CheckFilter));
+        for c in "file 0".chars() {
+            key(&mut m, Key::Char(c));
+        }
+        assert_eq!(shown_files(&m)[0], "file 000");
+        nav(&mut m, W, H, Nav::End);
+        click(&mut m, Id::Verdict(0));
+        assert_eq!(shown_files(&m)[0], "file 000");
     }
 
     /// COPY is only offered for a plan the user has been shown, and any change to the inputs takes

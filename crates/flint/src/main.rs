@@ -40,7 +40,7 @@ usage:
   flint scrobble <volume> [<volume>...] [--apply]
   flint likes <volume> [<volume>...] [--apply] [--playlist]
   flint gui [--dark | --light]
-  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|settings|signed-in] [--dark]";
+  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|palette-new|settings|signed-in] [--dark]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -636,12 +636,25 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     }
     if !o.apply {
         println!("\nthis was a dry run; add --apply to carry it out.");
-        for (v, rel) in plan.stale_files.iter().take(10) {
+        // Every removal, because deleting is the one thing --apply cannot take back; the copies
+        // only as a sample, with the count of the rest.
+        for (v, rel) in &plan.stale_files {
             println!("  would remove  {}/{rel}", volumes[*v].root.display());
+        }
+        for (v, name) in &plan.stale_playlists {
+            println!("  would remove  playlist {name} ({})", volumes[*v].root.display());
         }
         for c in plan.copies.iter().take(10) {
             println!("  would copy    {}{}", c.rel, if c.tag.is_empty() { "" } else { "  +SensMe" });
         }
+        if plan.copies.len() > 10 {
+            println!("  …and {} more to copy", plan.copies.len() - 10);
+        }
+        println!(
+            "in all: {} to copy, {} to remove",
+            plan.copies.len(),
+            plan.stale_files.len() + plan.stale_playlists.len()
+        );
         return Ok(());
     }
 
@@ -735,11 +748,11 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 "4 playlists",
                 "E:\\: 96 albums, 39.2 GB to copy",
                 "F:\\: 154 albums, 74.9 GB to copy",
-                "would remove  E:\\Bonobo - Migration/03 Break Apart.flac",
                 "would copy    Aphex Twin - Selected Ambient Works 85-92/01 Xtal.flac  +SensMe",
                 "would copy    Aphex Twin - Selected Ambient Works 85-92/02 Tha.flac  +SensMe",
                 "would copy    Bicep - Isles/01 Atlas.flac  +SensMe",
-                "…and 2,187 more",
+                "would remove  E:\\Bonobo - Migration/03 Break Apart.flac",
+                "in all: 2,190 to copy, 1 to remove — scroll up to see each one",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -782,7 +795,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         }
         // The pages behind the other tabs, with the kind of data a real read produces. Titles and
         // counts are placeholders, like every number in these previews.
-        "player" | "likes" | "palettes" => {
+        "player" | "likes" | "palettes" | "palette-new" => {
             use flint_gui::{AlbumRow, PaletteFile, PlayRow, PlayerFacts, Tab};
             ready(&mut m);
             let album = |folder: &str, volume: usize, files: usize, gb10: u64, format: &str, by_flint: bool| AlbumRow {
@@ -852,11 +865,17 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 .map(|s| s.to_string())
                 .collect();
             }
-            if state == "palettes" {
+            if state == "palettes" || state == "palette-new" {
                 let (pc, player) = preview_palettes();
                 m.palette_dir = Some(PathBuf::from("D:\\Walkman\\Palettes"));
                 m.palette_rows = flint_core::palette::compare(&pc, &player);
                 m.status = "palettes: 1 new, 1 changed, 1 refused".into();
+            }
+            if state == "palette-new" {
+                m.draft = flint_gui::Draft::from_start(2);
+                m.draft.name = "Late Night".into();
+                m.draft.hex[4] = "#b0a89c".into();
+                m.focus = Some(flint_gui::Field::Colour(4));
             }
         }
         "check" | "filtered" => {

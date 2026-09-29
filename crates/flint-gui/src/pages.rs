@@ -700,12 +700,11 @@ fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget
         Kind::Tool { enabled: live(m, Id::SendPalettes) },
         send_label,
     ));
-    // On the right: the shared palettes, and a new one of your own.
+    // On the right: a new one of your own, and the shared ones.
     let mut rx = PAD + inner;
     for (id, label, bw) in [
         (Id::NewPalette, if m.draft.hex[0].is_empty() { "New palette" } else { "Your palette" }, 112),
-        (Id::FetchPalettes, "Download shared", 142),
-        (Id::BrowsePalettes, "Browse", 84),
+        (Id::OpenShop, "Shared palettes", 142),
     ] {
         rx -= bw;
         out.push(w(id, Rect::new(rx, y, bw, 30), Kind::Tool { enabled: live(m, id) }, label));
@@ -716,7 +715,7 @@ fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget
     let note = if let Some(why) = waits.as_deref() {
         why
     } else if m.palette_dir.is_none() {
-        "Choose a folder to check, download into and save new palettes in."
+        "Choose a folder to check, install shared palettes into and save new ones in."
     } else if !have_internal {
         "Choose the player's internal memory on the Sync page to compare and send."
     } else if m.palette_rows.is_empty() {
@@ -728,6 +727,10 @@ fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget
     y += 28;
     if m.draft.open {
         palette_editor(m, inner, y, bottom, out);
+        return;
+    }
+    if m.shop.open {
+        shop(m, inner, y, bottom, out);
         return;
     }
     if m.palette_rows.is_empty() {
@@ -778,6 +781,125 @@ fn palettes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget
     }
     if scrolls {
         scrollbar(out, Area::Table, (PAD, y + 34, inner, visible as i32 * ROW_H), first, visible, m.palette_rows.len());
+    }
+}
+
+/// Palettes ▸ Shared palettes: everything in the shared repository, searchable, each with its day
+/// and night colours as the player draws them and one button that installs it.
+fn shop(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) {
+    use flint_core::palette::Have;
+    heading(out, PAD, y + 6, "Shared palettes");
+    let mut rx = PAD + inner;
+    for (id, label, bw) in [
+        (Id::CloseShop, "Close", 80),
+        (Id::BrowsePalettes, "Open on GitHub", 144),
+        (Id::FetchPalettes, "Get all", 90),
+        (Id::FetchShop, "Refresh", 96),
+    ] {
+        rx -= bw;
+        out.push(w(id, Rect::new(rx, y, bw, 30), Kind::Tool { enabled: live(m, id) }, label));
+        rx -= 10;
+    }
+    y += 42;
+
+    const SEARCH_W: i32 = 300;
+    field(out, m, Field::ShopSearch, Rect::new(PAD, y, SEARCH_W, 30));
+    let shown = m.shop.shown();
+    let total = m.shop.items.len();
+    let note = if !m.shop.read {
+        if m.is_running(crate::Job::FetchShop) {
+            "Reading the list…".to_string()
+        } else {
+            "Refresh reads the list from github.com/superwilso/cinder-themes.".to_string()
+        }
+    } else if total == 0 {
+        "Nobody has shared a palette yet.".to_string()
+    } else if shown.is_empty() {
+        "Nothing matches. Try light, dark, or part of a name.".to_string()
+    } else if m.palette_dir.is_none() {
+        format!("{} of {total}. Choose a folder above to install into.", shown.len())
+    } else if m.volumes[0].is_none() {
+        format!("{} of {total}. Install puts it in your folder; Send takes it to the player.", shown.len())
+    } else {
+        format!("{} of {total}. Install puts it in your folder and on the player.", shown.len())
+    };
+    hint(out, PAD + SEARCH_W + 14, y + 6, inner - SEARCH_W - 14, &note);
+    y += 44;
+    if shown.is_empty() {
+        return;
+    }
+
+    // Palette · by day · by night · what it is · Install, or where it already is.
+    const ROW_H: i32 = 36;
+    const ACT_W: i32 = 112;
+    let cols = [("Palette", 190), ("By day", 118), ("By night", 118), ("Kind", 150)];
+    let visible = ((bottom - (y + 36)) / ROW_H).max(0) as usize;
+    let scrolls = shown.len() > visible && visible > 0;
+    let first = m.scrolled(Area::Table).min(shown.len().saturating_sub(visible));
+    let bar_w = if scrolls { BAR_W + 6 } else { 0 };
+    out.push(w(Id::None, Rect::new(PAD, y, inner, 30), Kind::Card { filled: true }, ""));
+    let mut cx = PAD + 12;
+    for (title, cw) in cols {
+        out.push(w(Id::None, Rect::new(cx, y + 6, cw - 12, 18), Kind::Label, title));
+        cx += cw;
+    }
+    let act_x = PAD + inner - bar_w - ACT_W - 8;
+    let mut ry = y + 36;
+    for &i in shown.iter().skip(first).take(visible) {
+        let p = &m.shop.items[i];
+        out.push(w(Id::None, Rect::new(PAD, ry - 2, inner - bar_w, 1), Kind::Rule, ""));
+        let mut cx = PAD + 12;
+        out.push(w(
+            Id::None,
+            Rect::new(cx, ry + 8, cols[0].1 - 16, 20),
+            cell(Tone::Plain, true, false),
+            p.name.clone(),
+        ));
+        cx += cols[0].1;
+        if p.loads() {
+            for cells in [p.day, p.night] {
+                out.push(w(Id::None, Rect::new(cx, ry + 9, 100, 16), Kind::Swatch(cells), ""));
+                cx += 118;
+            }
+            let kind = format!(
+                "{} · {}",
+                if p.light { "Light" } else { "Dark" },
+                if p.own_accent { "own accent" } else { "any accent" }
+            );
+            out.push(w(Id::None, Rect::new(cx, ry + 8, cols[3].1 - 12, 20), cell(Tone::Dim, false, false), kind));
+        } else {
+            let why = format!("Cinder would refuse it: {}", in_words(&p.why));
+            out.push(w(Id::None, Rect::new(cx, ry + 8, act_x - cx - 8, 20), cell(Tone::Warn, false, false), why));
+        }
+        // The button while there is something to do; otherwise where it already is.
+        let installing = m.shop.installing == Some(i);
+        if live(m, Id::InstallShared(i)) || installing {
+            let label = if installing {
+                "Installing…"
+            } else if m.volumes[0].is_some() {
+                "Install"
+            } else {
+                "Get"
+            };
+            out.push(w(
+                Id::InstallShared(i),
+                Rect::new(act_x, ry + 3, ACT_W, 28),
+                Kind::Tool { enabled: live(m, Id::InstallShared(i)) },
+                label,
+            ));
+        } else if p.loads() {
+            let (word, tone) = match (p.folder, p.player) {
+                (Have::Different, _) | (_, Have::Different) => ("Yours differs", Tone::Caution),
+                (_, Have::Same) => ("Installed", Tone::Ok),
+                (Have::Same, _) => ("In your folder", Tone::Ok),
+                _ => ("", Tone::Dim),
+            };
+            out.push(w(Id::None, Rect::new(act_x + 8, ry + 8, ACT_W - 8, 20), cell(tone, false, false), word));
+        }
+        ry += ROW_H;
+    }
+    if scrolls {
+        scrollbar(out, Area::Table, (PAD, y + 34, inner, visible as i32 * ROW_H), first, visible, shown.len());
     }
 }
 

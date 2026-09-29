@@ -150,6 +150,15 @@ pub enum Id {
     FetchPalettes,
     /// Palettes ▸ open the shared repository in the browser.
     BrowsePalettes,
+    /// Palettes ▸ show the shared palettes: search them, see them, install one.
+    OpenShop,
+    /// Palettes ▸ the shared palettes ▸ back to the folder's table.
+    CloseShop,
+    /// Palettes ▸ the shared palettes ▸ read the list again from the repository.
+    FetchShop,
+    /// Palettes ▸ the shared palettes ▸ put this one (an index into `Shop::items`) in the folder,
+    /// and on the player when its internal memory is chosen.
+    InstallShared(usize),
 }
 
 /// The lines of text the window takes typing into.
@@ -163,6 +172,8 @@ pub enum Field {
     PaletteName,
     /// Palettes ▸ the editor ▸ one colour, by its place in `palette::KEYS`.
     Colour(u8),
+    /// Palettes ▸ the shared palettes ▸ what to look for.
+    ShopSearch,
 }
 
 impl Field {
@@ -180,6 +191,7 @@ impl Field {
             Field::CheckFilter => "Filter by file, folder or reason",
             Field::PaletteName => "Name it",
             Field::Colour(_) => "#rrggbb",
+            Field::ShopSearch => "Search by name, light, dark or accent",
         }
     }
 
@@ -199,6 +211,7 @@ impl Field {
             Field::ApiKey => Field::ApiSecret,
             Field::ApiSecret => Field::ApiKey,
             Field::CheckFilter => Field::CheckFilter,
+            Field::ShopSearch => Field::ShopSearch,
             Field::PaletteName => Field::Colour(0),
             Field::Colour(i) if (i as usize) + 1 < colours => Field::Colour(i + 1),
             Field::Colour(_) => Field::PaletteName,
@@ -434,6 +447,10 @@ pub enum Job {
     SavePalette,
     /// Download the shared palettes into the palettes folder, then check the folder.
     FetchPalettes,
+    /// Read the shared palettes' list and every file on it, for the shop. Writes nothing.
+    FetchShop,
+    /// Put one shared palette in the folder, and on the player, then check the folder.
+    InstallShared,
 }
 
 /// Something a job needs to itself while it runs. Two jobs that need the same one cannot run at
@@ -461,7 +478,7 @@ pub enum Hold {
 
 impl Job {
     /// Every job, in the order `code` numbers them.
-    pub const ALL: [Job; 16] = [
+    pub const ALL: [Job; 18] = [
         Job::Plan,
         Job::Apply,
         Job::Scan,
@@ -478,6 +495,8 @@ impl Job {
         Job::SyncLikes,
         Job::SavePalette,
         Job::FetchPalettes,
+        Job::FetchShop,
+        Job::InstallShared,
     ];
 
     /// A small number for the platform layer's messages.
@@ -495,7 +514,13 @@ impl Job {
             Job::Scan | Job::Import => &[Hold::Cache],
             Job::Check => &[Hold::Checks],
             Job::ReadPlayer => &[Hold::Player],
-            Job::CheckPalettes | Job::SendPalettes | Job::SavePalette | Job::FetchPalettes => &[Hold::Palettes],
+            // The shop's list reads the folder and the player to say what each one is there as.
+            Job::CheckPalettes
+            | Job::SendPalettes
+            | Job::SavePalette
+            | Job::FetchPalettes
+            | Job::FetchShop
+            | Job::InstallShared => &[Hold::Palettes],
             Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Hold::Lastfm],
             Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Hold::Lastfm, Hold::Player],
         }
@@ -517,6 +542,8 @@ impl Job {
                 | Job::SendPalettes
                 | Job::SavePalette
                 | Job::FetchPalettes
+                | Job::FetchShop
+                | Job::InstallShared
                 | Job::Scrobble
                 | Job::CompareLikes
                 | Job::SyncLikes
@@ -530,7 +557,12 @@ impl Job {
             Job::Scan | Job::Import => &[Tab::SensMe],
             Job::Check => &[Tab::Check],
             Job::ReadPlayer => &[Tab::Player, Tab::Likes],
-            Job::CheckPalettes | Job::SendPalettes | Job::SavePalette | Job::FetchPalettes => &[Tab::Palettes],
+            Job::CheckPalettes
+            | Job::SendPalettes
+            | Job::SavePalette
+            | Job::FetchPalettes
+            | Job::FetchShop
+            | Job::InstallShared => &[Tab::Palettes],
             Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Tab::Settings],
             Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Tab::Likes],
         }
@@ -549,6 +581,8 @@ impl Job {
             Job::SendPalettes => "sending palettes",
             Job::SavePalette => "saving the palette",
             Job::FetchPalettes => "downloading shared palettes",
+            Job::FetchShop => "reading the shared palettes",
+            Job::InstallShared => "installing a palette",
             Job::LastfmKey => "saving the Last.fm key",
             Job::LastfmSignIn => "signing in to Last.fm",
             Job::LastfmSignOut => "signing out of Last.fm",
@@ -731,6 +765,27 @@ impl Draft {
     }
 }
 
+/// Palettes ▸ the shared palettes: the repository's list, as last read, and what to look for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shop {
+    /// The shop is showing, in place of the table.
+    pub open: bool,
+    /// Every shared palette, in the index's order. Empty until the list has been read.
+    pub items: Vec<flint_core::palette::SharedPalette>,
+    /// The list has been read at least once this session, even if it came back empty.
+    pub read: bool,
+    pub search: String,
+    /// The one being installed, by index into `items`.
+    pub installing: Option<usize>,
+}
+
+impl Shop {
+    /// The items the search leaves, by index into `items`.
+    pub fn shown(&self) -> Vec<usize> {
+        (0..self.items.len()).filter(|&i| self.items[i].matches(&self.search)).collect()
+    }
+}
+
 /// Everything the window knows. Owned by the UI thread; the worker talks to it through the
 /// platform layer's mutex.
 #[derive(Clone, Debug, Default)]
@@ -790,6 +845,8 @@ pub struct Model {
     pub palette_rows: Vec<flint_core::palette::Row>,
     /// Palettes ▸ the editor.
     pub draft: Draft,
+    /// Palettes ▸ the shared palettes.
+    pub shop: Shop,
     /// Each page's lists, by `Tab::index` then `Area`. A table's is the first row shown; a log's
     /// is how many lines up from the newest, so 0 follows the log as it grows.
     pub scroll: [[usize; 2]; 7],
@@ -902,6 +959,7 @@ impl Model {
             Field::CheckFilter => &self.check_filter,
             Field::PaletteName => &self.draft.name,
             Field::Colour(i) => self.draft.hex.get(i as usize).map_or("", String::as_str),
+            Field::ShopSearch => &self.shop.search,
         }
     }
 
@@ -912,6 +970,7 @@ impl Model {
             Field::CheckFilter => &mut self.check_filter,
             Field::PaletteName => &mut self.draft.name,
             Field::Colour(i) => &mut self.draft.hex[(i as usize).min(17)],
+            Field::ShopSearch => &mut self.shop.search,
         }
     }
 
@@ -920,6 +979,7 @@ impl Model {
     fn typed_into(&mut self, f: Field) {
         match f {
             Field::CheckFilter => self.scroll[Tab::Check.index()][Area::Table as usize] = 0,
+            Field::ShopSearch => self.scroll[Tab::Palettes.index()][Area::Table as usize] = 0,
             Field::Colour(_) => {
                 self.draft.edited = true;
                 self.draft.confirm_start = None;
@@ -1684,6 +1744,8 @@ pub fn job_of(id: Id) -> Option<Job> {
         Id::SyncLikes => Job::SyncLikes,
         Id::SavePalette => Job::SavePalette,
         Id::FetchPalettes => Job::FetchPalettes,
+        Id::FetchShop => Job::FetchShop,
+        Id::InstallShared(_) => Job::InstallShared,
         _ => return None,
     })
 }
@@ -1710,6 +1772,8 @@ fn ready(m: &Model, job: Job) -> bool {
         Job::SyncLikes => m.lastfm.signed_in() && volume && m.likes_plan.is_some_and(|p| p.changes() > 0),
         Job::SavePalette => m.draft.open && m.palette_dir.is_some() && m.draft.problems().is_empty(),
         Job::FetchPalettes => m.palette_dir.is_some(),
+        Job::FetchShop => true,
+        Job::InstallShared => m.palette_dir.is_some(),
     }
 }
 
@@ -1731,9 +1795,26 @@ pub fn live(m: &Model, id: Id) -> bool {
         | Id::ToggleOwnAccent
         | Id::ClosePalette => m.draft.open,
         Id::SharePalette => m.draft.open && m.draft.problems().is_empty(),
+        Id::OpenShop => !m.shop.open,
+        Id::CloseShop | Id::Field(Field::ShopSearch) => m.shop.open,
+        Id::InstallShared(i) => {
+            m.shop.open
+                && m.shop.items.get(i).is_some_and(|p| installable(m, p))
+                && ready(m, Job::InstallShared)
+                && m.can_start(Job::InstallShared)
+        }
         Id::Field(_) | Id::LastfmChangeKey | Id::LastfmKeepKey => !m.held(Hold::Lastfm),
         other => job_of(other).is_some_and(|job| ready(m, job) && m.can_start(job)),
     }
+}
+
+/// Would Install do anything for `p`? It never replaces a file of the same name that is someone's
+/// own, in the folder or on the player, and there is nothing to do once it is in the folder and — when the player's internal
+/// memory is chosen — on the player too.
+pub fn installable(m: &Model, p: &flint_core::palette::SharedPalette) -> bool {
+    use flint_core::palette::Have;
+    let player_done = m.volumes[0].is_none() || p.player == Have::Same;
+    p.loads() && p.folder != Have::Different && p.player != Have::Different && !(p.folder == Have::Same && player_done)
 }
 
 /// Apply a click to the model, and say which job (if any) the platform layer should start.
@@ -1786,9 +1867,28 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
             m.key_input.clear();
             m.secret_input.clear();
         }
+        // The shop reads its list the first time it opens; Refresh reads it again.
+        Id::OpenShop => {
+            m.shop.open = true;
+            m.draft.open = false;
+            m.scroll[Tab::Palettes.index()][Area::Table as usize] = 0;
+            m.focus = Some(Field::ShopSearch);
+            if !m.shop.read && live(m, Id::FetchShop) {
+                return Some(Job::FetchShop);
+            }
+        }
+        Id::CloseShop => {
+            m.shop.open = false;
+            m.scroll[Tab::Palettes.index()][Area::Table as usize] = 0;
+        }
+        Id::InstallShared(i) => {
+            m.shop.installing = Some(i);
+            return Some(Job::InstallShared);
+        }
         // The draft closed last is still there: New palette opens it again. A fresh one starts
         // from Cinder.
         Id::NewPalette => {
+            m.shop.open = false;
             if m.draft.hex[0].is_empty() {
                 m.draft = Draft::from_start(0);
             }
@@ -1960,14 +2060,31 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
             m.scroll[Tab::Player.index()][Area::Table as usize] = 0;
             m.scroll[Tab::Likes.index()][Area::Table as usize] = 0;
         }
+        // Not under the shop's table: an install checks the folder, and the list stays put.
         Update::Palettes(rows) => {
             m.palette_rows = rows;
-            m.scroll[Tab::Palettes.index()][Area::Table as usize] = 0;
+            if !m.shop.open {
+                m.scroll[Tab::Palettes.index()][Area::Table as usize] = 0;
+            }
         }
         // Saved: the table comes back with the new row in it. New palette opens the draft again.
         Update::PaletteSaved(file) => {
             m.draft.saved = Some(file);
             m.draft.open = false;
+        }
+        Update::Shop(items) => {
+            m.shop.items = items;
+            m.shop.read = true;
+            m.scroll[Tab::Palettes.index()][Area::Table as usize] = 0;
+        }
+        Update::Installed { file, on_player } => {
+            use flint_core::palette::Have;
+            if let Some(p) = m.shop.items.iter_mut().find(|p| p.file == file) {
+                p.folder = Have::Same;
+                if on_player {
+                    p.player = Have::Same;
+                }
+            }
         }
         Update::Lastfm(facts) => {
             m.lastfm = facts;
@@ -1996,6 +2113,9 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
 /// `job` has finished. Returns the reason when it failed, for the platform to show in a box.
 pub fn finished(m: &mut Model, job: Job, result: Result<String, String>) -> Option<String> {
     m.running.retain(|r| r.job != job);
+    if job == Job::InstallShared {
+        m.shop.installing = None;
+    }
     let (line, err) = match result {
         Ok(word) => (word, None),
         Err(why) => (format!("stopped: {why}"), Some(why)),
@@ -2234,6 +2354,117 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A shop of every kind of row: one to install, one already installed, one whose name is
+    /// someone else's file, one the player would refuse, and enough of the first kind to scroll.
+    fn shop_model() -> Model {
+        use flint_core::palette::{Have, SharedPalette, EXAMPLES};
+        let mut m = ready();
+        m.tab = Tab::Palettes;
+        m.palette_dir = Some("/palettes".into());
+        let mut items: Vec<SharedPalette> =
+            EXAMPLES.iter().map(|(id, body)| SharedPalette::new(&format!("{id}.palette"), body)).collect();
+        items[1].folder = Have::Same;
+        items[1].player = Have::Same;
+        items[2].folder = Have::Different;
+        items.push(SharedPalette::new("broken.palette", "name = Broken\nday.bg = #000000\nday.bg = #000000\n"));
+        for i in 0..30 {
+            let mut p = items[0].clone();
+            p.file = format!("copy-{i}.palette");
+            p.name = format!("Copy {i}");
+            items.push(p);
+        }
+        m.shop = Shop { open: true, items, read: true, ..Shop::default() };
+        m
+    }
+
+    #[test]
+    fn the_shop_fits_at_every_size_and_every_button_is_where_it_is_drawn() {
+        for (w, h) in [(W, H), (MIN_W, MIN_H), (1400, 900)] {
+            let m = shop_model();
+            let widgets = layout(&m, w, h);
+            for wid in &widgets {
+                assert!(wid.rect.x >= 0 && wid.rect.y >= 0, "{:?} at {:?}", wid.kind, wid.rect);
+                assert!(wid.rect.right() <= w && wid.rect.bottom() <= h, "{w}x{h}: {:?} at {:?}", wid.kind, wid.rect);
+            }
+            let live_ids: Vec<&Widget> = widgets.iter().filter(|x| x.id != Id::None).collect();
+            assert!(live_ids.iter().any(|x| x.id == Id::InstallShared(0)), "{w}x{h}: the first row installs");
+            for id in [Id::InstallShared(1), Id::InstallShared(2), Id::InstallShared(3)] {
+                assert!(!live(&m, id), "{id:?}: installed, someone's own, refused");
+                assert!(!live_ids.iter().any(|x| x.id == id), "{w}x{h}: {id:?} has no button");
+            }
+            for (i, a) in live_ids.iter().enumerate() {
+                let (cx, cy) = (a.rect.x + a.rect.w / 2, a.rect.y + a.rect.h / 2);
+                if !matches!(a.kind, Kind::Tool { enabled: false }) {
+                    assert_eq!(hit(&m, w, h, cx, cy), Some(a.id), "{w}x{h}: {:?} at {:?}", a.id, a.rect);
+                }
+                for b in &live_ids[i + 1..] {
+                    assert!(
+                        !(a.rect.x < b.rect.right()
+                            && b.rect.x < a.rect.right()
+                            && a.rect.y < b.rect.bottom()
+                            && b.rect.y < a.rect.bottom()),
+                        "{w}x{h}: {:?} overlaps {:?}",
+                        a.id,
+                        b.id
+                    );
+                }
+            }
+            assert!(widgets.iter().any(|x| matches!(x.kind, Kind::Scrollbar { .. })), "{w}x{h}: 34 rows scroll");
+        }
+    }
+
+    #[test]
+    fn the_shop_opens_searches_installs_and_never_replaces_anyones_file() {
+        let mut m = shop_model();
+        m.shop = Shop::default();
+        // The first open reads the list; the next does not read it again.
+        assert_eq!(click(&mut m, Id::OpenShop), Some(Job::FetchShop));
+        assert_eq!(m.focus, Some(Field::ShopSearch));
+        let items = shop_model().shop.items;
+        update(&mut m, Job::FetchShop, job::Update::Shop(items));
+        click(&mut m, Id::CloseShop);
+        assert_eq!(click(&mut m, Id::OpenShop), None);
+
+        // A search starts the list at the top and leaves only what matches.
+        m.scroll[Tab::Palettes.index()][Area::Table as usize] = 9;
+        paste(&mut m, "light");
+        assert_eq!(m.scroll[Tab::Palettes.index()][Area::Table as usize], 0);
+        let names: Vec<&str> = m.shop.shown().iter().map(|&i| m.shop.items[i].name.as_str()).collect();
+        assert_eq!(names, ["Paper"]);
+        let paper = m.shop.shown()[0];
+        assert!(!live(&m, Id::InstallShared(paper)), "Paper's name is someone's own file here");
+        key(&mut m, Key::Clear);
+        assert_eq!(m.shop.shown().len(), m.shop.items.len());
+
+        // Install: a job for that one, then it says where it is and offers nothing more.
+        assert_eq!(click(&mut m, Id::InstallShared(0)), Some(Job::InstallShared));
+        assert_eq!(m.shop.installing, Some(0));
+        started(&mut m, Job::InstallShared);
+        assert!(!live(&m, Id::InstallShared(4)), "one install at a time");
+        let file = m.shop.items[0].file.clone();
+        update(&mut m, Job::InstallShared, job::Update::Installed { file, on_player: true });
+        finished(&mut m, Job::InstallShared, Ok("installed".into()));
+        assert_eq!(m.shop.installing, None);
+        assert!(!live(&m, Id::InstallShared(0)));
+        assert!(live(&m, Id::InstallShared(4)));
+
+        // Without the player's memory chosen, in the folder is done.
+        m.volumes[0] = None;
+        m.shop.items[4].folder = flint_core::palette::Have::Same;
+        assert!(!live(&m, Id::InstallShared(4)));
+        // A different file of that name on the player is someone's too.
+        m.volumes[0] = Some("/player".into());
+        m.shop.items[4].player = flint_core::palette::Have::Different;
+        assert!(!live(&m, Id::InstallShared(4)));
+
+        // New palette takes the page; the shop keeps its list for next time.
+        click(&mut m, Id::NewPalette);
+        assert!(!m.shop.open && m.draft.open && m.shop.read);
+        click(&mut m, Id::ClosePalette);
+        click(&mut m, Id::OpenShop);
+        assert!(m.shop.open && !m.draft.open);
     }
 
     /// Typing a palette: New opens on Cinder's colours with the name focused, Tab walks the

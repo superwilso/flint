@@ -40,7 +40,7 @@ usage:
   flint scrobble <volume> [<volume>...] [--apply]
   flint likes <volume> [<volume>...] [--apply] [--playlist]
   flint gui [--dark | --light]
-  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|palette-new|settings|signed-in] [--dark]";
+  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|palette-new|palette-shop|settings|signed-in] [--dark]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -795,7 +795,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         }
         // The pages behind the other tabs, with the kind of data a real read produces. Titles and
         // counts are placeholders, like every number in these previews.
-        "player" | "likes" | "palettes" | "palette-new" => {
+        "player" | "likes" | "palettes" | "palette-new" | "palette-shop" => {
             use flint_gui::{AlbumRow, PaletteFile, PlayRow, PlayerFacts, Tab};
             ready(&mut m);
             let album = |folder: &str, volume: usize, files: usize, gb10: u64, format: &str, by_flint: bool| AlbumRow {
@@ -865,11 +865,41 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 .map(|s| s.to_string())
                 .collect();
             }
-            if state == "palettes" || state == "palette-new" {
+            if state == "palettes" || state == "palette-new" || state == "palette-shop" {
                 let (pc, player) = preview_palettes();
                 m.palette_dir = Some(PathBuf::from("D:\\Walkman\\Palettes"));
                 m.palette_rows = flint_core::palette::compare(&pc, &player);
                 m.status = "palettes: 1 new, 1 changed, 1 refused".into();
+            }
+            // The shop, as the repository's list reads: Slate and Moss already in the folder (Slate
+            // on the player too), a light one and Cinder's Sony to install, and Dusk.
+            if state == "palette-shop" {
+                use flint_core::palette::{Have, SharedPalette, EXAMPLES};
+                let (pc, player) = preview_palettes();
+                let mut shared: Vec<(String, String)> =
+                    pc.iter().filter(|(f, _)| f != "fog.palette").cloned().collect();
+                shared.extend(player.iter().filter(|(f, _)| f == "dusk.palette").cloned());
+                shared.extend(
+                    EXAMPLES
+                        .iter()
+                        .filter(|(id, _)| *id == "sony")
+                        .map(|(id, b)| (format!("{id}.palette"), b.to_string())),
+                );
+                shared.sort();
+                let have = |list: &PaletteFiles, f: &str, body: &str| {
+                    Have::of(list.iter().find(|(n, _)| n == f).map(|(_, b)| b.as_str()), body)
+                };
+                m.shop.items = shared
+                    .iter()
+                    .map(|(f, b)| SharedPalette {
+                        folder: have(&pc, f, b),
+                        player: have(&player, f, b),
+                        ..SharedPalette::new(f, b)
+                    })
+                    .collect();
+                m.shop.open = true;
+                m.shop.read = true;
+                m.status = format!("{} shared palettes", m.shop.items.len());
             }
             if state == "palette-new" {
                 m.draft = flint_gui::Draft::from_start(2);
@@ -941,7 +971,8 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         other => {
             return Err(format!(
                 "unknown state {other}; one of fresh, ready, planned, working, done, scanning, \
-                 player, check, filtered, sensme, likes, palettes, settings, signed-in"
+                 player, check, filtered, sensme, likes, palettes, palette-new, palette-shop, settings, \
+                 signed-in"
             ))
         }
     }

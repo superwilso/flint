@@ -18,9 +18,19 @@
 - **Share…** opens the shared repository's form,
   [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes), with the palette already
   filled in.
-- **Download shared** downloads every shared palette that is not already in the folder. Each one is
-  checked with the player's rules before it is written, and a file already there is never replaced.
-  **Browse** opens the gallery.
+- **Shared palettes** lists every palette in the shared repository. Each row shows the palette by
+  day and by night, as the player draws it, and says whether it is light or dark and whether it
+  brings its own accent.
+  - Type in the search box to narrow the list: part of a name, *light*, *dark* or *accent*.
+  - **Install** puts one palette in the folder and, when the player's internal memory is chosen and
+    plugged in, on the player too. Then pick it in *Settings ▸ Display ▸ Palette*. Without the
+    player, the button says **Get** and Send takes it across later.
+  - A row that needs nothing says **Installed** or **In your folder**. A file of the same name that
+    is someone's own, in the folder or on the player, is never replaced, and its row says **Yours
+    differs**.
+  - **Get all** downloads every shared palette not already in the folder. **Open on GitHub** opens
+    the gallery.
+  - Every palette is checked with the player's rules before it is written.
 
 ### Lists scroll
 

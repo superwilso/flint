@@ -49,12 +49,14 @@ the player reads. Full comparison: [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md
 | **Check** | Finds FLACs that aren't really lossless. Click a verdict or type to filter. |
 | **SensMe** | Analyses the library, or imports Music Center's results. |
 | **Likes & plays** | Sends scrobbles to Last.fm and syncs liked songs. |
-| **Palettes** | Makes Cinder colour palettes, checks them with Cinder's own rules, sends the ones that pass, and shares and downloads them through [cinder-themes](https://github.com/superwilso/cinder-themes). |
+| **Palettes** | Makes Cinder colour palettes, checks them with Cinder's own rules and sends the ones that pass. **Shared palettes** lists everything in [cinder-themes](https://github.com/superwilso/cinder-themes): search it, see each one by day and night, and install one onto the player in one click. |
 | **Settings** | Theme, folders, the analysis cache, Last.fm key and sign-in. |
 
 ![The Palettes page](docs/window-palettes.svg)
 
 ![Making a palette](docs/window-palette-new.svg)
+
+![The shared palettes](docs/window-palette-shop.svg)
 
 Only **Sync** writes music, and **Copy** is only offered for a plan you've just seen. Changing a
 setting withdraws it until you look again. Each drive shows a bar: used, this copy, free.
@@ -74,7 +76,7 @@ by Flint itself:
 ```
 flint gui-preview window.svg --state planned     # fresh, ready, working, done, scanning
 flint gui-preview window-dark.svg --state planned --dark
-flint gui-preview check.svg --state check        # filtered, player, sensme, likes, palettes, palette-new, settings, signed-in
+flint gui-preview check.svg --state check        # filtered, player, sensme, likes, palettes, palette-new, palette-shop, settings, signed-in
 ```
 
 ## Copying a library

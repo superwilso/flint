@@ -873,8 +873,18 @@ mod tests {
         editing.palette_dir = Some("/palettes".into());
         editing.draft = crate::Draft::from_start(1);
         editing.draft.name = "Mine".into();
+        // The shop's Refresh, Get all and Install, with one palette to install.
+        let mut shopping = m.clone();
+        shopping.palette_dir = Some("/palettes".into());
+        let (id, body) = flint_core::palette::EXAMPLES[0];
+        shopping.shop = crate::Shop {
+            open: true,
+            read: true,
+            items: vec![flint_core::palette::SharedPalette::new(&format!("{id}.palette"), body)],
+            ..Default::default()
+        };
         let mut ids = ids;
-        for model in [&signed_in, &no_session, &typing, &editing] {
+        for model in [&signed_in, &no_session, &typing, &editing, &shopping] {
             for t in crate::Tab::ALL {
                 let mut on = model.clone();
                 on.tab = t;
@@ -884,7 +894,7 @@ mod tests {
         for job in Job::ALL {
             let id = ids.iter().copied().find(|id| crate::job_of(*id) == Some(job));
             let id = id.unwrap_or_else(|| panic!("{job:?} has no button"));
-            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing]
+            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing, &shopping]
                 .into_iter()
                 .find(|model| crate::live(model, id))
                 .unwrap_or_else(|| panic!("{job:?}'s button is never live"))

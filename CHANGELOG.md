@@ -51,6 +51,30 @@ ends on the totals. Deleting is the one thing a sync cannot undo. `flint sync` w
 the same gap, with 10 in place of 12: it now prints every removal, then `in all: N to copy, M to
 remove`.
 
+### Fixed (audit 2026-10-01)
+
+- **Scrobble times were off by your time zone.** Cinder writes its log with `#TZ/UNKNOWN`: the
+  times are the player's own clock, which knows the time but not the zone, and the uploader is
+  meant to convert them. Flint sent them as written, so every play landed an hour early or late in
+  summer in the UK, and nine hours out in Japan. Flint now converts them with this PC's time zone,
+  daylight saving included, and says so in the preview. A log that says `#TZ/UTC` goes out as
+  written, as before.
+- **Stop during Copy now stops.** The button was shown during a copy and changed nothing except
+  the closing sentence, which said "Stopped early" after every file had been copied. Now the copy
+  in hand finishes, the rest are left for next time, and no playlist is written that could name a
+  track that is not there yet.
+- **A copy that fails no longer leaves a hidden temporary file behind.** Its name started with a
+  dot, so nothing found it again, and it held the space it took — on a full volume, which is
+  usually why a copy fails. Files a pulled cable left behind are now swept by the next plan.
+- **Planning a big library is fast.** Deciding which volume each album stays on compared every
+  album with every file on the player. 4,000 albums took 36 seconds of CPU per volume, twice per
+  sync. It now takes under a tenth of a second.
+- **A plan no longer reads every MP3 in full.** The SensMe check worked out each track's audio key
+  by hashing the whole file, on Plan and again on Copy, when the analysis cache already knew the
+  answer from the file's size and date.
+- With the same room on internal memory and the card, an album now goes to internal memory, as
+  the code always said. It went to the card.
+
 ## 0.2.1 — 2026-09-28
 
 ### No terminal window

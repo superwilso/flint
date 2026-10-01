@@ -34,6 +34,8 @@ pub struct Outcome {
     pub removed: usize,
     pub playlists: usize,
     pub failed: usize,
+    /// The run was told to stop and left the rest of the copies, and the playlists, for next time.
+    pub stopped: bool,
 }
 
 fn device_path(root: &Path, rel: &str) -> PathBuf {
@@ -46,10 +48,24 @@ fn temp_beside(dst: &Path) -> PathBuf {
 }
 
 /// Copy `src` to `dst` through a temporary file beside it.
+///
+/// A failed copy takes its temporary file with it, as the tagging copies in `flac` and `id3` do. Left
+/// behind, it would be invisible to every later scan (the name starts with a dot) and would hold the
+/// space it took — on a volume that is full, which is the usual reason a copy fails, that can be a
+/// whole hi-res track's worth.
 fn copy_plain(src: &Path, dst: &Path) -> io::Result<u64> {
     let tmp = temp_beside(dst);
-    let bytes = fs::copy(src, &tmp)?;
-    fs::rename(&tmp, dst)?;
+    let bytes = match fs::copy(src, &tmp) {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
+    if let Err(e) = fs::rename(&tmp, dst) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(bytes)
 }
 
@@ -91,6 +107,12 @@ fn prune_empty(root: &Path, from: &Path) {
 
 /// Carry out `plan`. `payload_for` gives the SensMe result for a copy's tag, or `None` to copy the
 /// file untouched. With `dry_run`, nothing is written and the events describe what would happen.
+///
+/// `stop` is asked before each copy. Once it says yes, the copies not yet made and the playlists
+/// are left for the next run — a playlist written now could name tracks that are not there — and
+/// the manifests are saved, so what was copied is not copied again. Stopping between files is safe:
+/// each file is written under a temporary name and renamed, so none is ever half there.
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     plan: &Plan,
     source_root: &Path,
@@ -98,6 +120,7 @@ pub fn apply(
     manifests: &mut [Manifest],
     payload_for: impl Fn(&Copy) -> Option<Vec<u8>>,
     dry_run: bool,
+    stop: impl Fn() -> bool,
     mut on_event: impl FnMut(&Event),
 ) -> io::Result<Outcome> {
     let mut out = Outcome::default();
@@ -131,7 +154,15 @@ pub fn apply(
     }
 
     let total = plan.copies.len();
+    // Copies since the manifests were last saved. Counted separately from `out.copied`, which
+    // stays put while copies fail: `copied % SAVE_EVERY` read 0 on every failure before the first
+    // success, and rewrote every manifest once per failed file.
+    let mut unsaved = 0;
     for (i, c) in plan.copies.iter().enumerate() {
+        if stop() {
+            out.stopped = true;
+            break;
+        }
         let src = device_path(source_root, &c.rel);
         let dst = device_path(&volumes[c.volume].root, &c.rel);
         let payload = if c.tag.is_empty() { None } else { payload_for(c) };
@@ -165,18 +196,22 @@ pub fn apply(
                     );
                 }
                 on_event(&Event::Copied { done: i + 1, total, rel: c.rel.clone(), volume: c.volume, tagged });
+                unsaved += 1;
             }
             Err(e) => {
                 out.failed += 1;
                 on_event(&Event::Failed { what: c.rel.clone(), error: e.to_string() });
             }
         }
-        if out.copied % SAVE_EVERY == 0 {
+        if unsaved == SAVE_EVERY {
             save_manifests(volumes, manifests)?;
+            unsaved = 0;
         }
     }
 
-    for (name, (v, tracks)) in &plan.playlists {
+    let none = std::collections::BTreeMap::new();
+    let playlists = if out.stopped { &none } else { &plan.playlists };
+    for (name, (v, tracks)) in playlists {
         let path = volumes[*v].root.join(name);
         let body = playlist_body(tracks);
         if fs::read_to_string(&path).is_ok_and(|on_device| on_device == body) {
@@ -265,7 +300,8 @@ mod tests {
             "flac-key-1".to_string()
         });
         assert_eq!(plan.copies.len(), 1);
-        let out = apply(&plan, &lib, &volumes, &mut manifests, |_| Some(payload.clone()), false, |_| {}).unwrap();
+        let out =
+            apply(&plan, &lib, &volumes, &mut manifests, |_| Some(payload.clone()), false, || false, |_| {}).unwrap();
         assert_eq!((out.copied, out.tagged, out.failed), (1, 1, 0));
 
         let copied = dev.join("Artist/01.flac");
@@ -305,7 +341,7 @@ mod tests {
             &BTreeMap::new(),
             |_: &SourceFile| String::new(),
         );
-        let out = apply(&plan, &d, &volumes, &mut manifests, |_| None, false, |_| {}).unwrap();
+        let out = apply(&plan, &d, &volumes, &mut manifests, |_| None, false, || false, |_| {}).unwrap();
         assert_eq!((out.removed, out.failed), (2, 0));
         assert!(!dev.join("Gone").exists(), "empty folders were left behind");
         assert!(!dev.join("old.m3u8").exists());
@@ -328,18 +364,74 @@ mod tests {
         let plan = sync::plan(&source, &volumes, &[DeviceScan::default()], &manifests, &playlists, |_| String::new());
 
         assert_eq!(playlists_to_write(&plan, &volumes), vec!["mix.m3u8".to_string()]);
-        let dry = apply(&plan, &lib, &volumes, &mut manifests, |_| None, true, |_| {}).unwrap();
+        let dry = apply(&plan, &lib, &volumes, &mut manifests, |_| None, true, || false, |_| {}).unwrap();
         assert_eq!((dry.copied, dry.playlists), (1, 1));
         assert!(!dev.join("Artist/01.flac").exists(), "a dry run wrote a file");
         assert!(!dev.join("mix.m3u8").exists(), "a dry run wrote a playlist");
         assert!(manifests[0].records.is_empty());
 
-        apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, |_| {}).unwrap();
+        apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, || false, |_| {}).unwrap();
         assert_eq!(fs::read_to_string(dev.join("mix.m3u8")).unwrap(), "Artist/01.flac\n");
         // A second run leaves an unchanged playlist alone.
         assert!(playlists_to_write(&plan, &volumes).is_empty());
-        let out = apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, |_| {}).unwrap();
+        let out = apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, || false, |_| {}).unwrap();
         assert_eq!(out.playlists, 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Stop means stop: the window's Stop button used to be drawn during a copy and change nothing
+    /// but the closing sentence. The copy in hand finishes, the rest wait, no playlist is written
+    /// that could name a track that is not there yet, and the manifest remembers what did arrive.
+    #[test]
+    fn a_stop_leaves_the_rest_for_next_time_and_remembers_what_was_copied() {
+        let d = tmpdir("stop");
+        let (lib, dev) = (d.join("lib"), d.join("dev"));
+        fs::create_dir_all(lib.join("Artist")).unwrap();
+        fs::create_dir_all(&dev).unwrap();
+        for n in 1..=3u8 {
+            fs::write(lib.join(format!("Artist/0{n}.flac")), flac_bytes(n)).unwrap();
+        }
+        let source = sync::scan_library(&lib).unwrap();
+        let volumes = vec![Volume { name: "internal".into(), root: dev.clone(), budget_bytes: 1 << 20 }];
+        let mut playlists = BTreeMap::new();
+        playlists.insert("mix.m3u8".to_string(), vec!["Artist/01.flac".to_string(), "Artist/03.flac".to_string()]);
+        let mut manifests = vec![Manifest::default()];
+        let plan = sync::plan(&source, &volumes, &[DeviceScan::default()], &manifests, &playlists, |_| String::new());
+        assert_eq!(plan.copies.len(), 3);
+
+        let asked = std::cell::Cell::new(0);
+        let stop_after_one = || {
+            asked.set(asked.get() + 1);
+            asked.get() > 1
+        };
+        let out = apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, stop_after_one, |_| {}).unwrap();
+        assert!(out.stopped);
+        assert_eq!((out.copied, out.playlists, out.failed), (1, 0, 0));
+        assert!(dev.join("Artist/01.flac").is_file());
+        assert!(!dev.join("Artist/02.flac").exists(), "a copy was made after the stop");
+        assert!(!dev.join("mix.m3u8").exists(), "a playlist was written for tracks that are not there");
+        assert_eq!(Manifest::load(&dev).records.keys().collect::<Vec<_>>(), vec!["Artist/01.flac"]);
+
+        // The next run picks up where this one stopped.
+        let scans = vec![sync::scan_volume(&dev).unwrap()];
+        let again = sync::plan(&source, &volumes, &scans, &[Manifest::load(&dev)], &playlists, |_| String::new());
+        assert_eq!(
+            again.copies.iter().map(|c| c.rel.as_str()).collect::<Vec<_>>(),
+            vec!["Artist/02.flac", "Artist/03.flac"]
+        );
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A plain copy that fails takes its temporary file with it, like the tagging copies do. The
+    /// name starts with a dot, so nothing would ever have found it again.
+    #[test]
+    fn a_failed_plain_copy_leaves_no_temporary_file() {
+        let d = tmpdir("failed-copy");
+        fs::write(d.join("src.flac"), b"audio").unwrap();
+        // A non-empty folder where the copy has to land: the rename onto it fails.
+        fs::create_dir_all(d.join("dst.flac/inside")).unwrap();
+        assert!(copy_plain(&d.join("src.flac"), &d.join("dst.flac")).is_err());
+        assert!(!d.join(".dst.flac.flint-partial").exists(), "the temporary file was left behind");
         fs::remove_dir_all(&d).unwrap();
     }
 }

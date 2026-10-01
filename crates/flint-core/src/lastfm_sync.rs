@@ -64,6 +64,9 @@ pub fn scrobble(
         for (line, _, why) in &log.unreadable {
             say(format!("    line {line}: {why}"));
         }
+        if log.local_time() && !plays.is_empty() {
+            say("    times are the player's clock (#TZ/UNKNOWN): sent as UTC in this PC's time zone".into());
+        }
         for entry in plays.iter().take(3) {
             say(format!("    {} — {}", entry.artist, entry.track));
         }
@@ -92,7 +95,11 @@ pub fn scrobble(
                 rewrite(path, log, &accepted_rows, &mut report, say)?;
                 break 'volumes;
             }
-            match client.scrobble(batch) {
+            // What goes over the wire carries real UTC; what comes out of the file is found by
+            // the row as it was written. The two differ only in the timestamp, so a refusal is
+            // matched against the converted copy and the original row stays in the log.
+            let wire = to_send(log, batch);
+            match client.scrobble(&wire) {
                 Ok(result) => {
                     accepted += result.accepted;
                     ignored += result.ignored;
@@ -102,7 +109,13 @@ pub fn scrobble(
                         say(format!("    kept: {} — {} ({why})", entry.artist, entry.track));
                     }
                     // Only what Last.fm took comes out of the file.
-                    accepted_rows.extend(batch.iter().filter(|e| !refused.contains(&e.identity())).cloned());
+                    accepted_rows.extend(
+                        batch
+                            .iter()
+                            .zip(&wire)
+                            .filter(|(_, sent)| !refused.contains(&sent.identity()))
+                            .map(|(e, _)| e.clone()),
+                    );
                 }
                 Err(e) => {
                     // Stop at the first batch that fails: the file is rewritten with whatever was
@@ -122,6 +135,18 @@ pub fn scrobble(
         }
     }
     Ok(report)
+}
+
+/// The plays as Last.fm should get them: from a `#TZ/UNKNOWN` log, with each timestamp moved
+/// from the player's wall clock to UTC in this PC's time zone (see [`crate::localtime`]).
+fn to_send(log: &scrobblelog::Log, batch: &[scrobblelog::Entry]) -> Vec<scrobblelog::Entry> {
+    if !log.local_time() {
+        return batch.to_vec();
+    }
+    batch
+        .iter()
+        .map(|e| scrobblelog::Entry { timestamp: crate::localtime::local_to_utc(e.timestamp), ..e.clone() })
+        .collect()
 }
 
 fn rewrite(
@@ -401,6 +426,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(vol.join(".scrobbler.log")).unwrap(), LOG, "a dry run wrote");
         assert!(lines.iter().any(|l| l.contains("1 play(s) to send")), "{lines:#?}");
         let _ = std::fs::remove_dir_all(&vol);
+    }
+
+    /// A `#TZ/UNKNOWN` log goes out in UTC; a `#TZ/UTC` one goes out as written. The rows sent
+    /// are copies — the originals, which is what comes out of the file, are untouched.
+    #[test]
+    fn plays_from_a_local_clock_are_sent_in_utc() {
+        let local = scrobblelog::parse(LOG);
+        assert!(local.local_time());
+        let plays = local.plays_to_send();
+        let wire = to_send(&local, &plays);
+        assert_eq!(wire[0].timestamp, crate::localtime::local_to_utc(1_700_000_000));
+        assert_eq!(plays[0].timestamp, 1_700_000_000, "the row to remove keeps its written time");
+        assert_eq!((wire[0].artist.as_str(), wire[0].track.as_str()), ("A", "First"));
+
+        let utc = scrobblelog::parse(&LOG.replace("#TZ/UNKNOWN", "#TZ/UTC"));
+        assert!(!utc.local_time());
+        assert_eq!(to_send(&utc, &utc.plays_to_send())[0].timestamp, 1_700_000_000);
     }
 
     /// Sending with no key says so before touching the network or the log.

@@ -190,6 +190,24 @@ impl Cache {
         self.by_key.get(key)
     }
 
+    /// The key of `path`'s cached result, or `None` when the cache has none for its audio.
+    ///
+    /// The `(path, size, mtime)` fast path first — one `stat` — and the content key only when that
+    /// misses. The sync planner asks this of every track on every plan, and Copy plans again: a
+    /// content key is a hash of an MP3's whole audio, so going straight to it read the entire MP3
+    /// library twice per sync to find keys the index already held.
+    pub fn cached_key(&self, path: &Path) -> Option<String> {
+        if let Ok((size, mtime)) = stat(path) {
+            if let Some(key) = self.fast_key(&path.to_string_lossy(), size, mtime) {
+                return Some(key.to_string());
+            }
+        }
+        match content_key(path) {
+            Ok(Some(key)) if self.by_key.contains_key(&key) => Some(key),
+            _ => None,
+        }
+    }
+
     pub fn blob(&self, key: &str) -> io::Result<Vec<u8>> {
         fs::read(self.blob_path(key))
     }
@@ -317,6 +335,42 @@ mod tests {
         assert_eq!(c2.fast_key(path, 100, 43), None);
         assert_eq!(c2.blob("flac-ab-1").unwrap(), b"abc");
         assert_eq!(c2.get("flac-ab-1").unwrap().bpm, Some(93.44));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The planner's question. A path the index knows at its recorded size and mtime is answered
+    /// from the index without reading the file; anything else falls back to the audio itself.
+    #[test]
+    fn cached_key_takes_the_fast_path_and_falls_back_to_the_audio() {
+        let d = tmpdir("cached-key");
+        let mut c = Cache::open(&d).unwrap();
+        // Not decodable as anything: its content key is None, so a hit can only be the fast path.
+        let known = d.join("known.mp3");
+        fs::write(&known, b"no frames here").unwrap();
+        let (size, mtime) = stat(&known).unwrap();
+        let entry = |key: &str, path: &Path, size, mtime| Entry {
+            key: key.into(),
+            size,
+            mtime,
+            engine: "e".into(),
+            bpm: None,
+            bytes: 1,
+            path: path.to_string_lossy().into_owned(),
+        };
+        c.put(entry("mp3-fast-1", &known, size, mtime), b"x").unwrap();
+        assert_eq!(c.cached_key(&known).as_deref(), Some("mp3-fast-1"));
+        fs::write(&known, b"no frames here, and now longer").unwrap();
+        assert_eq!(c.cached_key(&known), None, "a changed file must not keep its old key");
+
+        // A real MP3 the index knows under another name: found by its audio.
+        let mut audio = vec![0xff, 0xfb, 0x90, 0x64];
+        audio.extend(std::iter::repeat_n(0x55, 4000));
+        let moved = d.join("moved.mp3");
+        fs::write(&moved, &audio).unwrap();
+        let key = content_key(&moved).unwrap().unwrap();
+        c.put(entry(&key, &d.join("old-name.mp3"), 1, 1), b"y").unwrap();
+        assert_eq!(c.cached_key(&moved).as_deref(), Some(key.as_str()));
+        assert_eq!(c.cached_key(&d.join("missing.mp3")), None);
         fs::remove_dir_all(&d).unwrap();
     }
 

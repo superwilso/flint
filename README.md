@@ -120,7 +120,8 @@ flint likes E:\ F:\ --apply --playlist      apply, and write Liked Songs.m3u8
 
 **Scrobbles.** Cinder writes an Audioscrobbler `.scrobbler.log` at the root of the player. Flint
 sends the plays in batches of 50 and removes only the rows Last.fm accepted. Rejected or unreadable
-rows stay, with the reason printed.
+rows stay, with the reason printed. The player's clock has no time zone, so the log says
+`#TZ/UNKNOWN` and Flint converts each time to UTC with this PC's time zone before sending it.
 
 **Liked songs.** Cinder exports `cinder_loved.tsv` and reads `cinder_liked_import.tsv`. `flint likes`
 syncs these with your Last.fm loved tracks in both directions. It remembers the last state of each

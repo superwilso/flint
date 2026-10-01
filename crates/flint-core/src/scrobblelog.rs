@@ -63,6 +63,14 @@ pub struct Log {
 }
 
 impl Log {
+    /// Does the header say the timestamps are the player's wall clock (`#TZ/UNKNOWN`) rather than
+    /// UTC? Cinder and `unknown321/scrobbler` both write `UNKNOWN`, and the spec leaves the
+    /// conversion to the uploader — see [`crate::localtime`]. A log with no `#TZ` line is taken at
+    /// its word as UTC, which is what was always done with it.
+    pub fn local_time(&self) -> bool {
+        self.header.iter().any(|l| l.trim().eq_ignore_ascii_case("#TZ/UNKNOWN"))
+    }
+
     pub fn plays(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().filter(|e| e.is_play())
     }

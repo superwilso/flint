@@ -658,10 +658,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
             return String::new();
         }
         let path = s.library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        match cache::content_key(&path) {
-            Ok(Some(key)) if analysis.get(&key).is_some() => key,
-            _ => String::new(),
-        }
+        analysis.cached_key(&path).unwrap_or_default()
     };
     let plan = sync::plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
     let tagged = plan.copies.iter().filter(|c| !c.tag.is_empty()).count();
@@ -735,7 +732,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         ));
     }
 
-    let mut cancelled = false;
+    // Stop is asked before each copy, so the one in hand finishes and nothing is half-written.
     let out = apply::apply(
         &plan,
         &s.library,
@@ -743,11 +740,9 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         &mut manifests,
         |c| analysis.blob(&c.tag).ok(),
         false,
+        || stopped(cancel),
         |ev| match ev {
             apply::Event::Copied { done, total, rel, tagged, .. } => {
-                if stopped(cancel) {
-                    cancelled = true;
-                }
                 emit(Update::Progress(Some(*done as f32 / (*total).max(1) as f32)));
                 emit(Update::Say(format!("[{done}/{total}] {rel}{}", if *tagged { "  +SensMe" } else { "" })));
             }
@@ -760,7 +755,6 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     )
     .map_err(|e| e.to_string())?;
 
-    let _ = cancelled;
     emit(Update::Progress(Some(1.0)));
     let mut done = format!(
         "Copied {} files ({}), {} tagged, {} removed, {} playlists written.",
@@ -773,8 +767,9 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     if out.failed > 0 {
         done.push_str(&format!(" {} failed — see the log.", out.failed));
     }
-    if stopped(cancel) {
-        done.push_str(" Stopped early.");
+    if out.stopped {
+        let left = plan.copies.len() - out.copied - out.failed;
+        done.push_str(&format!(" Stopped with {left} left to copy — Show what would happen picks up from here."));
     }
     Ok(done)
 }
@@ -1094,6 +1089,24 @@ mod tests {
         .unwrap();
         assert!(word.contains("nothing to do"), "{word}");
         assert!(!planned, "there is nothing to copy, so COPY must stay dark");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Stop during Copy stops. It used to be drawn, change nothing, and end a run that had copied
+    /// every file with "Stopped early."
+    #[test]
+    fn a_stopped_copy_copies_nothing_more_and_says_so() {
+        let root = tmp("stop");
+        let library = root.join("music");
+        let volume = root.join("player");
+        fs::create_dir_all(&volume).unwrap();
+        write_flac(&library.join("Artist - Album/01 One.flac"), 2048);
+        write_flac(&library.join("Artist - Album/02 Two.flac"), 2048);
+        let s = settings(library, volume.clone(), root.join("cache"));
+        let cancel = AtomicBool::new(true);
+        let word = run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(word.contains("Stopped with 2 left to copy"), "{word}");
+        assert!(!volume.join("Artist - Album/01 One.flac").exists(), "a copy was made after Stop");
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -10,6 +10,7 @@ pub mod lastfm;
 pub mod lastfm_sync;
 pub mod library;
 pub mod likes;
+pub mod localtime;
 pub mod lossless;
 pub mod md5;
 pub mod musiccenter;

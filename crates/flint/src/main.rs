@@ -604,10 +604,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
             return String::new();
         }
         let path = library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        match cache::content_key(&path) {
-            Ok(Some(key)) if analysis.get(&key).is_some() => key,
-            _ => String::new(),
-        }
+        analysis.cached_key(&path).unwrap_or_default()
     };
     let plan = sync::plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
     let tagged = plan.copies.iter().filter(|c| !c.tag.is_empty()).count();
@@ -665,6 +662,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         &mut manifests,
         |c| analysis.blob(&c.tag).ok(),
         false,
+        || false,
         |ev| match ev {
             apply::Event::Copied { done, total, rel, tagged, .. } => {
                 println!("[{done}/{total}] {rel}{}", if *tagged { "  +SensMe" } else { "" });

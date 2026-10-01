@@ -91,7 +91,15 @@ pub struct DeviceScan {
     /// Relative path -> (size, mtime).
     pub files: HashMap<String, (u64, i64)>,
     pub playlists: BTreeSet<String>,
+    /// Flint's own temporary files (`.name.flint-partial`) that a pulled cable or a killed run
+    /// left behind. A copy that fails removes its own; these are the ones nothing was alive to
+    /// remove. They are hidden by their leading dot and hold the space they took, so the plan
+    /// sweeps them.
+    pub partials: Vec<String>,
 }
+
+/// The suffix of the temporary name every copy is written under before its rename.
+pub const PARTIAL_SUFFIX: &str = ".flint-partial";
 
 impl DeviceScan {
     pub fn folder_files(&self) -> BTreeMap<&str, Vec<&str>> {
@@ -101,14 +109,6 @@ impl DeviceScan {
             out.entry(folder).or_default().push(rel);
         }
         out
-    }
-
-    fn bytes_in(&self, folder: &str) -> u64 {
-        self.files
-            .iter()
-            .filter(|(rel, _)| rel.split_once('/').map_or(rel.as_str(), |(f, _)| f) == folder)
-            .map(|(_, (size, _))| size)
-            .sum()
     }
 }
 
@@ -274,18 +274,31 @@ fn group_folders(sizes: &BTreeMap<String, u64>, playlist_folders: &BTreeMap<Stri
     groups
 }
 
-/// The volume this group is mostly on already, by file count then bytes.
-fn preferred_volume(group: &Group, volumes: &[Volume], scans: &[DeviceScan]) -> Option<usize> {
+/// Bytes on a volume per top-level folder, counting only files inside a folder: what
+/// [`preferred_volume`] asks of every group, built once per volume rather than by walking every
+/// file on the volume for every group (which made planning quadratic — 36 s of CPU for 4,000
+/// albums on one volume, run again for each volume and again on Copy).
+fn bytes_by_folder(scan: &DeviceScan) -> HashMap<&str, u64> {
+    let mut out: HashMap<&str, u64> = HashMap::new();
+    for (rel, (size, _)) in &scan.files {
+        if let Some((folder, _)) = rel.split_once('/') {
+            *out.entry(folder).or_default() += size;
+        }
+    }
+    out
+}
+
+/// The volume this group is mostly on already, by the number of its folders there, then bytes.
+fn preferred_volume(group: &Group, volumes: &[Volume], on_volume: &[HashMap<&str, u64>]) -> Option<usize> {
     let mut best: Option<(usize, usize, u64)> = None;
     for (i, _) in volumes.iter().enumerate() {
-        let scan = scans.get(i)?;
+        let by_folder = on_volume.get(i)?;
         let mut files = 0;
         let mut bytes = 0;
         for folder in &group.folders {
-            let n = scan.files.keys().filter(|rel| rel.starts_with(&format!("{folder}/"))).count();
-            if n > 0 {
+            if let Some(b) = by_folder.get(folder.as_str()) {
                 files += 1;
-                bytes += scan.bytes_in(folder);
+                bytes += b;
             }
         }
         if files > 0 && best.is_none_or(|(_, f, b)| (files, bytes) > (f, b)) {
@@ -301,7 +314,11 @@ fn choose_volume(group: &Group, volumes: &[Volume], used: &[u64], preferred: Opt
         return Some(p);
     }
     // Whichever is left with the most room; ties go to the earlier volume (internal memory first).
-    (0..volumes.len()).filter(|&i| fits(i)).max_by_key(|&i| volumes[i].budget_bytes - (used[i] + group.size_bytes))
+    // `max_by_key` alone returns the LAST of equal keys, which sent ties to the card — so the
+    // index is part of the key, reversed.
+    (0..volumes.len())
+        .filter(|&i| fits(i))
+        .max_by_key(|&i| (volumes[i].budget_bytes - (used[i] + group.size_bytes), std::cmp::Reverse(i)))
 }
 
 /// Everything the transfer will do. `tag_for` gives the analysis key for a track, or an empty string
@@ -345,9 +362,10 @@ pub fn plan(
     let mut out = Plan::default();
     let mut used = vec![0u64; volumes.len()];
     let mut file_volume: HashMap<&str, usize> = HashMap::new();
+    let on_volume: Vec<HashMap<&str, u64>> = scans.iter().map(bytes_by_folder).collect();
 
     for group in group_folders(&sizes, &playlist_folders) {
-        let preferred = preferred_volume(&group, volumes, scans);
+        let preferred = preferred_volume(&group, volumes, &on_volume);
         let Some(v) = choose_volume(&group, volumes, &used, preferred) else {
             out.skipped.extend(group.folders.iter().cloned());
             continue;
@@ -406,6 +424,11 @@ pub fn plan(
                 _ => out.stale_files.push((v, rel.clone())),
             }
         }
+        // Flint's own leftovers. Only ever names Flint itself writes, so this can never sweep
+        // anything another tool put on the player.
+        for rel in &scan.partials {
+            out.stale_files.push((v, rel.clone()));
+        }
         for name in &scan.playlists {
             let managed = MANAGED_PLAYLISTS.iter().any(|m| m.eq_ignore_ascii_case(name));
             let wanted = out.playlists.get(name).is_some_and(|(pv, _)| *pv == v);
@@ -422,16 +445,27 @@ pub fn plan(
 
 /// Every audio file under `root`, as library-relative paths.
 pub fn scan_library(root: &Path) -> io::Result<Vec<SourceFile>> {
+    scan_tree(root, None)
+}
+
+/// [`scan_library`], also collecting Flint's leftover temporary files into `partials` when asked —
+/// one walk over the volume either way, because over USB the walk is the slow part.
+fn scan_tree(root: &Path, mut partials: Option<&mut Vec<String>>) -> io::Result<Vec<SourceFile>> {
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = stack.pop() {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
             if name.starts_with('.') {
+                if let Some(partials) = partials.as_deref_mut() {
+                    if name.ends_with(PARTIAL_SUFFIX) && entry.file_type()?.is_file() {
+                        partials.push(rel);
+                    }
+                }
                 continue;
             }
-            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
             let ft = entry.file_type()?;
             if ft.is_dir() {
                 stack.push((entry.path(), rel));
@@ -453,9 +487,10 @@ pub fn scan_library(root: &Path) -> io::Result<Vec<SourceFile>> {
 /// What is on a volume: its audio files, and the playlists at its root.
 pub fn scan_volume(root: &Path) -> io::Result<DeviceScan> {
     let mut scan = DeviceScan::default();
-    for f in scan_library(root)? {
+    for f in scan_tree(root, Some(&mut scan.partials))? {
         scan.files.insert(f.rel, (f.size, f.mtime));
     }
+    scan.partials.sort();
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -654,6 +689,73 @@ mod tests {
         on_volume.sort_unstable();
         assert_eq!(on_volume, vec!["Artist/Album/01.flac", "Artist/Album/01.lrc", "Artist/cover.jpg"]);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A temporary file a pulled cable left behind is swept; nothing else with a dot is touched.
+    #[test]
+    fn a_leftover_partial_is_swept_and_other_hidden_files_are_not() {
+        let d = std::env::temp_dir().join(format!("flint-sync-partial-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("Album")).unwrap();
+        fs::write(d.join("Album/01.flac"), b"xx").unwrap();
+        fs::write(d.join("Album/.02.flac.flint-partial"), b"half").unwrap();
+        fs::write(d.join("Album/._01.flac"), b"macOS metadata").unwrap();
+        fs::write(d.join(".scrobbler.log"), b"#AUDIOSCROBBLER/1.1\n").unwrap();
+        let scan = scan_volume(&d).unwrap();
+        assert_eq!(scan.partials, vec!["Album/.02.flac.flint-partial".to_string()]);
+        let source = vec![src("Album/01.flac", 2)];
+        let p = plan(&source, &volumes(100, 0)[..1], &[scan], &[], &BTreeMap::new(), no_tags);
+        assert_eq!(p.stale_files, vec![(0, "Album/.02.flac.flint-partial".to_string())]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Equal room on both volumes: the album goes to internal memory, as `choose_volume` has always
+    /// said. `max_by_key` returns the last of equal keys, so it used to go to the card.
+    #[test]
+    fn a_tie_goes_to_internal_memory() {
+        let source = vec![src("A/1.flac", 10)];
+        let p = plan(
+            &source,
+            &volumes(50, 50),
+            &[DeviceScan::default(), DeviceScan::default()],
+            &[],
+            &BTreeMap::new(),
+            no_tags,
+        );
+        assert_eq!(p.assignments["A"], 0);
+    }
+
+    /// The folder index gives the same placements the per-group walk gave, on a library big
+    /// enough that the walk took seconds.
+    #[test]
+    fn albums_already_on_a_volume_stay_there_at_scale() {
+        let mut source = Vec::new();
+        let (mut internal, mut card) = (DeviceScan::default(), DeviceScan::default());
+        for a in 0..2000 {
+            for t in 0..10 {
+                let rel = format!("Album {a:04}/{t:02}.flac");
+                source.push(src(&rel, 10));
+                if a % 3 == 0 {
+                    card.files.insert(rel, (10, 1000));
+                } else if a % 3 == 1 {
+                    internal.files.insert(rel, (10, 1000));
+                }
+            }
+        }
+        let started = std::time::Instant::now();
+        let p = plan(&source, &volumes(1 << 40, 1 << 40), &[internal, card], &[], &BTreeMap::new(), no_tags);
+        assert!(started.elapsed().as_secs() < 5, "planning 20,000 files took {:?}", started.elapsed());
+        for a in 0..2000 {
+            let want = match a % 3 {
+                0 => Some(1),
+                1 => Some(0),
+                _ => None,
+            };
+            if let Some(v) = want {
+                assert_eq!(p.assignments[&format!("Album {a:04}")], v, "Album {a:04} moved");
+            }
+        }
+        assert!(p.stale_files.is_empty());
     }
 
     /// Art and lyrics go where their album goes, a folder with no music in it is not an album, and

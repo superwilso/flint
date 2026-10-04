@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Play counts from the player's history
+
+- **`flint stats <drive> [--to <sd card>] [--apply]`** gives tracks the player has never counted
+  their plays from the scrobble log on the player. Cinder starts every count at zero and does not
+  read its own log; this fills that gap once. A count or a rating the player already has is never
+  changed, and running it twice changes nothing the second time.
+- Plays are matched on artist and title. A play whose artist and title belong to two files on the
+  player is reported and not placed.
+- The history is what is still in `.scrobbler.log`. Plays Flint has already sent to Last.fm and
+  removed from the log are not counted, so seed before the first scrobble.
+- New in `flint-core`: `stats`, which reads and writes Cinder's `cinder_stats.tsv` byte for byte.
+  *Command line only; the window does not show ratings or counts yet.*
+
 ### Make and share palettes
 
 - **Palettes ▸ New palette** opens an editor. Start from Cinder, Slate, Paper or Sony, give the

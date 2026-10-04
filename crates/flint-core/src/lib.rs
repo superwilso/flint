@@ -18,6 +18,7 @@ pub mod palette;
 pub mod scrobblelog;
 pub mod smfmf;
 pub mod space;
+pub mod stats;
 pub mod sync;
 pub mod tags;
 pub mod xml;

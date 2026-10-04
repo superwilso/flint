@@ -13,6 +13,7 @@
 //! flint lastfm key|login|status                                   the Last.fm account, once
 //! flint scrobble <volume> [--apply]                               send the plays in .scrobbler.log
 //! flint likes <volume> [--apply] [--playlist]                     liked songs: player <-> Last.fm
+//! flint stats <volume> [--to <sd card>] [--apply]                 seed the player's play counts from its scrobble log
 //! flint gui                                                       open the window (Windows)
 //! flint gui-preview <out.svg> [--state name]                      draw the window to an SVG, anywhere
 //! ```
@@ -55,6 +56,7 @@ fn main() -> ExitCode {
         Some("lastfm") => lastfm_cmd(&args[1..]),
         Some("scrobble") => scrobble_cmd(&args[1..]),
         Some("likes") => likes_cmd(&args[1..]),
+        Some("stats") => stats_cmd(&args[1..]),
         Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
         Some("gui-preview") => gui_preview(&args[1..]),
         // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
@@ -1130,6 +1132,22 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
     )?;
     if !o.apply {
         println!("\nnothing was written. Add --apply to make these changes.");
+    }
+    Ok(())
+}
+
+/// `flint stats <volume> [--to <sd card>] [--apply]` — give tracks the player has never counted
+/// their plays from the scrobble log. Counts and ratings the player already has are left alone.
+fn stats_cmd(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    let mut roots: Vec<PathBuf> = o.pos.iter().map(PathBuf::from).collect();
+    roots.extend(o.to.iter().cloned());
+    if roots.is_empty() {
+        return Err("give the player's drive, internal storage first: flint stats E:\\ [--to F:\\] [--apply]".into());
+    }
+    let report = flint_core::stats::seed_player(&roots, o.apply, &mut |l| println!("{l}"))?;
+    if !o.apply && report.seeded.tracks > 0 {
+        println!("\nnothing was written. Add --apply to seed {} track(s).", thousands(report.seeded.tracks as u64));
     }
     Ok(())
 }

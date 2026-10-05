@@ -1,14 +1,16 @@
 name: ci
 
-# Every push and every pull request. Flint has no dependencies, so this is the whole gate: it
+# Every pull request, and every push to main (a branch push with a PR open would otherwise run
+# twice). Flint has no dependencies, so this is the whole gate: it
 # builds, it tests, and it builds the two Windows binaries a release ships — because a release
 # that discovers on tag day that the 32-bit helper no longer compiles is a release that does not
 # happen.
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

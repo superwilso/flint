@@ -171,6 +171,19 @@ Bonobo\tMigration\tBreak Apart\t3\t268\tL\t1758300000\t\n\
 Aphex Twin\tSelected Ambient Works 85-92\tXtal\t1\t294\tL\t1758300300\t\n\
 Bicep\tIsles\tAtlas\t1\t258\tS\t1758300600\t\n";
 
+    /// The same file is in Cinder's tree, where its writer is tested against it
+    /// (`contracts/scrobbler.log`). `#TZ/UNKNOWN` is the line that was once sent unconverted.
+    #[test]
+    fn reads_the_shared_contract() {
+        let log = parse(include_str!("../../../contracts/scrobbler.log"));
+        assert!(log.local_time(), "Cinder's times are the player's wall clock");
+        assert!(log.unreadable.is_empty());
+        let plays: Vec<_> = log.plays().collect();
+        assert_eq!(plays.len(), 2, "the skip row is not a play");
+        assert_eq!((plays[0].artist.as_str(), plays[0].timestamp), ("Bonobo", 1_758_300_000));
+        assert_eq!((plays[1].track_number.as_str(), plays[1].duration), ("", 398));
+    }
+
     #[test]
     fn reads_a_device_log() {
         let log = parse(LOG);

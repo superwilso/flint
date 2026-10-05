@@ -447,6 +447,9 @@ impl State {
         s.playlists = self.model.playlists.clone();
         s.sensme = self.model.sensme;
         s.extras = self.model.extras;
+        if job == Job::Apply {
+            s.expect_plan = self.model.plan_key;
+        }
         s.internal = self.model.volumes[0].clone();
         s.palette_dir = self.model.palette_dir.clone();
         if self.model.draft.open {

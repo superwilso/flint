@@ -76,8 +76,8 @@ pub fn get_form(url: &str, fields: &[(String, String)]) -> Result<Response, Erro
     send(&full, None)
 }
 
-/// `https://host/path` → (host, path). Only https, because the only endpoint is Last.fm's and a
-/// plain-http fallback would send a session key in clear.
+/// `https://host/path` → (host, path). Only https, for every endpoint (Last.fm, and GitHub for the
+/// shared palettes): a plain-http fallback would send a session key in clear.
 fn split_url(url: &str) -> Result<(String, String), Error> {
     let rest = url.strip_prefix("https://").ok_or_else(|| Error(format!("{url}: only https URLs are supported")))?;
     match rest.find('/') {

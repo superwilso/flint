@@ -156,12 +156,17 @@ impl Credentials {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("conf.tmp");
-        std::fs::write(&tmp, self.render())?;
+        // Created owner-only, never chmod'ed after: the secret is not readable by anyone else even
+        // for a moment (audit E11). A leftover temp file is removed first so the mode applies.
+        let _ = std::fs::remove_file(&tmp);
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
         }
+        std::io::Write::write_all(&mut open.open(&tmp)?, self.render().as_bytes())?;
         std::fs::rename(&tmp, &path)?;
         Ok(path)
     }

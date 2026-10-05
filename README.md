@@ -91,8 +91,8 @@ flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  
   a playlist stay on the same volume, and an album already on a volume stays there.
 - Each volume is filled to its free space minus 0.5 GB; `--gb N` sets a budget instead.
   `--no-sensme` copies without tagging.
-- Cover art and lyrics (`.jpg`, `.png`, `.lrc`) in an album folder are copied with it. Flint never
-  deletes artwork it didn't put there.
+- Cover art and lyrics (`.jpg`, `.png`, `.lrc`) in an album folder are copied with it;
+  `--no-extras` leaves them on the PC. Flint never deletes artwork it didn't put there.
 - Copies are written to a temp file and renamed, so an interrupted copy leaves the old file or the
   new one, never half of one. `flint-manifest.tsv` on each volume records what each copy came from.
 

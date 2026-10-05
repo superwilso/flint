@@ -23,7 +23,15 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Run by hand to build only, or with `tag` to publish: the release step creates that tag at the
+  # commit the run was started on. That is how a release is cut from somewhere a tag cannot be
+  # pushed from (a cloud session's git proxy refuses tag pushes).
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Publish as this tag (v1.2.3, or v1.2.3-rc1 for a pre-release). Empty: build only."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -91,7 +99,7 @@ jobs:
   release:
     needs: [windows, linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     # Job-level permissions REPLACE the workflow's, so contents: write is restated. id-token lets
     # the job ask GitHub's OIDC issuer for the short-lived identity Sigstore signs with;
     # attestations lets it store the result against this repository.
@@ -101,6 +109,19 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v7
+
+      # The tag this publishes: the pushed one, or the one a hand-started run was given. A given
+      # tag must name the version Cargo.toml carries, so a release cannot ship under another name.
+      - name: Which tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::'$tag' is not vX.Y.Z[-suffix]"; exit 1; }
+          ver="${tag#v}"; ver="${ver%%-*}"
+          have="$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          [ "$ver" = "$have" ] || { echo "::error::$tag is version $ver, Cargo.toml says $have"; exit 1; }
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v8
         with:
@@ -138,7 +159,9 @@ jobs:
           # NOT a draft: "automated" has to mean the artefacts are actually reachable at the end.
           # A tag with a suffix (v1.2.3-rc1) still ships, but marked pre-release.
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           body_path: RELEASE_BODY.md

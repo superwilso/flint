@@ -508,17 +508,22 @@ pub fn scan_volume(root: &Path) -> io::Result<DeviceScan> {
 /// a playlist exported from another tool routinely names tracks that are not in this library, and
 /// refusing the whole file over one of them would make the feature unusable. A playlist that ends
 /// up naming nothing is not returned at all.
+///
+/// A relative line means what M3U says, relative to the playlist's own folder; one that names
+/// nothing there is tried against the library, as before. A file that is not UTF-8 is read as
+/// Windows-1252, the code page an `.m3u` written on Windows is in.
 pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String, Vec<String>>> {
     let mut out = BTreeMap::new();
     let library = fs::canonicalize(library).unwrap_or_else(|_| library.to_path_buf());
+    let here = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if !has_ext(&name, &PLAYLIST_EXT) {
             continue;
         }
-        let text = match fs::read_to_string(entry.path()) {
-            Ok(t) => t,
+        let text = match fs::read(entry.path()) {
+            Ok(b) => String::from_utf8(b).unwrap_or_else(|e| cp1252(e.as_bytes())),
             Err(e) => return Err(io::Error::new(e.kind(), format!("{name}: {e}"))),
         };
         let mut tracks = Vec::new();
@@ -528,7 +533,11 @@ pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String,
                 continue;
             }
             let candidate = Path::new(line);
-            let full = if candidate.is_absolute() { candidate.to_path_buf() } else { library.join(candidate) };
+            let full = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                fs::canonicalize(here.join(candidate)).unwrap_or_else(|_| library.join(candidate))
+            };
             let full = fs::canonicalize(&full).unwrap_or(full);
             if let Ok(rel) = full.strip_prefix(&library) {
                 tracks.push(rel.to_string_lossy().replace('\\', "/"));
@@ -539,6 +548,167 @@ pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String,
         }
     }
     Ok(out)
+}
+
+/// What a sync was asked for: the command line's flags and the window's settings, one set of fields.
+pub struct Request<'a> {
+    pub library: &'a Path,
+    pub volumes: &'a [PathBuf],
+    /// A size for each volume in GB, in place of what it has free. `None` (or a short list) means
+    /// measure it.
+    pub budget_gb: &'a [Option<f64>],
+    pub playlists: Option<&'a Path>,
+    pub sensme: bool,
+    /// Cover art and lyrics travel with their albums ([`SIDECAR_EXT`]).
+    pub extras: bool,
+}
+
+/// A plan ready to show, or to hand to [`crate::apply::apply`].
+pub struct Prepared {
+    pub plan: Plan,
+    pub volumes: Vec<Volume>,
+    pub manifests: Vec<Manifest>,
+    /// The bytes of music each volume holds now.
+    pub on_device: Vec<u64>,
+    /// Playlists the apply would write ([`crate::apply::playlists_to_write`]).
+    pub pending_playlists: usize,
+    /// Copies that will carry a SensMe tag.
+    pub tagged: usize,
+}
+
+impl Prepared {
+    /// What the plan copies and removes, and where, as one number. Show keeps it and Copy compares
+    /// it, so a library or player that changed in between cannot remove files nobody was shown.
+    pub fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for c in &self.plan.copies {
+            (c.volume, &c.rel).hash(&mut h);
+        }
+        self.plan.stale_files.hash(&mut h);
+        self.plan.stale_playlists.hash(&mut h);
+        h.finish()
+    }
+
+    /// Nothing to copy, remove or write: the player already matches.
+    pub fn is_empty(&self) -> bool {
+        self.plan.copies.is_empty()
+            && self.plan.stale_files.is_empty()
+            && self.plan.stale_playlists.is_empty()
+            && self.pending_playlists == 0
+    }
+}
+
+/// What [`prepare`] reports on the way, for each front end to word as it likes.
+pub enum Note<'a> {
+    Library {
+        files: usize,
+        bytes: u64,
+    },
+    /// SensMe analysis found already inside `tracks` files, and the unread bytes left behind.
+    Adopted {
+        tracks: usize,
+        saved: u64,
+    },
+    AdoptFailed(String),
+    Volume {
+        index: usize,
+        root: &'a Path,
+        on_device: u64,
+        files: usize,
+        budget: u64,
+    },
+    Playlists(usize),
+}
+
+/// Read the library and the volumes and make the plan. The one copy of this for the command line
+/// and the window: the plan a copy carries out is the plan that was shown.
+pub fn prepare(
+    req: &Request,
+    analysis: &mut crate::cache::Cache,
+    note: &mut dyn FnMut(Note),
+) -> Result<Prepared, String> {
+    let lib = req.library;
+    let mut source = scan_library(lib).map_err(|e| format!("{}: {e}", lib.display()))?;
+    if !req.extras {
+        source.retain(|f| !f.is_sidecar());
+    }
+    note(Note::Library { files: source.len(), bytes: source.iter().map(|f| f.size).sum() });
+    let full = |f: &SourceFile| lib.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+
+    // Analysis already inside the files (Music Center's tags): taken before the plan decides which
+    // copies can carry one, for a library that never ran `flint scan`.
+    if req.sensme {
+        let paths: Vec<PathBuf> = source.iter().map(full).collect();
+        match crate::musiccenter::adopt_all(&paths, analysis, |_| {}) {
+            Ok((0, _)) => {}
+            Ok((tracks, saved)) => {
+                analysis.save().map_err(|e| e.to_string())?;
+                note(Note::Adopted { tracks, saved });
+            }
+            Err(e) => note(Note::AdoptFailed(e.to_string())),
+        }
+    }
+
+    let mut volumes = Vec::new();
+    let mut scans = Vec::new();
+    let mut manifests = Vec::new();
+    let mut on_device = Vec::new();
+    for (index, root) in req.volumes.iter().enumerate() {
+        let scan = scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
+        let held: u64 = scan.files.values().map(|(size, _)| size).sum();
+        // What this volume may hold: whatever is free now, plus what its music already occupies,
+        // less the headroom — unless a size was given.
+        let budget = match req.budget_gb.get(index).copied().flatten() {
+            Some(gb) => (gb * 1024.0 * 1024.0 * 1024.0) as u64,
+            None => match crate::space::free_bytes(root) {
+                Some(free) => (free + held).saturating_sub(HEADROOM_BYTES),
+                None => {
+                    return Err(format!(
+                        "could not read the free space on {} — is the player still connected? \
+                         (a size can be given instead)",
+                        root.display()
+                    ))
+                }
+            },
+        };
+        note(Note::Volume { index, root, on_device: held, files: scan.files.len(), budget });
+        volumes.push(Volume { name: root.display().to_string(), root: root.clone(), budget_bytes: budget });
+        manifests.push(Manifest::load(root));
+        scans.push(scan);
+        on_device.push(held);
+    }
+
+    let playlists = match req.playlists {
+        Some(dir) => read_playlists(dir, lib).map_err(|e| format!("{}: {e}", dir.display()))?,
+        None => BTreeMap::new(),
+    };
+    if !playlists.is_empty() {
+        note(Note::Playlists(playlists.len()));
+    }
+
+    // A track is tagged when the analysis cache holds its result; `flint scan` fills it.
+    let tag_for = |f: &SourceFile| {
+        if req.sensme {
+            analysis.cached_key(&full(f)).unwrap_or_default()
+        } else {
+            String::new()
+        }
+    };
+    let plan = plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
+    let tagged = plan.copies.iter().filter(|c| !c.tag.is_empty()).count();
+    let pending_playlists = crate::apply::playlists_to_write(&plan, &volumes).len();
+    Ok(Prepared { plan, volumes, manifests, on_device, pending_playlists, tagged })
+}
+
+/// Windows-1252 to text: ASCII and Latin-1 as themselves, 0x80–0x9F through the table, and the
+/// five bytes the code page leaves undefined as U+FFFD.
+fn cp1252(bytes: &[u8]) -> String {
+    const HIGH: [char; 32] = [
+        '€', '\u{fffd}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{fffd}', 'Ž', '\u{fffd}',
+        '\u{fffd}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{fffd}', 'ž', 'Ÿ',
+    ];
+    bytes.iter().map(|&b| if (0x80..0xa0).contains(&b) { HIGH[usize::from(b - 0x80)] } else { char::from(b) }).collect()
 }
 
 #[cfg(test)]
@@ -663,6 +833,25 @@ mod tests {
         let back = Manifest::load(&d);
         assert_eq!(back.records["Artist/01 tab name.flac"].copy_size, 48);
         assert_eq!(Manifest::load(&d.join("nowhere")).records.len(), 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Audit E8: `../Album/01.flac` in `Library/Playlists/mix.m3u` is the album beside the folder,
+    /// a library-relative line still works, and a Windows-1252 file is read rather than failing.
+    #[test]
+    fn playlist_lines_resolve_from_the_playlists_folder_and_windows_text_is_read() {
+        let d = std::env::temp_dir().join(format!("flint-sync-m3u-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("Café/Album")).unwrap();
+        fs::create_dir_all(d.join("Playlists")).unwrap();
+        fs::write(d.join("Café/Album/01.flac"), b"xx").unwrap();
+        fs::write(d.join("Café/Album/02.flac"), b"xx").unwrap();
+        fs::write(d.join("Playlists/rel.m3u8"), "../Café/Album/01.flac\nCafé/Album/02.flac\n").unwrap();
+        fs::write(d.join("Playlists/win.m3u"), b"..\x2fCaf\xe9/Album/01.flac\r\n").unwrap();
+        let got = read_playlists(&d.join("Playlists"), &d).unwrap();
+        assert_eq!(got["rel.m3u8"], vec!["Café/Album/01.flac", "Café/Album/02.flac"]);
+        assert_eq!(got["win.m3u"], vec!["Café/Album/01.flac"]);
+        assert_eq!(cp1252(b"\x80\x81\xe9"), "€\u{fffd}é");
         fs::remove_dir_all(&d).unwrap();
     }
 

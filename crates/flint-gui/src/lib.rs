@@ -841,6 +841,8 @@ pub struct Model {
     /// True once a plan has been made and nothing has changed since, which is what makes COPY
     /// legal: this window never copies anything the user has not been shown first.
     pub planned: bool,
+    /// The shown plan's key, which Copy must still match.
+    pub plan_key: Option<u64>,
     /// What the library holds, once a job has read it.
     pub source: Option<LibraryFacts>,
     /// What each destination holds and what the plan would add, in the same order as `volumes`.
@@ -2080,7 +2082,10 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
                 r.progress = p;
             }
         }
-        Update::Planned => m.planned = job == Job::Plan,
+        Update::Planned(key) => {
+            m.planned = job == Job::Plan;
+            m.plan_key = Some(key);
+        }
         Update::Library(facts) => m.source = Some(facts),
         Update::Volume(i, facts) => {
             if let Some(slot) = m.dest.get_mut(i) {

@@ -105,6 +105,8 @@ pub enum Id {
     Theme(ThemePref),
     /// Read what is on the player: albums and who put them there, plays, likes, palettes.
     ReadPlayer,
+    /// On the player ▸ take the playlists the player has changed back to the PC.
+    PullPlaylists,
     /// Choose the folder of `.palette` files on this PC.
     PickPalettes,
     /// Check the PC's palettes with Cinder's own rules, against what the player holds.
@@ -382,6 +384,19 @@ pub struct AlbumRow {
     pub format: String,
     /// At least one file in it is in that volume's `flint-manifest.tsv`.
     pub by_flint: bool,
+    /// The stars the player shows for it: the mean of its rated tracks, `None` when none is.
+    pub rating: Option<u8>,
+    /// Listens the player has counted across its tracks.
+    pub plays: u32,
+}
+
+/// A playlist made on the player (`cinder_playlists`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PlaylistRow {
+    pub name: String,
+    pub tracks: usize,
+    /// The player has changed it since a PC last took it.
+    pub edited: bool,
 }
 
 /// One row of the player's `.scrobbler.log`.
@@ -415,6 +430,14 @@ pub struct PlayerFacts {
     /// Songs liked on the player (`cinder_loved.tsv`).
     pub likes: usize,
     pub palettes: Vec<PaletteFile>,
+    /// Tracks the player holds a rating for, and tracks it has counted a listen of
+    /// (`cinder_stats.tsv`).
+    pub rated: usize,
+    pub counted: usize,
+    /// The saved views (smart playlists), as (name, its rules in a line).
+    pub views: Vec<(String, String)>,
+    /// The playlists made on the player.
+    pub playlists: Vec<PlaylistRow>,
 }
 
 /// A job a worker thread runs. The window never runs one itself — see `win32::start`.
@@ -427,6 +450,9 @@ pub enum Job {
     Check,
     /// Read the player: what is on it and who put it there, plays, likes, palettes. Writes nothing.
     ReadPlayer,
+    /// Copy the playlists the player has changed into the PC's playlists folder, and take their
+    /// EDITED mark off on the player.
+    PullPlaylists,
     /// Check the palette folder with Cinder's rules, against the player's. Writes nothing.
     CheckPalettes,
     /// Copy the new and changed palettes to the player's `cinder_palettes`.
@@ -478,7 +504,7 @@ pub enum Hold {
 
 impl Job {
     /// Every job, in the order `code` numbers them.
-    pub const ALL: [Job; 18] = [
+    pub const ALL: [Job; 19] = [
         Job::Plan,
         Job::Apply,
         Job::Scan,
@@ -497,6 +523,7 @@ impl Job {
         Job::FetchPalettes,
         Job::FetchShop,
         Job::InstallShared,
+        Job::PullPlaylists,
     ];
 
     /// A small number for the platform layer's messages.
@@ -513,7 +540,7 @@ impl Job {
             Job::Plan | Job::Apply => &[Hold::Cache, Hold::Player],
             Job::Scan | Job::Import => &[Hold::Cache],
             Job::Check => &[Hold::Checks],
-            Job::ReadPlayer => &[Hold::Player],
+            Job::ReadPlayer | Job::PullPlaylists => &[Hold::Player],
             // The shop's list reads the folder and the player to say what each one is there as.
             Job::CheckPalettes
             | Job::SendPalettes
@@ -538,6 +565,7 @@ impl Job {
             Job::Plan
                 | Job::Apply
                 | Job::ReadPlayer
+                | Job::PullPlaylists
                 | Job::CheckPalettes
                 | Job::SendPalettes
                 | Job::SavePalette
@@ -557,6 +585,7 @@ impl Job {
             Job::Scan | Job::Import => &[Tab::SensMe],
             Job::Check => &[Tab::Check],
             Job::ReadPlayer => &[Tab::Player, Tab::Likes],
+            Job::PullPlaylists => &[Tab::Player],
             Job::CheckPalettes
             | Job::SendPalettes
             | Job::SavePalette
@@ -577,6 +606,7 @@ impl Job {
             Job::Import => "importing Music Center's analysis",
             Job::Check => "checking the FLACs",
             Job::ReadPlayer => "reading the player",
+            Job::PullPlaylists => "taking playlists back",
             Job::CheckPalettes => "checking palettes",
             Job::SendPalettes => "sending palettes",
             Job::SavePalette => "saving the palette",
@@ -1734,6 +1764,7 @@ pub fn job_of(id: Id) -> Option<Job> {
         Id::Import => Job::Import,
         Id::Check => Job::Check,
         Id::ReadPlayer => Job::ReadPlayer,
+        Id::PullPlaylists => Job::PullPlaylists,
         Id::CheckPalettes => Job::CheckPalettes,
         Id::SendPalettes => Job::SendPalettes,
         Id::LastfmSaveKey => Job::LastfmKey,
@@ -1759,6 +1790,10 @@ fn ready(m: &Model, job: Job) -> bool {
         Job::Scan | Job::Check => m.library.is_some(),
         Job::Import => true,
         Job::ReadPlayer => volume,
+        // Somewhere to put them, and something to take: a read that found a changed playlist.
+        Job::PullPlaylists => {
+            m.volumes[0].is_some() && m.playlists.is_some() && m.player.playlists.iter().any(|p| p.edited)
+        }
         Job::CheckPalettes => m.palette_dir.is_some() || m.volumes[0].is_some(),
         Job::SendPalettes => m.volumes[0].is_some() && !flint_core::palette::to_send(&m.palette_rows).is_empty(),
         Job::LastfmKey => !m.key_input.trim().is_empty() && !m.secret_input.trim().is_empty(),
@@ -2060,6 +2095,8 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
             m.scroll[Tab::Player.index()][Area::Table as usize] = 0;
             m.scroll[Tab::Likes.index()][Area::Table as usize] = 0;
         }
+        // Only the playlists changed; the album table stays where it was scrolled to.
+        Update::Playlists(rows) => m.player.playlists = rows,
         // Not under the shop's table: an install checks the folder, and the list stays put.
         Update::Palettes(rows) => {
             m.palette_rows = rows;
@@ -2816,6 +2853,8 @@ mod tests {
                     bytes: 1 << 28,
                     format: "FLAC".into(),
                     by_flint: i % 3 != 0,
+                    rating: (i % 4 == 0).then_some((i % 5 + 1) as u8),
+                    plays: (i * 3) as u32,
                 })
                 .collect(),
             plays: (0..40)
@@ -2829,6 +2868,13 @@ mod tests {
             unreadable: 1,
             likes: 3,
             palettes: vec![PaletteFile { volume: 0, name: "moss.palette".into(), bytes: 600 }],
+            rated: 12,
+            counted: 80,
+            views: vec![("Late favourites".into(), "4 stars and up · most played first".into())],
+            playlists: vec![
+                PlaylistRow { name: "Late Night".into(), tracks: 14, edited: true },
+                PlaylistRow { name: "Walk".into(), tracks: 9, edited: false },
+            ],
         };
         m.log = (0..60).map(|i| format!("line {i}")).collect();
         m

@@ -883,8 +883,17 @@ mod tests {
             items: vec![flint_core::palette::SharedPalette::new(&format!("{id}.palette"), body)],
             ..Default::default()
         };
+        // Take playlists back, which is only drawn once a read has found a playlist the player
+        // changed, and only live with a playlists folder to put it in.
+        let mut edited = m.clone();
+        edited.playlists = Some("/playlists".into());
+        edited.player = crate::PlayerFacts {
+            read: true,
+            playlists: vec![crate::PlaylistRow { name: "Late Night".into(), tracks: 3, edited: true }],
+            ..Default::default()
+        };
         let mut ids = ids;
-        for model in [&signed_in, &no_session, &typing, &editing, &shopping] {
+        for model in [&signed_in, &no_session, &typing, &editing, &shopping, &edited] {
             for t in crate::Tab::ALL {
                 let mut on = model.clone();
                 on.tab = t;
@@ -894,7 +903,7 @@ mod tests {
         for job in Job::ALL {
             let id = ids.iter().copied().find(|id| crate::job_of(*id) == Some(job));
             let id = id.unwrap_or_else(|| panic!("{job:?} has no button"));
-            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing, &shopping]
+            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing, &shopping, &edited]
                 .into_iter()
                 .find(|model| crate::live(model, id))
                 .unwrap_or_else(|| panic!("{job:?}'s button is never live"))

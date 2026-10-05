@@ -45,7 +45,7 @@ the player reads. Full comparison: [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md
 | Page | What it does |
 |---|---|
 | **Sync** | Plans the copy (what's added, removed, tagged, and whether it fits), then copies. |
-| **On the player** | Lists what's on each drive and whether Flint put it there. |
+| **On the player** | Lists what's on each drive and whether Flint put it there, with the ratings and play counts the player keeps. Takes playlists you changed on the player back to the PC. |
 | **Check** | Finds FLACs that aren't really lossless. Click a verdict or type to filter. |
 | **SensMe** | Analyses the library, or imports Music Center's results. |
 | **Likes & plays** | Sends scrobbles to Last.fm and syncs liked songs. |
@@ -137,6 +137,38 @@ volume (off by default: it reads every file's tags over USB).
 
 Network calls use the OS's own TLS (WinHTTP on Windows). Only a session key is stored, in
 `lastfm.conf`; revoke it at last.fm/settings/applications.
+
+## Ratings, play counts and the player's own playlists
+
+Cinder keeps three things on the player that Sony's database has no place for: star ratings and
+play counts (`cinder_stats.tsv`), smart playlists (`cinder_views.conf`) and the playlists you make
+on the player (`cinder_playlists`). A sync never removes any of them.
+
+**In the window**, *On the player* shows each album's stars and plays, and counts the rated tracks,
+the smart playlists and the playlists made on the player. The log names each one.
+
+```
+flint stats E:\ --to F:\                     show ratings, counts and smart playlists
+flint stats E:\ --to F:\ --apply             seed play counts, and move history with moved albums
+
+flint playlists E:\                          list the playlists made on the player
+flint playlists E:\ --to "D:\Playlists\From the player" --library "D:\Music" --apply
+```
+
+**Ratings follow their files.** The player keeps a rating under the file's path. When a sync
+moves an album between internal memory and the card, its ratings and play counts move with it; the
+window and `flint sync --apply` do this at the end of every copy. A track that is on neither drive
+keeps its row, so its rating returns if the album does. With the card out, nothing is moved.
+
+**Play counts from history.** `flint stats --apply` gives tracks the player has never counted
+their plays from `.scrobbler.log`. A count or rating the player already has is never changed.
+
+**Playlists changed on the player.** Cinder marks a playlist it has changed as EDITED until a PC
+has taken it. **Take playlists back** (or `flint playlists --to`) writes each changed playlist to
+the PC, naming the files in your music folder so any player can open it, and only then takes the
+mark off. The window puts them in `From the player` inside your playlists folder; a sync does not
+send that folder back, so the player does not end up with two copies. A file of the same name
+already on the PC that differs is kept beside the new one as `.bak`.
 
 ## Checking for fake FLACs
 

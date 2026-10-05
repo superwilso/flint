@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.2 — 2026-10-05
+
 ### Ratings, play counts and playlists from the player
 
 - **On the player** shows each album's stars and plays, as the player draws them, and counts the

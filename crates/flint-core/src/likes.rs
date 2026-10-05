@@ -618,6 +618,23 @@ fn atomic_write(path: &Path, body: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// The same file is in Flint's tree. A like is matched by these keys on both sides, so a
+    /// one-sided edit sends a like across as a different track (`contracts/likes_keys.tsv`).
+    #[test]
+    fn keys_match_the_shared_contract() {
+        let rows = include_str!("../../../contracts/likes_keys.tsv").lines().filter(|l| !l.starts_with('#'));
+        let mut seen = 0;
+        for row in rows {
+            let f: Vec<&str> = row.split('\t').collect();
+            assert_eq!(f.len(), 5, "{row:?}");
+            assert_eq!(keys::norm_artist(f[0]), f[2], "{row:?}");
+            assert_eq!(keys::norm_title(f[1]), f[3], "{row:?}");
+            assert_eq!(keys::primary_artist(f[0]), f[4], "{row:?}");
+            seen += 1;
+        }
+        assert_eq!(seen, 20);
+    }
+
     fn source(name: &str, tracks: &[(&str, &str)]) -> Source {
         Source::from_tracks(name, tracks.iter().map(|(a, t)| Track::new(a, t)))
     }

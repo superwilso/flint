@@ -691,6 +691,26 @@ mod tests {
         fs::remove_dir_all(&d).unwrap();
     }
 
+    /// What the player keeps for itself is not the sync's to remove, even when the sync is given
+    /// the top of the drive and the library no longer holds anything: ratings and play counts
+    /// (`cinder_stats.tsv`), saved views (`cinder_views.conf`) and the playlists made on the
+    /// player, with their covers (`cinder_playlists/`).
+    #[test]
+    fn the_players_own_files_are_never_planned_for_removal() {
+        let d = std::env::temp_dir().join(format!("flint-sync-own-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("cinder_playlists")).unwrap();
+        for f in ["cinder_stats.tsv", "cinder_views.conf", "cinder_playlists/night.m3u8", "cinder_playlists/night.jpg"]
+        {
+            fs::write(d.join(f), b"xx").unwrap();
+        }
+        let scan = scan_volume(&d).unwrap();
+        assert!(scan.playlists.is_empty(), "only playlists at the top of the volume are the sync's");
+        let p = plan(&[], &volumes(100, 0)[..1], &[scan], &[], &BTreeMap::new(), no_tags);
+        assert_eq!((p.stale_files, p.stale_playlists), (vec![], vec![]));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
     /// A temporary file a pulled cable left behind is swept; nothing else with a dot is touched.
     #[test]
     fn a_leftover_partial_is_swept_and_other_hidden_files_are_not() {

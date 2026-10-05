@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Ratings, play counts and playlists from the player
+
+- **On the player** shows each album's stars and plays, as the player draws them, and counts the
+  rated tracks, the tracks with a play, the smart playlists and the playlists made on the player.
+  Reading still changes nothing. The log names each smart playlist with its rules, and each
+  playlist.
+- **Ratings follow their files.** The player keeps a rating and a play count under the file's
+  path, so an album a sync moved between internal memory and the card used to show as unrated and
+  unplayed. Now its history moves with it, at the end of every copy in the window and of
+  `flint sync --apply`, and in `flint stats --apply`.
+  - Only a file that is found on the other drive moves a row. With the card out, nothing moves.
+  - A track that is on neither drive keeps its row, so the rating returns if the album does.
+  - If the player has already played the moved copy, the two rows become one: the plays add up,
+    the later date wins and the newer rating stands.
+- **Take playlists back** appears on *On the player* when the player has changed a playlist.
+  It writes each changed playlist to `From the player` inside your playlists folder, naming the
+  files in your music folder, and only then takes the EDITED mark off on the player.
+  - A sync does not send that folder back to the player.
+  - A playlist of the same name already there that differs is kept beside the new one as `.bak`.
+  - A playlist that cannot be written keeps its mark, so it is offered again.
+- **`flint playlists <drive> [--to <PC folder>] [--library <music folder>] [--apply]`** does the
+  same from a terminal. Alone, it lists the player's playlists and says which are EDITED.
+- **`flint stats`** also lists the smart playlists with their rules.
+- A sync never removes `cinder_stats.tsv`, `cinder_views.conf` or anything in `cinder_playlists`.
+  This was already so; a test now holds it.
+- New in `flint-core`: `views` (reads and writes `cinder_views.conf` as the player does) and
+  `playlists` (the player's own playlists).
+
+*Tested on a PC with folders standing in for the player's drives. Not yet run against a player.*
+
 ### Play counts from the player's history
 
 - **`flint stats <drive> [--to <sd card>] [--apply]`** gives tracks the player has never counted
@@ -13,7 +43,7 @@
 - The history is what is still in `.scrobbler.log`. Plays Flint has already sent to Last.fm and
   removed from the log are not counted, so seed before the first scrobble.
 - New in `flint-core`: `stats`, which reads and writes Cinder's `cinder_stats.tsv` byte for byte.
-  *Command line only; the window does not show ratings or counts yet.*
+  *Seeding is command line only.*
 
 ### Make and share palettes
 

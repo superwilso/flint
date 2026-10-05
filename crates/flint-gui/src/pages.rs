@@ -240,7 +240,7 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         PAD,
         y,
         inner,
-        "What is on each drive, and who put it there, from the flint-manifest.tsv Flint writes. Reading changes nothing.",
+        "What is on each drive and who put it there, with the ratings and play counts the player keeps. Reading changes nothing.",
     );
     y += 28;
     let have_volume = m.volumes.iter().any(Option::is_some);
@@ -271,7 +271,38 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
             (thousands(other_n), "albums not by Flint", if other_n > 0 { Tone::Caution } else { Tone::Plain }),
             (human(other_b), "not by Flint, left alone", Tone::Plain),
         ],
-    ) + 14;
+    ) + 10;
+    // What the player remembers and makes for itself. A playlist it has changed is the one thing
+    // here that is waiting on the PC, so that is the count the last card gives when there is one.
+    let edited = m.player.playlists.iter().filter(|p| p.edited).count();
+    let (lists_n, lists_word, lists_tone) = match edited {
+        0 => (m.player.playlists.len(), "playlists made on the player", Tone::Plain),
+        n => (n, "playlists to take back", Tone::Caution),
+    };
+    y = stats(
+        out,
+        PAD,
+        y,
+        inner,
+        &[
+            (thousands(m.player.rated), "tracks rated", Tone::Plain),
+            (thousands(m.player.counted), "tracks played", Tone::Plain),
+            (thousands(m.player.views.len()), "smart playlists", Tone::Plain),
+            (thousands(lists_n), lists_word, lists_tone),
+        ],
+    ) + 12;
+    // Offered only when there is something to take: a page with nothing changed has no button
+    // that could only ever be grey.
+    if edited > 0 {
+        let note = match m.playlists.as_deref() {
+            Some(folder) => format!(
+                "Copies them to {} and takes the EDITED mark off on the player.",
+                folder.join(crate::job::PULLED_FOLDER).display()
+            ),
+            None => "Choose a playlists folder on the Sync page first: that is where they go.".to_string(),
+        };
+        y = action(out, m, y, inner, Id::PullPlaylists, "Take playlists back", &note) + 14;
+    }
     let rows: Vec<Vec<(String, Tone, bool)>> = m
         .player
         .albums
@@ -283,6 +314,8 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
                 (thousands(a.files), Tone::Dim, false),
                 (human(a.bytes), Tone::Dim, false),
                 (a.format.clone(), Tone::Dim, false),
+                (stars(a.rating), Tone::Plain, false),
+                (if a.plays > 0 { thousands(a.plays as usize) } else { String::new() }, Tone::Dim, false),
                 (
                     if a.by_flint { "Flint".into() } else { "Not by Flint".into() },
                     if a.by_flint { Tone::Dim } else { Tone::Caution },
@@ -301,10 +334,26 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         y,
         inner,
         bottom,
-        &[("Album", 330), ("Drive", 70), ("Files", 60), ("Size", 90), ("Format", 80), ("Put there by", 0)],
+        // The album's name takes what the other columns leave, down to the narrowest window.
+        &[
+            ("Album", (inner - 542).clamp(180, 330)),
+            ("Drive", 60),
+            ("Files", 54),
+            ("Size", 84),
+            ("Format", 70),
+            ("Rating", 84),
+            ("Plays", 56),
+            ("Put there by", 0),
+        ],
         &rows,
         m.scrolled(Area::Table),
     );
+}
+
+/// An album's rating as stars, the way the player draws it. Nothing for an album with no rated
+/// track: an empty cell says "not rated" without five outlines on every row.
+fn stars(rating: Option<u8>) -> String {
+    "★".repeat(usize::from(rating.unwrap_or(0).min(5)))
 }
 
 // ── Check ──────────────────────────────────────────────────────────────────────────────────────

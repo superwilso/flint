@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use flint_core::{
-    apply, cache, engine, engine::Engine, flac, id3, lastfm, lastfm_sync, library, likes, lossless, musiccenter, smfmf,
-    space, sync,
+    apply, cache, engine, engine::Engine, flac, id3, lastfm, lastfm_sync, library, likes, lossless, musiccenter,
+    playlists, smfmf, space, stats, sync, views,
 };
 
 const USAGE: &str = "\
@@ -40,6 +40,8 @@ usage:
   flint lastfm key <api-key> <api-secret> | login <username> | status
   flint scrobble <volume> [<volume>...] [--apply]
   flint likes <volume> [<volume>...] [--apply] [--playlist]
+  flint stats <volume> [--to <sd card>] [--apply]
+  flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]
   flint gui [--dark | --light]
   flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|palette-new|palette-shop|settings|signed-in] [--dark]";
 
@@ -57,6 +59,7 @@ fn main() -> ExitCode {
         Some("scrobble") => scrobble_cmd(&args[1..]),
         Some("likes") => likes_cmd(&args[1..]),
         Some("stats") => stats_cmd(&args[1..]),
+        Some("playlists") => playlists_cmd(&args[1..]),
         Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
         Some("gui-preview") => gui_preview(&args[1..]),
         // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
@@ -95,6 +98,8 @@ struct Opts {
     dark: Option<bool>,
     /// `--playlist`: also write `Liked Songs.m3u8`, which costs a tag read per file on the player.
     playlist: bool,
+    /// `--library`: the PC's music folder, for `flint playlists` to name files in.
+    library: Option<PathBuf>,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -116,6 +121,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         state: None,
         dark: None,
         playlist: false,
+        library: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -130,6 +136,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--gb" => o.gb.push(value("--gb")?.parse().map_err(|_| "--gb needs a number".to_string())?),
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
             "--from" => o.from = Some(value("--from")?.into()),
+            "--library" => o.library = Some(value("--library")?.into()),
             "--state" => o.state = Some(value("--state")?),
             "--playlist" => o.playlist = true,
             "--dark" => o.dark = Some(true),
@@ -684,6 +691,12 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         out.playlists,
         if out.failed > 0 { format!(", {} failed", out.failed) } else { String::new() }
     );
+    // An album that changed volume took its files with it; its ratings and play counts are keyed
+    // by where the file was. Not worth failing a finished sync over: say so and carry on.
+    let drives: Vec<PathBuf> = o.to.iter().map(|root| stats::drive_root(root)).collect();
+    if let Err(e) = stats::follow_player(&drives, true, &mut |l| println!("{l}")) {
+        eprintln!("flint: ratings and play counts were not updated: {e}");
+    }
     Ok(())
 }
 
@@ -796,7 +809,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         // The pages behind the other tabs, with the kind of data a real read produces. Titles and
         // counts are placeholders, like every number in these previews.
         "player" | "likes" | "palettes" | "palette-new" | "palette-shop" => {
-            use flint_gui::{AlbumRow, PaletteFile, PlayRow, PlayerFacts, Tab};
+            use flint_gui::{AlbumRow, PaletteFile, PlayRow, PlayerFacts, PlaylistRow, Tab};
             ready(&mut m);
             let album = |folder: &str, volume: usize, files: usize, gb10: u64, format: &str, by_flint: bool| AlbumRow {
                 folder: folder.into(),
@@ -805,6 +818,14 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 bytes: gb10 * GB / 10,
                 format: format.into(),
                 by_flint,
+                // Placeholders like every number here: a spread of rated and unrated, played and not.
+                rating: match files % 4 {
+                    0 => Some(5),
+                    1 => Some(4),
+                    2 => None,
+                    _ => Some(3),
+                },
+                plays: (files as u32 * 7) % 40,
             };
             let play = |when: i64, track: &str, artist: &str, kind: &str| PlayRow {
                 when,
@@ -839,6 +860,16 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                     PaletteFile { volume: 0, name: "moss.palette".into(), bytes: 612 },
                     PaletteFile { volume: 0, name: "paper.palette".into(), bytes: 804 },
                     PaletteFile { volume: 0, name: "slate.palette".into(), bytes: 598 },
+                ],
+                rated: 37,
+                counted: 212,
+                views: vec![(
+                    "Late favourites".into(),
+                    "4 stars and up · played in the last 30 days · most played first".into(),
+                )],
+                playlists: vec![
+                    PlaylistRow { name: "Late Night On The Bus".into(), tracks: 14, edited: true },
+                    PlaylistRow { name: "Walk".into(), tracks: 9, edited: false },
                 ],
             };
             m.status = "8 albums on the player, 7 plays in the log, 14 songs liked".into();
@@ -1136,8 +1167,11 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `flint stats <volume> [--to <sd card>] [--apply]` — give tracks the player has never counted
-/// their plays from the scrobble log. Counts and ratings the player already has are left alone.
+/// `flint stats <volume> [--to <sd card>] [--apply]` — what the player remembers about its tracks.
+///
+/// Ratings and play counts whose album has moved between internal memory and the card follow it;
+/// tracks the player has never counted get their plays from the scrobble log (counts and ratings
+/// the player already has are left alone); and the saved views are listed.
 fn stats_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let mut roots: Vec<PathBuf> = o.pos.iter().map(PathBuf::from).collect();
@@ -1145,9 +1179,77 @@ fn stats_cmd(args: &[String]) -> Result<(), String> {
     if roots.is_empty() {
         return Err("give the player's drive, internal storage first: flint stats E:\\ [--to F:\\] [--apply]".into());
     }
-    let report = flint_core::stats::seed_player(&roots, o.apply, &mut |l| println!("{l}"))?;
-    if !o.apply && report.seeded.tracks > 0 {
-        println!("\nnothing was written. Add --apply to seed {} track(s).", thousands(report.seeded.tracks as u64));
+    let followed = stats::follow_player(&roots, o.apply, &mut |l| println!("{l}"))?;
+    let report = stats::seed_player(&roots, o.apply, &mut |l| println!("{l}"))?;
+    let saved = views::load(&roots[0].join(views::FILE_NAME));
+    if !saved.is_empty() {
+        println!("saved views (smart playlists): {}", saved.len());
+        for v in &saved {
+            println!("  {} — {}", v.name, v.describe());
+        }
+    }
+    if !o.apply {
+        let mut todo = Vec::new();
+        if report.seeded.tracks > 0 {
+            todo.push(format!("seed {} track(s)", thousands(report.seeded.tracks as u64)));
+        }
+        if followed.moved > 0 {
+            todo.push(format!(
+                "move the history of {} track(s) to where the files are",
+                thousands(followed.moved as u64)
+            ));
+        }
+        if !todo.is_empty() {
+            println!("\nnothing was written. Add --apply to {}.", todo.join(" and "));
+        }
+    }
+    Ok(())
+}
+
+/// `flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]` — the
+/// playlists made on the player. Alone it lists them. With `--to` it takes the ones the player
+/// has changed back to the PC and takes their EDITED mark off.
+fn playlists_cmd(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    let Some(drive) = o.pos.first().map(PathBuf::from) else {
+        return Err(
+            "give the player's drive: flint playlists E:\\ [--to <PC folder>] [--library <library folder>] [--apply]"
+                .into(),
+        );
+    };
+    let Some(to) = o.to.first() else {
+        let lists = playlists::read_player(&drive).map_err(|e| format!("{}: {e}", drive.display()))?;
+        if lists.is_empty() {
+            println!("no playlists have been made on this player.");
+            return Ok(());
+        }
+        for l in &lists {
+            println!(
+                "  {}{} — {} track(s)",
+                if l.edited.is_some() { "EDITED  " } else { "        " },
+                l.name,
+                l.tracks
+            );
+        }
+        let edited = lists.iter().filter(|l| l.edited.is_some()).count();
+        if edited > 0 {
+            println!("\n{edited} changed on the player. Add --to <PC folder> to take them back.");
+        }
+        return Ok(());
+    };
+    let report = playlists::pull(&drive, to, o.library.as_deref(), o.apply, &mut |l| println!("{l}"))?;
+    if report.edited == 0 {
+        println!("{} playlist(s) on the player, none changed since a PC last took them.", report.on_player);
+    } else if !o.apply {
+        println!("\nnothing was written. Add --apply to take {} playlist(s) back.", report.edited);
+    } else {
+        println!(
+            "\ndone: {} pulled to {}, {} EDITED mark(s) taken off{}",
+            report.pulled,
+            to.display(),
+            report.cleared,
+            if report.failed > 0 { format!(", {} failed", report.failed) } else { String::new() }
+        );
     }
     Ok(())
 }

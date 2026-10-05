@@ -104,6 +104,8 @@ pub enum Update {
     Checked(usize),
     /// What "Read the player" found.
     Player(Box<crate::PlayerFacts>),
+    /// The playlists made on the player, read again after some were taken back.
+    Playlists(Vec<crate::PlaylistRow>),
     /// The palette check's rows.
     Palettes(Vec<flint_core::palette::Row>),
     /// The editor's palette was written as this file.
@@ -134,6 +136,7 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::Import => import_job(s, emit),
         Job::Check => check_job(s, cancel, emit),
         Job::ReadPlayer => read_player_job(s, emit),
+        Job::PullPlaylists => pull_playlists_job(s, emit),
         Job::CheckPalettes => palettes_job(s, false, emit),
         Job::SendPalettes => palettes_job(s, true, emit),
         Job::SavePalette => save_palette_job(s, emit),
@@ -755,6 +758,14 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     )
     .map_err(|e| e.to_string())?;
 
+    // An album that changed volume took its files with it; its ratings and play counts are keyed
+    // by where the file was, so they are moved to where it is now. Not worth failing a finished
+    // copy over: a line in the log either way.
+    let drives: Vec<PathBuf> = s.volumes.iter().map(|root| flint_core::stats::drive_root(root)).collect();
+    if let Err(e) = flint_core::stats::follow_player(&drives, true, &mut |l| emit(Update::Log(l.to_string()))) {
+        emit(Update::Log(format!("ratings and play counts were not updated: {e}")));
+    }
+
     emit(Update::Progress(Some(1.0)));
     let mut done = format!(
         "Copied {} files ({}), {} tagged, {} removed, {} playlists written.",
@@ -938,6 +949,7 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
     }
     (facts.plays, facts.unreadable) = plays_on(&s.volumes);
     facts.palettes.sort_by_key(|p| p.name.to_lowercase());
+    remembered_by_the_player(s, &mut facts, emit);
     let summary = format!(
         "{} albums on the player, {} plays in the log, {} songs liked",
         crate::thousands(facts.albums.len()),
@@ -947,6 +959,102 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
     emit(Update::Player(Box::new(facts)));
     emit(Update::Progress(Some(1.0)));
     Ok(summary)
+}
+
+/// Where the window puts the playlists it takes back: a folder of their own inside the PC's
+/// playlists folder. A sync reads the playlists folder's top level only, so what lands here is
+/// kept on the PC without being sent back to the player as a second copy of a playlist the player
+/// already has.
+pub const PULLED_FOLDER: &str = "From the player";
+
+/// Take the playlists the player has changed back to the PC and take their EDITED mark off
+/// (`flint_core::playlists::pull`). The tracks are named as the files in the music folder, so the
+/// playlist opens in any player on the PC.
+fn pull_playlists_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::{playlists, stats};
+    let Some(internal) = s.volumes.first().map(|root| stats::drive_root(root)) else {
+        return Err("choose the player's drive first".into());
+    };
+    let Some(folder) = &s.playlists else {
+        return Err("choose a playlists folder on the Sync page first: that is where they go".into());
+    };
+    emit(Update::Progress(None));
+    let to = folder.join(PULLED_FOLDER);
+    let library = (!s.library.as_os_str().is_empty()).then_some(s.library.as_path());
+    let report = playlists::pull(&internal, &to, library, true, &mut |l| emit(Update::Log(l.to_string())))?;
+    // Read them again: the page's count of playlists waiting is what just changed.
+    let rows = playlists::read_player(&internal)
+        .map_err(|e| format!("{}: {e}", internal.display()))?
+        .into_iter()
+        .map(|l| crate::PlaylistRow { name: l.name, tracks: l.tracks, edited: l.edited.is_some() })
+        .collect();
+    emit(Update::Playlists(rows));
+    emit(Update::Progress(Some(1.0)));
+    Ok(match (report.pulled, report.failed) {
+        (0, 0) => "No playlist on the player has changed since it was last taken back.".to_string(),
+        (n, 0) => format!("Took {n} playlist(s) back to {}. Their EDITED marks are off.", to.display()),
+        (n, f) => {
+            format!("Took {n} playlist(s) back to {}; {f} failed and kept their marks — see the log.", to.display())
+        }
+    })
+}
+
+/// What the player keeps for itself, on its internal memory: ratings and play counts
+/// (`cinder_stats.tsv`), saved views (`cinder_views.conf`) and the playlists made on it
+/// (`cinder_playlists`). The stars and plays go onto the album rows; the views and the playlists
+/// are named in the log, where a list of any length can be read.
+fn remembered_by_the_player(s: &Settings, facts: &mut crate::PlayerFacts, emit: &mut dyn FnMut(Update)) {
+    use flint_core::{playlists, stats, views};
+    let drives: Vec<PathBuf> = s.volumes.iter().map(|root| stats::drive_root(root)).collect();
+    let Some(internal) = drives.first() else { return };
+
+    let remembered = stats::Stats::load(&internal.join(stats::FILE_NAME));
+    facts.rated = remembered.tracks.values().filter(|t| t.rating > 0).count();
+    facts.counted = remembered.tracks.values().filter(|t| t.plays > 0).count();
+    // (volume, album folder) -> its tracks' ratings and plays. A row belongs to the album whose
+    // folder its file is in, on the volume the player says it is on.
+    let mut by_album: std::collections::HashMap<(usize, String), (Vec<u8>, u32)> = std::collections::HashMap::new();
+    for (path, stat) in &remembered.tracks {
+        let Some(pc) = stats::pc_path(&drives, path) else { continue };
+        let Some((v, root)) = s.volumes.iter().enumerate().find(|(_, root)| pc.starts_with(root)) else { continue };
+        let Ok(rel) = pc.strip_prefix(root) else { continue };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let folder = rel.rsplit_once('/').map_or(".", |(f, _)| f).to_string();
+        let entry = by_album.entry((v, folder)).or_default();
+        entry.0.push(stat.rating);
+        entry.1 = entry.1.saturating_add(stat.plays);
+    }
+    for album in &mut facts.albums {
+        if let Some((ratings, plays)) = by_album.get(&(album.volume, album.folder.clone())) {
+            album.rating = stats::album_rating(ratings.iter().copied());
+            album.plays = *plays;
+        }
+    }
+
+    facts.views = views::load(&internal.join(views::FILE_NAME))
+        .into_iter()
+        .map(|v| {
+            let rules = v.describe();
+            (v.name, rules)
+        })
+        .collect();
+    for (name, rules) in &facts.views {
+        emit(Update::Log(format!("smart playlist  {name} — {rules}")));
+    }
+    match playlists::read_player(internal) {
+        Ok(lists) => {
+            for l in lists {
+                emit(Update::Log(format!(
+                    "playlist  {}{} — {} tracks",
+                    l.name,
+                    if l.edited.is_some() { "  (changed on the player)" } else { "" },
+                    l.tracks
+                )));
+                facts.playlists.push(crate::PlaylistRow { name: l.name, tracks: l.tracks, edited: l.edited.is_some() });
+            }
+        }
+        Err(e) => emit(Update::Log(format!("could not read the player's playlists: {e}"))),
+    }
 }
 
 /// The album folders on volume `v`: a file's folder is its album, and a folder is Flint's when any
@@ -992,6 +1100,8 @@ fn albums_on(v: usize, scan: &sync::DeviceScan, manifest: &sync::Manifest) -> Ve
             bytes: a.bytes,
             format: a.formats.into_iter().max_by_key(|(_, n)| *n).map(|(f, _)| f).unwrap_or_default(),
             by_flint: a.by_flint,
+            rating: None,
+            plays: 0,
         })
         .collect()
 }
@@ -1089,6 +1199,48 @@ mod tests {
         .unwrap();
         assert!(word.contains("nothing to do"), "{word}");
         assert!(!planned, "there is nothing to copy, so COPY must stay dark");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An album the plan moves to the other volume takes its rating and its play count with it.
+    /// They are kept by the player under the file's path (`cinder_stats.tsv`), so a move that left
+    /// them behind would show the album unrated and unplayed after a sync.
+    #[test]
+    fn a_rating_follows_an_album_the_sync_moves_to_the_card() {
+        let root = tmp("follow");
+        let library = root.join("music");
+        let (internal, card) = (root.join("internal"), root.join("card"));
+        fs::create_dir_all(&internal).unwrap();
+        fs::create_dir_all(&card).unwrap();
+        write_flac(&library.join("Artist - Album/01 One.flac"), 2048);
+        let cancel = AtomicBool::new(false);
+        let with_budgets = |internal_gb: f64, card_gb: f64| Settings {
+            volumes: vec![internal.clone(), card.clone()],
+            budget_gb: vec![Some(internal_gb), Some(card_gb)],
+            cache: root.join("cache"),
+            jobs: 1,
+            ..Settings::new(library.clone())
+        };
+
+        // First the album goes to internal memory, and the player rates and plays it there.
+        run(Job::Apply, &with_budgets(1.0, 0.0), &cancel, &mut |_| {}).unwrap();
+        assert!(internal.join("Artist - Album/01 One.flac").is_file());
+        let stats = internal.join(flint_core::stats::FILE_NAME);
+        fs::write(&stats, "#CINDER-STATS/1\n/contents/Artist - Album/01 One.flac\t5\t12\t900\n").unwrap();
+
+        // Then internal memory has no room for it, so the plan moves it to the card.
+        let mut lines = Vec::new();
+        run(Job::Apply, &with_budgets(0.0, 1.0), &cancel, &mut |u| {
+            if let Update::Log(l) = u {
+                lines.push(l);
+            }
+        })
+        .unwrap();
+        assert!(card.join("Artist - Album/01 One.flac").is_file() && !internal.join("Artist - Album").exists());
+        let after = fs::read_to_string(&stats).unwrap();
+        assert!(after.contains("/contents_ext/Artist - Album/01 One.flac\t5\t12\t900"), "{after}");
+        assert!(!after.contains("/contents/Artist"), "the old row was left behind: {after}");
+        assert!(lines.iter().any(|l| l.contains("their history went with them")), "{lines:#?}");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1212,6 +1364,86 @@ mod tests {
         assert!(word.contains("2 albums"), "{word}");
         assert_eq!(walk(&vol), before, "reading the player wrote to it");
         let _ = fs::remove_dir_all(&vol);
+    }
+
+    /// What the player keeps for itself reaches the page: stars and plays on the album rows, the
+    /// saved views and the playlists made on it. Reading writes nothing; taking the changed
+    /// playlists back writes the PC's copy, in the music folder's own paths, and only then takes
+    /// the EDITED mark off the player's file.
+    #[test]
+    fn the_players_own_data_is_read_and_changed_playlists_are_taken_back() {
+        let root = tmp("remembered");
+        let (vol, library, pc) = (root.join("player"), root.join("music"), root.join("playlists"));
+        fs::create_dir_all(vol.join("MUSIC/A/One")).unwrap();
+        fs::create_dir_all(vol.join("MUSIC/B/Two")).unwrap();
+        fs::create_dir_all(vol.join("cinder_playlists")).unwrap();
+        fs::create_dir_all(library.join("A/One")).unwrap();
+        for f in ["MUSIC/A/One/01.flac", "MUSIC/A/One/02.flac", "MUSIC/B/Two/01.mp3"] {
+            fs::write(vol.join(f), b"fLaC....").unwrap();
+        }
+        fs::write(library.join("A/One/01.flac"), b"fLaC....").unwrap();
+        fs::write(
+            vol.join("cinder_stats.tsv"),
+            "#CINDER-STATS/1\n/contents/MUSIC/A/One/01.flac\t5\t3\t900\n/contents/MUSIC/A/One/02.flac\t0\t2\t800\n\
+             /contents/MUSIC/B/Two/01.mp3\t4\t0\t0\n/contents/MUSIC/Gone/01.flac\t1\t9\t1\n",
+        )
+        .unwrap();
+        fs::write(vol.join("cinder_views.conf"), "[Late favourites]\nrating=4\nsort=plays\n").unwrap();
+        let late = "#EXTM3U\n#PLAYLIST:Late Night\n#CINDER-EDITED:1790000000\n/contents/MUSIC/A/One/01.flac\n/contents/MUSIC/B/Two/01.mp3\n";
+        fs::write(vol.join("cinder_playlists/late.m3u8"), late).unwrap();
+        fs::write(vol.join("cinder_playlists/walk.m3u8"), "#EXTM3U\n/contents/MUSIC/A/One/02.flac\n").unwrap();
+        let before: Vec<_> = walk(&vol);
+
+        let mut s = Settings::new(library.clone());
+        s.volumes = vec![vol.clone()];
+        let (mut facts, mut lines) = (None, Vec::new());
+        run(Job::ReadPlayer, &s, &AtomicBool::new(false), &mut |u| match u {
+            Update::Player(f) => facts = Some(*f),
+            Update::Log(l) => lines.push(l),
+            _ => {}
+        })
+        .unwrap();
+        let f = facts.expect("the job reports what it read");
+        assert_eq!((f.rated, f.counted), (3, 3), "every row in the file, whether or not its album is still here");
+        let albums: Vec<(&str, Option<u8>, u32)> =
+            f.albums.iter().map(|a| (a.folder.as_str(), a.rating, a.plays)).collect();
+        assert_eq!(albums, vec![("MUSIC/A/One", Some(5), 5), ("MUSIC/B/Two", Some(4), 0)]);
+        assert_eq!(f.views, vec![("Late favourites".to_string(), "4 stars and up · most played first".to_string())]);
+        let lists: Vec<(&str, usize, bool)> =
+            f.playlists.iter().map(|p| (p.name.as_str(), p.tracks, p.edited)).collect();
+        assert_eq!(lists, vec![("Late Night", 2, true), ("walk", 1, false)]);
+        assert!(lines.iter().any(|l| l.starts_with("smart playlist  Late favourites")), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("Late Night  (changed on the player)")), "{lines:#?}");
+        assert_eq!(walk(&vol), before, "reading the player wrote to it");
+
+        // With nowhere to put them, nothing is taken and nothing changes.
+        assert!(run(Job::PullPlaylists, &s, &AtomicBool::new(false), &mut |_| {}).is_err());
+        assert_eq!(walk(&vol), before);
+
+        s.playlists = Some(pc.clone());
+        let mut rows = None;
+        let word = run(Job::PullPlaylists, &s, &AtomicBool::new(false), &mut |u| {
+            if let Update::Playlists(r) = u {
+                rows = Some(r);
+            }
+        })
+        .unwrap();
+        assert!(word.starts_with("Took 1 playlist(s) back"), "{word}");
+        assert!(rows.expect("the page is told").iter().all(|p| !p.edited), "the mark is off, so nothing is waiting");
+        let on_pc = fs::read_to_string(pc.join(PULLED_FOLDER).join("late.m3u8")).unwrap();
+        let in_library = std::path::absolute(library.join("A").join("One").join("01.flac")).unwrap();
+        assert_eq!(on_pc, format!("#EXTM3U\n#PLAYLIST:Late Night\n{}\nB/Two/01.mp3\n", in_library.display()));
+        assert_eq!(
+            fs::read_to_string(vol.join("cinder_playlists/late.m3u8")).unwrap(),
+            late.replace("#CINDER-EDITED:1790000000\n", "")
+        );
+        assert!(
+            !pc.join(PULLED_FOLDER).join("walk.m3u8").exists(),
+            "a playlist the player has not changed stays where it is"
+        );
+        // What was taken back is kept on the PC, not sent to the player again by the next sync.
+        assert!(sync::read_playlists(&pc, &library).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// CHECK writes nothing. SEND copies what the check called new or changed — lowercased, through

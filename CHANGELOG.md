@@ -94,6 +94,20 @@ ends on the totals. Deleting is the one thing a sync cannot undo. `flint sync` w
 the same gap, with 10 in place of 12: it now prints every removal, then `in all: N to copy, M to
 remove`.
 
+### One sync, two front ends
+
+- `flint sync` and the window's sync were two copies of the same ~150 lines and had already
+  drifted: the window could leave cover art and lyrics on the PC, the command line could not. Both
+  now call one `sync::prepare`, and `flint sync --no-extras` is the window's extras switch.
+- **Copy carries out the plan you were shown, or nothing.** The window's Copy planned afresh, so an
+  album deleted from the library after **Show what would happen** was swept from the player without
+  ever being listed. Copy now refuses when what it would copy or remove differs from the plan shown,
+  and asks for Show again (audit E2).
+- **Playlists read as M3U means them.** A relative line is taken from the playlist's own folder
+  first (`../Album/01.flac` in `Library/Playlists/`), then from the library as before; a playlist
+  saved in Windows' code page is read instead of failing the whole sync (audit E8).
+- `lastfm.conf` is created owner-only rather than made so after it is written (audit E11).
+
 ### Fixed (audit 2026-10-01)
 
 - **Scrobble times were off by your time zone.** Cinder writes its log with `#TZ/UNKNOWN`: the

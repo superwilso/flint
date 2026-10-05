@@ -34,7 +34,7 @@ usage:
   flint check <library folder | file.flac> [--jobs N] [--cache dir] [--all] [--verbose]
   flint analyse <track> [--out result.smfmf] [--param id=value]...
   flint tag-copy <src.flac|src.mp3> <dst> [--smfmf result.smfmf] [--param id=value]...
-  flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme]
+  flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras]
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
   flint lastfm key <api-key> <api-secret> | login <username> | status
@@ -92,6 +92,8 @@ struct Opts {
     playlists: Option<PathBuf>,
     apply: bool,
     no_sensme: bool,
+    /// Leave cover art and lyrics on the PC (the window's "extras" switch, off).
+    no_extras: bool,
     from: Option<PathBuf>,
     state: Option<String>,
     /// `--dark` / `--light`; `None` means follow Windows.
@@ -117,6 +119,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         playlists: None,
         apply: false,
         no_sensme: false,
+        no_extras: false,
         from: None,
         state: None,
         dark: None,
@@ -143,6 +146,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--light" => o.dark = Some(false),
             "--apply" => o.apply = true,
             "--no-sensme" => o.no_sensme = true,
+            "--no-extras" => o.no_extras = true,
             "--verbose" => o.verbose = true,
             "--jobs" => o.jobs = Some(value("--jobs")?.parse().map_err(|_| "--jobs needs a number".to_string())?),
             s if s.starts_with("--") => return Err(format!("unknown option {s}\n{USAGE}")),
@@ -544,86 +548,42 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     let mut analysis = cache::Cache::open(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
 
     println!("reading {}", library.display());
-    let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
-    let source_bytes: u64 = source.iter().map(|f| f.size).sum();
-    println!("  {} tracks, {}", source.len(), space::human(source_bytes));
-
-    // ANALYSIS THAT IS ALREADY IN THE FILES. Someone who runs Sony's Music Center has tags in their
-    // library already, and may never run `flint scan` at all — so the tags are taken here, before
-    // the plan decides which copies can carry one. Reading them costs a metadata read per file that
-    // the cache does not already know, and no decode.
-    if !o.no_sensme {
-        let paths: Vec<PathBuf> =
-            source.iter().map(|f| library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR))).collect();
-        match musiccenter::adopt_all(&paths, &mut analysis, |_| {}) {
-            Ok((0, _)) => {}
-            Ok((n, saved)) => {
-                analysis.save().map_err(|e| e.to_string())?;
-                println!(
-                    "  {n} already carried Sony's analysis — taken from the files{}",
-                    if saved > 0 {
-                        format!(", {} of chunks the player never reads left behind", space::human(saved))
-                    } else {
-                        String::new()
-                    }
-                );
+    let budget_gb: Vec<Option<f64>> = o.gb.iter().copied().map(Some).collect();
+    let req = sync::Request {
+        library,
+        volumes: &o.to,
+        budget_gb: &budget_gb,
+        playlists: o.playlists.as_deref(),
+        sensme: !o.no_sensme,
+        extras: !o.no_extras,
+    };
+    let p = sync::prepare(&req, &mut analysis, &mut |n| match n {
+        sync::Note::Library { files, bytes } => println!("  {files} tracks, {}", space::human(bytes)),
+        sync::Note::Adopted { tracks, saved } => println!(
+            "  {tracks} already carried Sony's analysis — taken from the files{}",
+            if saved > 0 {
+                format!(", {} of chunks the player never reads left behind", space::human(saved))
+            } else {
+                String::new()
             }
-            Err(e) => eprintln!("flint: reading existing SensMe tags: {e}"),
-        }
-    }
-
-    let mut volumes = Vec::new();
-    let mut scans = Vec::new();
-    let mut manifests = Vec::new();
-    for (i, root) in o.to.iter().enumerate() {
-        let scan = sync::scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
-        let on_device: u64 = scan.files.values().map(|(size, _)| size).sum();
-        // What this volume may hold: whatever is free now, plus what its music already occupies,
-        // less the headroom. A --gb says so outright instead.
-        let budget_bytes = match o.gb.get(i) {
-            Some(gb) => (gb * 1024.0 * 1024.0 * 1024.0) as u64,
-            None => match space::free_bytes(root) {
-                Some(free) => (free + on_device).saturating_sub(sync::HEADROOM_BYTES),
-                None => return Err(format!("could not read the free space on {}; give it as --gb N", root.display())),
-            },
-        };
-        println!(
-            "  {} holds {} in {} files, budget {}",
+        ),
+        sync::Note::AdoptFailed(e) => eprintln!("flint: reading existing SensMe tags: {e}"),
+        sync::Note::Volume { root, on_device, files, budget, .. } => println!(
+            "  {} holds {} in {files} files, budget {}",
             root.display(),
             space::human(on_device),
-            scan.files.len(),
-            space::human(budget_bytes)
-        );
-        volumes.push(sync::Volume { name: root.display().to_string(), root: root.clone(), budget_bytes });
-        manifests.push(sync::Manifest::load(root));
-        scans.push(scan);
-    }
-
-    let playlists = match &o.playlists {
-        Some(dir) => sync::read_playlists(dir, library).map_err(|e| format!("{}: {e}", dir.display()))?,
-        None => std::collections::BTreeMap::new(),
-    };
-    if !playlists.is_empty() {
-        println!("  {} playlists", playlists.len());
-    }
-
-    // A track is tagged when the analysis cache already holds its result; `flint scan` fills it.
-    let tag_for = |f: &sync::SourceFile| {
-        if o.no_sensme {
-            return String::new();
-        }
-        let path = library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        analysis.cached_key(&path).unwrap_or_default()
-    };
-    let plan = sync::plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
-    let tagged = plan.copies.iter().filter(|c| !c.tag.is_empty()).count();
-    let pending_playlists = apply::playlists_to_write(&plan, &volumes);
+            space::human(budget)
+        ),
+        sync::Note::Playlists(n) => println!("  {n} playlists"),
+    })?;
+    let nothing = p.is_empty();
+    let sync::Prepared { plan, volumes, mut manifests, tagged, pending_playlists, .. } = p;
     println!(
         "\nplan: {} to copy ({} tagged with SensMe data), {} to remove, {} playlists to write",
         plan.copies.len(),
         tagged,
         plan.stale_files.len() + plan.stale_playlists.len(),
-        pending_playlists.len()
+        pending_playlists
     );
     for (i, v) in volumes.iter().enumerate() {
         let albums = plan.assignments.values().filter(|&&a| a == i).count();
@@ -632,11 +592,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     if !plan.skipped.is_empty() {
         println!("  no room for {} albums: {}", plan.skipped.len(), plan.skipped.join(", "));
     }
-    if plan.copies.is_empty()
-        && plan.stale_files.is_empty()
-        && plan.stale_playlists.is_empty()
-        && pending_playlists.is_empty()
-    {
+    if nothing {
         println!("nothing to do.");
         return Ok(());
     }

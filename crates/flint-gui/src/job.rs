@@ -34,6 +34,8 @@ pub struct Settings {
     pub playlists: Option<PathBuf>,
     /// Write SensMe tags into the copies.
     pub sensme: bool,
+    /// Copy only if the plan is still this one ([`sync::Prepared::key`] of the plan shown).
+    pub expect_plan: Option<u64>,
     /// Copy cover art and lyrics that sit beside the music.
     pub extras: bool,
     pub cache: PathBuf,
@@ -64,6 +66,7 @@ impl Settings {
             budget_gb: Vec::new(),
             playlists: None,
             sensme: true,
+            expect_plan: None,
             extras: true,
             cache: cache::default_dir(),
             jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
@@ -88,8 +91,8 @@ pub enum Update {
     Log(String),
     /// 0.0..=1.0, or `None` for a job with no measurable length.
     Progress(Option<f32>),
-    /// A plan was made and shown, so COPY may be offered.
-    Planned,
+    /// A plan was made and shown, so COPY may be offered. Its [`sync::Prepared::key`].
+    Planned(u64),
     /// What the library turned out to hold. The window draws it under the folder's name.
     Library(crate::LibraryFacts),
     /// What a destination holds, and what this plan would add to it. Sent twice per volume: once
@@ -585,105 +588,55 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
 
     emit(Update::Say(format!("reading {}", s.library.display())));
     emit(Update::Progress(None));
-    let mut source = sync::scan_library(&s.library).map_err(|e| format!("{}: {e}", s.library.display()))?;
-    if !s.extras {
-        source.retain(|f| !f.is_sidecar());
-    }
-    let bytes: u64 = source.iter().map(|f| f.size).sum();
-    emit(Update::Library(crate::LibraryFacts { files: source.len(), bytes }));
-    emit(Update::Say(format!("{} files, {}", source.len(), space::human(bytes))));
-
-    // Analysis already inside the files — see `musiccenter`. Taken before the plan decides which
-    // copies can carry a tag, exactly as the command line does it.
-    if s.sensme {
-        let paths: Vec<PathBuf> =
-            source.iter().map(|f| s.library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR))).collect();
-        match musiccenter::adopt_all(&paths, &mut analysis, |_| {}) {
-            Ok((0, _)) => {}
-            Ok((n, saved)) => {
-                analysis.save().map_err(|e| e.to_string())?;
-                emit(Update::Say(format!(
-                    "{n} already carried Sony's analysis — taken from the files{}",
-                    if saved > 0 {
-                        format!(", {} of unread chunks left behind", space::human(saved))
-                    } else {
-                        String::new()
-                    }
-                )));
-            }
-            Err(e) => emit(Update::Log(format!("reading existing SensMe tags: {e}"))),
-        }
-    }
-
-    let mut volumes = Vec::new();
-    let mut scans = Vec::new();
-    let mut manifests = Vec::new();
-    for (i, root) in s.volumes.iter().enumerate() {
-        let scan = sync::scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
-        let on_device: u64 = scan.files.values().map(|(size, _)| size).sum();
-        // What this volume may hold: whatever is free now, plus what its music already occupies,
-        // less the headroom — the same sum the command line does.
-        let budget = match s.budget_gb.get(i).copied().flatten() {
-            Some(gb) => (gb * 1024.0 * 1024.0 * 1024.0) as u64,
-            None => match space::free_bytes(root) {
-                Some(free) => (free + on_device).saturating_sub(sync::HEADROOM_BYTES),
-                None => {
-                    return Err(format!(
-                        "could not read the free space on {} — is the player still connected?",
-                        root.display()
-                    ))
-                }
-            },
-        };
-        emit(Update::Volume(i, crate::VolumeFacts { on_device, budget, to_copy: 0, albums: 0 }));
-        emit(Update::Log(format!(
-            "{} holds {} in {} files, budget {}",
-            root.display(),
-            space::human(on_device),
-            scan.files.len(),
-            space::human(budget)
-        )));
-        volumes.push(sync::Volume { name: root.display().to_string(), root: root.clone(), budget_bytes: budget });
-        manifests.push(sync::Manifest::load(root));
-        scans.push(scan);
-    }
-
-    let playlists = match &s.playlists {
-        Some(dir) => sync::read_playlists(dir, &s.library).map_err(|e| format!("{}: {e}", dir.display()))?,
-        None => Default::default(),
+    let req = sync::Request {
+        library: &s.library,
+        volumes: &s.volumes,
+        budget_gb: &s.budget_gb,
+        playlists: s.playlists.as_deref(),
+        sensme: s.sensme,
+        extras: s.extras,
     };
-    if !playlists.is_empty() {
-        emit(Update::Log(format!("{} playlists", playlists.len())));
-    }
-
-    let tag_for = |f: &sync::SourceFile| {
-        if !s.sensme {
-            return String::new();
+    let p = sync::prepare(&req, &mut analysis, &mut |n| match n {
+        sync::Note::Library { files, bytes } => {
+            emit(Update::Library(crate::LibraryFacts { files, bytes }));
+            emit(Update::Say(format!("{files} files, {}", space::human(bytes))));
         }
-        let path = s.library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        analysis.cached_key(&path).unwrap_or_default()
-    };
-    let plan = sync::plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
-    let tagged = plan.copies.iter().filter(|c| !c.tag.is_empty()).count();
-    let pending = apply::playlists_to_write(&plan, &volumes);
+        sync::Note::Adopted { tracks, saved } => emit(Update::Say(format!(
+            "{tracks} already carried Sony's analysis — taken from the files{}",
+            if saved > 0 { format!(", {} of unread chunks left behind", space::human(saved)) } else { String::new() }
+        ))),
+        sync::Note::AdoptFailed(e) => emit(Update::Log(format!("reading existing SensMe tags: {e}"))),
+        sync::Note::Volume { index, root, on_device, files, budget } => {
+            emit(Update::Volume(index, crate::VolumeFacts { on_device, budget, to_copy: 0, albums: 0 }));
+            emit(Update::Log(format!(
+                "{} holds {} in {files} files, budget {}",
+                root.display(),
+                space::human(on_device),
+                space::human(budget)
+            )));
+        }
+        sync::Note::Playlists(n) => emit(Update::Log(format!("{n} playlists"))),
+    })?;
+    let nothing = p.is_empty();
+    let key = p.key();
+    if write && s.expect_plan.is_some_and(|k| k != key) {
+        return Err("The library or the player changed since the plan was shown, so nothing was \
+                    copied or removed. Show what would happen again."
+            .into());
+    }
+    let sync::Prepared { plan, volumes, mut manifests, on_device, tagged, pending_playlists } = p;
 
     emit(Update::Say(format!(
-        "{} to copy ({tagged} with SensMe), {} to remove, {} playlists",
+        "{} to copy ({tagged} with SensMe), {} to remove, {pending_playlists} playlists",
         plan.copies.len(),
         plan.stale_files.len() + plan.stale_playlists.len(),
-        pending.len()
     )));
     for (i, v) in volumes.iter().enumerate() {
         let albums = plan.assignments.values().filter(|&&a| a == i).count();
         let to_copy = plan.bytes_to_copy(i);
         emit(Update::Volume(
             i,
-            crate::VolumeFacts {
-                on_device: scans[i].files.values().map(|(size, _)| size).sum(),
-                budget: v.budget_bytes,
-                to_copy,
-                albums,
-            },
+            crate::VolumeFacts { on_device: on_device[i], budget: v.budget_bytes, to_copy, albums },
         ));
         emit(Update::Log(format!("{}: {albums} albums, {} to copy", v.root.display(), space::human(to_copy))));
     }
@@ -691,8 +644,6 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         emit(Update::Log(format!("no room for {} albums: {}", plan.skipped.len(), plan.skipped.join(", "))));
     }
 
-    let nothing =
-        plan.copies.is_empty() && plan.stale_files.is_empty() && plan.stale_playlists.is_empty() && pending.is_empty();
     if nothing {
         emit(Update::Progress(Some(1.0)));
         return Ok("The player already matches the library — nothing to do.".into());
@@ -727,7 +678,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
             crate::thousands(removes),
             if plan.copies.len() + removes > 20 { " — scroll up to see each one" } else { "" }
         )));
-        emit(Update::Planned);
+        emit(Update::Planned(key));
         emit(Update::Progress(Some(1.0)));
         return Ok(format!(
             "Nothing has been written. {} files would be copied — press Copy to the player.",
@@ -1161,7 +1112,7 @@ mod tests {
         let mut library_facts = None;
         let mut volume_facts = None;
         let word = run(Job::Plan, &s, &cancel, &mut |u| match u {
-            Update::Planned => planned = true,
+            Update::Planned(_) => planned = true,
             Update::Say(l) | Update::Log(l) => lines.push(l),
             Update::Library(f) => library_facts = Some(f),
             Update::Volume(i, f) => volume_facts = Some((i, f)),
@@ -1192,7 +1143,7 @@ mod tests {
         // Run again: nothing left to do, and COPY is not offered because there is no plan to show.
         let mut planned = false;
         let word = run(Job::Plan, &s, &cancel, &mut |u| {
-            if u == Update::Planned {
+            if matches!(u, Update::Planned(_)) {
                 planned = true;
             }
         })
@@ -1278,6 +1229,49 @@ mod tests {
         run(Job::Apply, &s, &AtomicBool::new(false), &mut |_| {}).unwrap();
         assert!(volume.join("Artist - Album/01 One.flac").is_file());
         assert!(!volume.join("Artist - Album/cover.jpg").exists(), "extras were off");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Copy carries out the plan that was shown or nothing (audit E2). An album deleted from the
+    /// library after Show would be swept from the player by a fresh plan nobody saw.
+    #[test]
+    fn copy_refuses_a_plan_that_changed_since_it_was_shown() {
+        let root = tmp("changed");
+        let library = root.join("music");
+        let volume = root.join("player");
+        fs::create_dir_all(&volume).unwrap();
+        write_flac(&library.join("One/01.flac"), 1024);
+        write_flac(&library.join("Two/01.flac"), 1024);
+        let mut s = settings(library.clone(), volume.clone(), root.join("cache"));
+        let cancel = AtomicBool::new(false);
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+
+        write_flac(&library.join("Three/01.flac"), 1024);
+        let mut shown = None;
+        run(Job::Plan, &s, &cancel, &mut |u| {
+            if let Update::Planned(k) = u {
+                shown = Some(k);
+            }
+        })
+        .unwrap();
+        s.expect_plan = shown;
+        fs::remove_dir_all(library.join("One")).unwrap();
+
+        let e = run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap_err();
+        assert!(e.contains("changed since the plan was shown"), "{e}");
+        assert!(volume.join("One/01.flac").is_file(), "removed a file the shown plan kept");
+        assert!(!volume.join("Three").exists(), "copied after refusing");
+
+        let mut reshown = None;
+        run(Job::Plan, &s, &cancel, &mut |u| {
+            if let Update::Planned(k) = u {
+                reshown = Some(k);
+            }
+        })
+        .unwrap();
+        s.expect_plan = reshown;
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(!volume.join("One/01.flac").exists(), "the re-shown plan's removal is carried out");
         fs::remove_dir_all(&root).unwrap();
     }
 

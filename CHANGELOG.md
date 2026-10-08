@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### One file to download
+
+- Windows is now a single file, `flint-windows-x64.exe`. Double-clicked it opens the window; run
+  with a command in a terminal it is the command line. `flint-cli-windows-x64.exe` and
+  `sensme-helper-x86.exe` are no longer published.
+- The SensMe helper is inside it and is written to Flint's data folder the first time an analysis
+  runs. This also fixes analysis for anyone who followed the old instructions: the helper was
+  published as `sensme-helper-x86.exe` but Flint looked for `sensme-helper.exe`.
+- At an interactive `cmd` prompt the prompt returns before a command finishes; use
+  `start /wait flint-windows-x64.exe ...`. Scripts and pipes are unaffected.
+
 ## 0.2.2 — 2026-10-05
 
 ### Ratings, play counts and playlists from the player

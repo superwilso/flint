@@ -180,7 +180,7 @@ ok "the window draws in every state"
 if rustup target list --installed 2>/dev/null | grep -qx x86_64-pc-windows-gnu; then
     cargo build -q --release --target x86_64-pc-windows-gnu -p flint \
         || die "flint does not build for Windows"
-    ok "the window (flint-window.exe) and the command line (flint.exe) build for Windows"
+    ok "flint.exe (the window and the command line) builds for Windows"
 else
     note "no x86_64-pc-windows-gnu target here — the Windows build is left to the workflow"
 fi

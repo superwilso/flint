@@ -19,9 +19,7 @@ Put a music library on a Sony NW-A50-series Walkman — with SensMe, without the
 
 | File | For |
 |---|---|
-| **`flint-windows-x64.exe`** | Windows. This is the one to get: the window, with no terminal behind it. |
-| `flint-cli-windows-x64.exe` | The same tool as commands (`scan`, `check`, `sync`, `scrobble`…), for a terminal or a script. Optional. |
-| `sensme-helper-x86.exe` | **Put it in the same folder as Flint.** 32-bit because Sony's `MMLib11.dll` is 32-bit COM; Flint runs it as a child process to analyse a track. Without it, everything works except making *new* SensMe analysis. |
+| **`flint-windows-x64.exe`** | Windows. The only file you need: double-click it for the window, or give it a command (`scan`, `check`, `sync`, `scrobble`…) in a terminal. The SensMe helper is inside it. |
 | `flint-linux-x64` | Linux. The scan, the plan, the copy, the tag writing and `flint check` all work. The window and the analysis engine are Windows-only. |
 
 Nothing here contains, downloads or installs any Sony code. Analysis runs the `MMLib11.dll` that
@@ -35,12 +33,15 @@ Run `flint-windows-x64.exe`. Choose the music folder and the player, press **Sho
 happen**, then **Copy to the player**. The window follows Windows' own light/dark setting and
 changes with it while it is open.
 
-From a terminal, the command-line build does the same:
+From a terminal, the same file takes commands:
 
 ```
-flint-cli-windows-x64.exe sync "D:\Music" --to E:\ --to F:\            # what would happen — writes nothing
-flint-cli-windows-x64.exe sync "D:\Music" --to E:\ --to F:\ --apply    # do it
+flint-windows-x64.exe sync "D:\Music" --to E:\ --to F:\            # what would happen — writes nothing
+flint-windows-x64.exe sync "D:\Music" --to E:\ --to F:\ --apply    # do it
 ```
+
+At a `cmd` prompt, put `start /wait` in front so the prompt waits for it to finish. Scripts and
+pipes wait without it.
 
 ### Last.fm, for a player that has no WiFi
 

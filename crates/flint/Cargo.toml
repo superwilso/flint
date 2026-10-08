@@ -8,3 +8,7 @@ description = "Copy a music library to a Sony NW-A50-series Walkman, with SensMe
 [dependencies]
 flint-core = { path = "../flint-core" }
 flint-gui = { path = "../flint-gui" }
+
+[features]
+# One file to download: the 32-bit SensMe helper rides inside flint.exe.
+embed-helper = ["flint-core/embed-helper"]

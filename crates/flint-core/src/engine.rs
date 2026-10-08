@@ -17,6 +17,16 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 /// Where Music Center for PC 2.x installs the engine.
+/// Sony's own page for Music Center for PC, which installs the engine. Flint sends people there
+/// rather than carrying or fetching the engine: it is Sony's code, and Sony gives it away itself.
+pub const MUSIC_CENTER_URL: &str = "https://www.sony.net/smc4pc/";
+pub const FFMPEG_URL: &str = "https://ffmpeg.org/download.html";
+
+/// Sony's engine, where Flint would use it from.
+pub fn locate_engine_dll() -> Option<PathBuf> {
+    from_env("FLINT_MMLIB").or_else(|| Some(PathBuf::from(MUSIC_CENTER_ENGINE)).filter(|p| p.is_file()))
+}
+
 pub const MUSIC_CENTER_ENGINE: &str = r"C:\Program Files (x86)\Sony\Music Center\AVLib\MMLib11.dll";
 
 #[derive(Clone, Debug)]
@@ -73,22 +83,40 @@ pub fn locate_ffmpeg() -> Result<PathBuf, String> {
     })
 }
 
+/// The helper carried inside Flint's own exe, written to Flint's data folder when it is missing or
+/// differs. It has to be a file: it is a 32-bit program and Flint is not, so it runs as a child.
+#[cfg(feature = "embed-helper")]
+fn embedded_helper() -> Option<PathBuf> {
+    const HELPER: &[u8] = include_bytes!(env!("FLINT_HELPER_EXE"));
+    let dir = crate::cache::default_dir();
+    let path = dir.join(exe("sensme-helper"));
+    if std::fs::read(&path).ok().as_deref() != Some(HELPER) {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(&path, HELPER).ok()?;
+    }
+    Some(path)
+}
+
+#[cfg(not(feature = "embed-helper"))]
+fn embedded_helper() -> Option<PathBuf> {
+    None
+}
+
 impl Engine {
     /// Find FFmpeg, the helper and the engine. `FLINT_FFMPEG`, `FLINT_HELPER` and `FLINT_MMLIB`
-    /// override each; otherwise FFmpeg comes from PATH, the helper from beside Flint's own exe, and
-    /// the engine from Music Center's install folder. The error says what is missing and what to do.
+    /// override each; otherwise FFmpeg comes from PATH, the helper from beside Flint's own exe or
+    /// from inside it, and the engine from Music Center's install folder. The error says what is missing and what to do.
     pub fn locate() -> Result<Engine, String> {
         let ffmpeg = locate_ffmpeg()?;
         let beside = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(exe("sensme-helper"))));
         let helper = from_env("FLINT_HELPER")
             .or(beside.filter(|p| p.is_file()))
+            .or_else(embedded_helper)
             .ok_or("sensme-helper.exe was not found next to Flint (or set FLINT_HELPER).")?;
-        let dll = from_env("FLINT_MMLIB")
-            .or_else(|| Some(PathBuf::from(MUSIC_CENTER_ENGINE)).filter(|p| p.is_file()))
-            .ok_or(
-                "Sony's analysis engine was not found. SensMe needs Music Center for PC installed \
+        let dll = locate_engine_dll().ok_or(
+            "Sony's analysis engine was not found. SensMe needs Music Center for PC installed \
                  (it provides AVLib\\MMLib11.dll), or set FLINT_MMLIB to that file.",
-            )?;
+        )?;
         Ok(Engine { ffmpeg, helper, dll, params: Vec::new() })
     }
 

@@ -144,6 +144,7 @@ extern "system" {
     fn LoadCursorW(instance: Hinstance, name: *const u16) -> Hgdi;
     fn SetCursor(cursor: Hgdi) -> Hgdi;
     fn ShowWindow(hwnd: Hwnd, cmd: i32) -> i32;
+    fn SetWindowPos(hwnd: Hwnd, after: Hwnd, x: i32, y: i32, w: i32, h: i32, flags: u32) -> i32;
     fn UpdateWindow(hwnd: Hwnd) -> i32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, kind: u32) -> i32;
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
@@ -670,6 +671,13 @@ fn drain(state: &mut State) -> Vec<String> {
     open
 }
 
+/// Is Sony's engine here, and FFmpeg? Looked up again on every click so the SensMe page stops
+/// asking as soon as an install finishes. Two file checks and a walk of PATH.
+fn look_for_sensme_tools(m: &mut Model) {
+    m.no_engine = flint_core::engine::locate_engine_dll().is_none();
+    m.no_ffmpeg = flint_core::engine::locate_ffmpeg().is_err();
+}
+
 /// Hand `url` to whatever the person uses for web pages.
 fn open_url(hwnd: Hwnd, url: &str) {
     let (op, file) = (wide("open"), wide(url));
@@ -777,6 +785,7 @@ unsafe fn press(hwnd: Hwnd, id: Id) {
                 let Some(state) = b.as_mut() else { return (None, false) };
                 let before = state.model.theme;
                 let job = click(&mut state.model, id);
+                look_for_sensme_tools(&mut state.model);
                 save_prefs(&state.model);
                 (job, state.model.theme != before)
             });
@@ -1188,6 +1197,7 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
         let mut model = Model::new();
         crate::prefs::load(&mut model, &crate::prefs::path());
         model.cache_dir = flint_core::cache::default_dir().display().to_string();
+        look_for_sensme_tools(&mut model);
         model.lastfm = crate::lastfm_facts(&flint_core::lastfm::Credentials::load());
         let pref = pref.or(match model.theme {
             ThemePref::Dark => Some(true),
@@ -1211,6 +1221,13 @@ pub fn run_with(pref: Option<bool>) -> Result<(), String> {
                 closing: false,
             });
         });
+
+        // The window was created before its DPI was known, at the 96-DPI size: on a scaled display
+        // that is too small for the layout, which opened cropped until the first resize. Size it
+        // for this display now; the WM_SIZE this sends also records the real client size.
+        let scaled = |v: i32| (v as i64 * dpi as i64 / 96) as i32;
+        const SWP_NOMOVE_NOZORDER: u32 = 0x0002 | 0x0004;
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, scaled(W + 24), scaled(H + 48), SWP_NOMOVE_NOZORDER);
 
         SetWindowTextW(hwnd, title.as_ptr());
         set_caption_dark(hwnd, pref.unwrap_or_else(system_prefers_dark));

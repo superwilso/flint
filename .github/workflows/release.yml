@@ -6,15 +6,11 @@ name: release
 # committed payload to verify — everything published here is built from the tagged source in this
 # run. What ships:
 #
-#   flint-windows-x64.exe      the window. This is the one most people want. Built from the
-#                              `flint-window` binary, for the Windows subsystem, so it opens with
-#                              no terminal window behind it.
-#   flint-cli-windows-x64.exe  the same tool as commands (`scan`, `check`, `sync`, `scrobble`…),
-#                              for a terminal. A console program: Windows gives it a console,
-#                              which is right for this one and wrong for the window.
-#   sensme-helper-x86.exe      32-bit, because Sony's MMLib11.dll is 32-bit COM. It is NOT
-#                              optional for analysis: Flint runs it as a child process. It ships
-#                              beside Flint and is found in the same folder.
+#   flint-windows-x64.exe      the one Windows file. Double-clicked it is the window, with no
+#                              terminal behind it; given a command (`scan`, `sync`, `scrobble`…)
+#                              it is the command line. The 32-bit SensMe helper (32-bit because
+#                              Sony's MMLib11.dll is 32-bit COM) is carried inside it and written
+#                              to Flint's data folder the first time an analysis needs it.
 #   flint-linux-x64            everything but the window and the analysis, which need Windows.
 #
 # Sony's MMLib11.dll is never built, shipped or downloaded by any of this. Flint runs the copy
@@ -54,23 +50,19 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release -p flint
           cargo build --release -p sensme-helper --target i686-pc-windows-msvc
+          $env:FLINT_HELPER_EXE = "$PWD\target\i686-pc-windows-msvc\release\sensme-helper.exe"
+          cargo build --release -p flint --features embed-helper
 
       - name: Stage artifacts
         run: |
-          Copy-Item target/release/flint-window.exe flint-windows-x64.exe
-          Copy-Item target/release/flint.exe flint-cli-windows-x64.exe
-          Copy-Item target/i686-pc-windows-msvc/release/sensme-helper.exe sensme-helper-x86.exe
-          Get-ChildItem flint-windows-x64.exe, flint-cli-windows-x64.exe, sensme-helper-x86.exe
+          Copy-Item target/release/flint.exe flint-windows-x64.exe
+          Get-ChildItem flint-windows-x64.exe
 
       - uses: actions/upload-artifact@v7
         with:
           name: windows
-          path: |
-            flint-windows-x64.exe
-            flint-cli-windows-x64.exe
-            sensme-helper-x86.exe
+          path: flint-windows-x64.exe
           if-no-files-found: error
 
   # Everything except the window and the analysis engine: the scan, the plan, the copy, the

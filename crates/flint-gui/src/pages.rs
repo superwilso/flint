@@ -496,6 +496,21 @@ fn sensme(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         "New analysis needs Music Center for PC. Tracks it already analysed are imported, not redone.",
     );
     y += 28;
+    // What is missing, each with the one button that gets it. Nothing is shown once both are here.
+    let needs = [
+        (
+            m.no_engine,
+            "Sony's analysis engine is not on this PC. It comes with Music Center for PC, free from Sony.",
+            Id::GetMusicCenter,
+            "Get Music Center from Sony",
+        ),
+        (m.no_ffmpeg, "FFmpeg, which reads the music files, is not on this PC.", Id::GetFfmpeg, "Get FFmpeg"),
+    ];
+    for (_, text, id, label) in needs.into_iter().filter(|n| n.0) {
+        let x = tools(out, m, PAD, y, &[(id, label.into())]);
+        out.push(w(Id::None, Rect::new(x + 4, y + 6, (PAD + inner - x - 4).max(40), 18), Kind::Hint, text.into()));
+        y += 38;
+    }
     let x = tools(out, m, PAD, y, &[(Id::Scan, "Analyse library".into()), (Id::Import, "Import Music Center".into())]);
     let note = if m.library.is_none() {
         Some("Choose the music folder on the Sync page first.".to_string())

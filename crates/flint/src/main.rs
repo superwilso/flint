@@ -1,4 +1,7 @@
-//! flint — the command-line tool.
+//! flint — the window and the command line, one program.
+//!
+//! With no arguments it opens the window. With a command it attaches to the terminal it was run
+//! from and runs that command.
 //!
 //! Commands:
 //!
@@ -17,6 +20,11 @@
 //! flint gui                                                       open the window (Windows)
 //! flint gui-preview <out.svg> [--state name]                      draw the window to an SVG, anywhere
 //! ```
+
+// Built for the Windows subsystem so a double-click opens no terminal behind the window. The cost:
+// cmd.exe does not wait for such a program at an interactive prompt (`start /wait flint ...` does,
+// and so does a script or a pipe).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -47,6 +55,16 @@ usage:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The window has no terminal: what it has to say goes in a message box.
+    let windowed = cfg!(windows) && matches!(args.first().map(String::as_str), None | Some("gui" | "--gui"));
+    #[cfg(windows)]
+    if windowed {
+        std::panic::set_hook(Box::new(|info| {
+            flint_gui::win32::message(&format!("Flint stopped unexpectedly.\n\n{info}"))
+        }));
+    } else {
+        windows_console::attach();
+    }
     let result = match args.first().map(String::as_str) {
         Some("scan") => scan(&args[1..]),
         Some("check") => check(&args[1..]),
@@ -71,6 +89,10 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            #[cfg(windows)]
+            if windowed {
+                flint_gui::win32::message(&e);
+            }
             eprintln!("flint: {e}");
             ExitCode::FAILURE
         }
@@ -1266,6 +1288,43 @@ mod windows_console {
         fn GetStdHandle(which: u32) -> *mut c_void;
         fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
         fn SetConsoleMode(handle: *mut c_void, mode: u32) -> i32;
+        fn AttachConsole(pid: u32) -> i32;
+        fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut c_void,
+        ) -> *mut c_void;
+    }
+
+    /// Use the terminal Flint was started from. A Windows-subsystem program starts with no
+    /// standard handles unless they were redirected, so each missing one is pointed at the
+    /// parent's console. A redirected or piped handle is left alone.
+    pub fn attach() {
+        const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+        const INVALID: *mut c_void = -1isize as *mut c_void;
+        unsafe {
+            if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+                return;
+            }
+            for (which, name) in [(-10i32, "CONIN$"), (-11, "CONOUT$"), (-12, "CONOUT$")] {
+                let have = GetStdHandle(which as u32);
+                if !have.is_null() && have != INVALID {
+                    continue;
+                }
+                let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+                // GENERIC_READ | GENERIC_WRITE, shared both ways, OPEN_EXISTING.
+                let handle =
+                    CreateFileW(wide.as_ptr(), 0xC000_0000, 3, std::ptr::null_mut(), 3, 0, std::ptr::null_mut());
+                if handle != INVALID {
+                    SetStdHandle(which as u32, handle);
+                }
+            }
+        }
     }
 
     const STD_INPUT_HANDLE: u32 = -10i32 as u32;

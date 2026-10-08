@@ -123,6 +123,10 @@ pub enum Id {
     LastfmSaveKey,
     /// Settings ▸ Last.fm ▸ open the page where a key is made, in the browser.
     LastfmGetKey,
+    /// SensMe ▸ open Sony's Music Center download page, which installs the analysis engine.
+    GetMusicCenter,
+    /// SensMe ▸ open FFmpeg's download page.
+    GetFfmpeg,
     /// Settings ▸ Last.fm ▸ sign in through the browser.
     LastfmSignIn,
     LastfmSignOut,
@@ -871,6 +875,9 @@ pub struct Model {
     pub likes_plan: Option<LikesPlan>,
     /// Where the analysis cache lives, for Settings.
     pub cache_dir: String,
+    /// What new SensMe analysis still needs on this PC. Both false until the window has looked.
+    pub no_engine: bool,
+    pub no_ffmpeg: bool,
     /// The folder of `.palette` files on this PC.
     pub palette_dir: Option<PathBuf>,
     /// The last palette check: the built-in palette first, then every file by name.
@@ -1820,7 +1827,14 @@ fn ready(m: &Model, job: Job) -> bool {
 pub fn live(m: &Model, id: Id) -> bool {
     match id {
         Id::None => false,
-        Id::Tab(_) | Id::Theme(_) | Id::Stop | Id::Verdict(_) | Id::ClearFilter | Id::LastfmGetKey => true,
+        Id::Tab(_)
+        | Id::Theme(_)
+        | Id::Stop
+        | Id::Verdict(_)
+        | Id::ClearFilter
+        | Id::LastfmGetKey
+        | Id::GetMusicCenter
+        | Id::GetFfmpeg => true,
         Id::PickLibrary => !m.library_locked(),
         Id::PickVolume(_) | Id::ClearVolume(_) => !m.volumes_locked(),
         Id::PickPlaylists | Id::ClearPlaylists | Id::ToggleSensMe | Id::ToggleExtras => !m.sync_running(),
@@ -2013,6 +2027,8 @@ pub fn paste(m: &mut Model, text: &str) {
 pub fn url_for(m: &Model, id: Id) -> Option<String> {
     match id {
         Id::LastfmGetKey => Some(flint_core::lastfm::CREATE_KEY_URL.into()),
+        Id::GetMusicCenter => Some(flint_core::engine::MUSIC_CENTER_URL.into()),
+        Id::GetFfmpeg => Some(flint_core::engine::FFMPEG_URL.into()),
         Id::BrowsePalettes => Some(format!("{}/tree/main/palettes", flint_core::palette::SHARED_REPO)),
         Id::SharePalette if live(m, id) => Some(flint_core::palette::share_url(m.draft.name.trim(), &m.draft.body())),
         _ => None,

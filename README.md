@@ -11,14 +11,15 @@ see *Unreleased* in [`CHANGELOG.md`](CHANGELOG.md). Replaces the Python `Sony-sy
 ## Getting started
 
 1. From [Releases](https://github.com/superwilso/flint/releases/latest), download
-   `flint-windows-x64.exe`, plus `sensme-helper-x86.exe` into the same folder if you want SensMe.
+   `flint-windows-x64.exe`. It is the only file you need.
 2. Connect the Walkman as a USB drive and run `flint-windows-x64.exe`.
 3. On **Sync**, pick your music folder and the player's drive (and its card, if any).
 4. Press **Show what would happen**. Nothing is written yet.
 5. Press **Copy to the player**.
 
-Everything the window does is also a command in `flint-cli-windows-x64.exe` (Linux:
-`flint-linux-x64`).
+Everything the window does is also a command: run the same file from a terminal with a command
+after it (Linux: `flint-linux-x64`). At a `cmd` prompt, `start /wait flint-windows-x64.exe ...`
+makes the prompt wait for it.
 
 ## SensMe
 
@@ -199,7 +200,7 @@ cached by audio content, so moved or retagged files aren't decoded again.
 | Crate | Contents |
 |---|---|
 | `flint-core` | FLAC/ID3v2 read and write, the SensMe chunk format, decode → engine pipeline, Music Center import |
-| `flint` | The command-line tool and the window's console-free launcher |
+| `flint` | The program: the window with no arguments, the command line with a command |
 | `flint-gui` | The window: layout in plain Rust, painted with GDI on Windows or written as SVG anywhere |
 | `sensme-helper` | 32-bit Windows helper that loads Sony's 32-bit engine |
 
@@ -207,9 +208,12 @@ cached by audio content, so moved or retagged files aren't decoded again.
 
 ```
 cargo test
-cargo build --release --target x86_64-pc-windows-gnu -p flint
 cargo build --release --target i686-pc-windows-gnu -p sensme-helper
+FLINT_HELPER_EXE=$PWD/target/i686-pc-windows-gnu/release/sensme-helper.exe \
+    cargo build --release --target x86_64-pc-windows-gnu -p flint --features embed-helper
 ```
+
+Without `--features embed-helper`, Flint looks for `sensme-helper.exe` beside itself.
 
 Both Windows targets cross-compile from Linux with mingw-w64.
 

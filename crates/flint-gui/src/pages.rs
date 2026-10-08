@@ -508,7 +508,7 @@ fn sensme(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
     ];
     for (_, text, id, label) in needs.into_iter().filter(|n| n.0) {
         let x = tools(out, m, PAD, y, &[(id, label.into())]);
-        out.push(w(Id::None, Rect::new(x + 4, y + 6, (PAD + inner - x - 4).max(40), 18), Kind::Hint, text.into()));
+        out.push(w(Id::None, Rect::new(x + 4, y + 6, (PAD + inner - x - 4).max(40), 18), Kind::Hint, text.to_string()));
         y += 38;
     }
     let x = tools(out, m, PAD, y, &[(Id::Scan, "Analyse library".into()), (Id::Import, "Import Music Center".into())]);

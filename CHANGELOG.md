@@ -4,6 +4,13 @@
 
 ### Playlists and copying
 
+- **A sync goes into the player's `MUSIC` folder.** Pointed at a drive (`E:\`), Flint mirrored
+  into the drive itself: the albums landed beside `MUSIC`, where the player does not look, and the
+  plan removed everything inside `MUSIC`. A drive that has a `MUSIC` folder is now synced into it,
+  and the plan names that folder. Giving `E:\MUSIC` still works and means the same.
+  - If an earlier Flint already mirrored into the drive itself (its manifest there names files),
+    nothing changes for that drive. To switch, move the album folders and `flint-manifest.tsv`
+    into `MUSIC` by hand; they are renames, not copies.
 - **MusicBee playlists are read.** A `.mbp` file in the playlists folder goes to the player as an
   `.m3u8` of the same name, tracks in MusicBee's order. Where the folder holds both, the `.m3u8`
   is used. Auto-playlists (`.xautopf`) are rules, not lists, and are still not read.

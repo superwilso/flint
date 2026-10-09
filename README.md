@@ -90,6 +90,8 @@ flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  
 
 - Albums move as a unit and are never split between internal memory and the card. Albums that share
   a playlist stay on the same volume, and an album already on a volume stays there.
+- `--playlists` reads `.m3u`, `.m3u8` and MusicBee `.mbp` files; each reaches the player as an
+  `.m3u8`.
 - Each volume is filled to its free space minus 0.5 GB; `--gb N` sets a budget instead.
   `--no-sensme` copies without tagging.
 - Cover art and lyrics (`.jpg`, `.png`, `.lrc`) in an album folder are copied with it;

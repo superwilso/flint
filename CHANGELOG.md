@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Playlists and copying
+
+- **MusicBee playlists are read.** A `.mbp` file in the playlists folder goes to the player as an
+  `.m3u8` of the same name, tracks in MusicBee's order. Where the folder holds both, the `.m3u8`
+  is used. Auto-playlists (`.xautopf`) are rules, not lists, and are still not read.
+- **Tagged copies are about twice as fast.** A copy that carries SensMe data was written 8 KB at a
+  time, which over USB ran at 7 MB/s where a plain copy ran at 24. It is written 1 MB at a time
+  now: 16 MB/s on an NW-A55 over USB 2.
+- The window opened cropped on a scaled display until it was resized. It is sized for the
+  display's scale as it opens.
+- `flint sync` said "tracks" for a count that includes cover art and lyrics. It says "files", as
+  the window does.
+
 ### One file to download
 
 - Windows is now a single file, `flint-windows-x64.exe`. Double-clicked it opens the window; run

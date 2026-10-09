@@ -580,7 +580,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         extras: !o.no_extras,
     };
     let p = sync::prepare(&req, &mut analysis, &mut |n| match n {
-        sync::Note::Library { files, bytes } => println!("  {files} tracks, {}", space::human(bytes)),
+        sync::Note::Library { files, bytes } => println!("  {files} files, {}", space::human(bytes)),
         sync::Note::Adopted { tracks, saved } => println!(
             "  {tracks} already carried Sony's analysis — taken from the files{}",
             if saved > 0 {

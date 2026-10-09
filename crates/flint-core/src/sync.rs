@@ -501,8 +501,45 @@ pub fn scan_volume(root: &Path) -> io::Result<DeviceScan> {
     Ok(scan)
 }
 
-/// Read a folder of `.m3u`/`.m3u8` files into the map [`plan`] wants: playlist name -> the
-/// library-relative paths it names.
+/// The track paths in a MusicBee `.mbp` playlist, in order.
+///
+/// The format is MusicBee's own and undocumented; this is read off real files (MusicBee 3.x,
+/// 2026-10): each track is `FF FF FF FF`, then a .NET length-prefixed UTF-8 string (7-bit varint
+/// length) holding the file's full path. The first track has the playlist's 32-bit track count
+/// between the marker and the string. Anything after a marker that is not a path to a music file
+/// (header fields, the trailer) is passed over.
+fn mbp_tracks(bytes: &[u8]) -> Vec<String> {
+    let string_at = |mut i: usize| -> Option<String> {
+        let (mut len, mut shift) = (0usize, 0u32);
+        loop {
+            let b = *bytes.get(i)?;
+            i += 1;
+            len |= usize::from(b & 0x7f) << shift;
+            shift += 7;
+            if b & 0x80 == 0 {
+                break;
+            }
+            if shift > 28 {
+                return None;
+            }
+        }
+        let s = std::str::from_utf8(bytes.get(i..i.checked_add(len)?)?).ok()?;
+        has_ext(s, &AUDIO_EXT).then(|| s.to_string())
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(at) = bytes[i..].windows(4).position(|w| w == [0xff; 4]) {
+        i += at + 4;
+        if let Some(path) = string_at(i).or_else(|| string_at(i + 4)) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Read a folder of `.m3u`/`.m3u8` files, and MusicBee's `.mbp`, into the map [`plan`] wants:
+/// playlist name -> the library-relative paths it names. A `.mbp` goes to the player as an
+/// `.m3u8` of the same name; where both exist in the folder, the `.m3u8` is the one used.
 ///
 /// Lines that do not resolve to a file inside `library` are dropped rather than failing the read:
 /// a playlist exported from another tool routinely names tracks that are not in this library, and
@@ -519,16 +556,24 @@ pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String,
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !has_ext(&name, &PLAYLIST_EXT) {
+        let mbp = has_ext(&name, &["mbp"]);
+        if !mbp && !has_ext(&name, &PLAYLIST_EXT) {
             continue;
         }
-        let text = match fs::read(entry.path()) {
-            Ok(b) => String::from_utf8(b).unwrap_or_else(|e| cp1252(e.as_bytes())),
-            Err(e) => return Err(io::Error::new(e.kind(), format!("{name}: {e}"))),
+        let bytes = fs::read(entry.path()).map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?;
+        let lines: Vec<String> = if mbp {
+            mbp_tracks(&bytes)
+        } else {
+            let text = String::from_utf8(bytes).unwrap_or_else(|e| cp1252(e.as_bytes()));
+            text.lines().map(|l| l.trim().trim_matches('"').to_string()).collect()
         };
+        let name = if mbp { format!("{}.m3u8", &name[..name.len() - 4]) } else { name };
+        if mbp && out.contains_key(&name) {
+            continue;
+        }
         let mut tracks = Vec::new();
-        for line in text.lines() {
-            let line = line.trim().trim_matches('"');
+        for line in &lines {
+            let line = line.as_str();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -852,6 +897,48 @@ mod tests {
         assert_eq!(got["rel.m3u8"], vec!["Café/Album/01.flac", "Café/Album/02.flac"]);
         assert_eq!(got["win.m3u"], vec!["Café/Album/01.flac"]);
         assert_eq!(cp1252(b"\x80\x81\xe9"), "€\u{fffd}é");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The header and trailer are copied from a real MusicBee 3 playlist (2026-10-08); only the
+    /// track count and the paths are this test's own.
+    #[test]
+    fn a_musicbee_playlist_is_read_in_order_and_an_m3u8_of_the_same_name_wins() {
+        const HEADER: &[u8] =
+            b"\x05\x00\x00\x00\x24\x00\x00C:\\Users\\ABDPa\\Music\\\x000\x00False\x00\x00-2\x00\x04\x01\
+            \xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff\xff";
+        let d = std::env::temp_dir().join(format!("flint-sync-mbp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("Album")).unwrap();
+        fs::create_dir_all(d.join("Playlists")).unwrap();
+        // A name long enough that its length needs two varint bytes, as real paths do.
+        let long = format!("Album/{}.flac", "é".repeat(80));
+        let names = ["Album/02.flac", long.as_str(), "Album/01.flac"];
+        let mut mbp = HEADER.to_vec();
+        mbp.extend(&(names.len() as u32).to_le_bytes());
+        for (i, name) in names.iter().enumerate() {
+            fs::write(d.join(name), b"xx").unwrap();
+            let path = d.join(name).to_string_lossy().into_owned();
+            if i > 0 {
+                mbp.extend([0xff; 4]);
+            }
+            let mut n = path.len();
+            while n >= 0x80 {
+                mbp.push((n & 0x7f) as u8 | 0x80);
+                n >>= 7;
+            }
+            mbp.push(n as u8);
+            mbp.extend(path.as_bytes());
+        }
+        mbp.extend(b"\xff\xff\xff\xff\x00\x00\x00\x00");
+        fs::write(d.join("Playlists/Mix.mbp"), &mbp).unwrap();
+        fs::write(d.join("Playlists/Both.mbp"), &mbp).unwrap();
+        fs::write(d.join("Playlists/Both.m3u8"), "../Album/01.flac\n").unwrap();
+        let got = read_playlists(&d.join("Playlists"), &d).unwrap();
+        assert_eq!(got["Mix.m3u8"], names);
+        assert_eq!(got["Both.m3u8"], vec!["Album/01.flac"]);
+        assert_eq!(got.len(), 2);
+        assert!(mbp_tracks(b"\xff\xff\xff\xff\xff\xff").is_empty());
         fs::remove_dir_all(&d).unwrap();
     }
 

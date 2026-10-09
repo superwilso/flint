@@ -240,7 +240,9 @@ pub fn copy_with_smfm(src: &Path, dst: &Path, payload: &[u8]) -> Result<CopyRepo
 
     let tmp = temp_path_for(dst);
     let result = (|| -> Result<u64, Error> {
-        let mut out = BufWriter::new(File::create(&tmp)?);
+        // 1 MB at a time: at the default 8 KB a tagged copy to a USB player ran at a third of the speed
+        // of a plain one (7 MB/s against 24, measured on an NW-A55 over USB 2).
+        let mut out = BufWriter::with_capacity(1 << 20, File::create(&tmp)?);
         out.write_all(&meta)?;
         input.seek(SeekFrom::Start(layout.audio_offset))?;
         io::copy(&mut input, &mut out)?;

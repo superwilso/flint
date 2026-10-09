@@ -595,6 +595,25 @@ pub fn read_playlists(dir: &Path, library: &Path) -> io::Result<BTreeMap<String,
     Ok(out)
 }
 
+/// The folder on a volume that a sync mirrors into, and sweeps.
+///
+/// A Walkman keeps its music in `MUSIC`, and a person points Flint at the drive (`E:\`). Mirroring
+/// into the drive itself put the albums beside `MUSIC`, where the player's scanner does not look,
+/// and planned to delete everything inside it (audit F1; it happened to the owner on 2026-10-08).
+/// So a volume that has a `MUSIC` folder is synced into that folder.
+///
+/// Two cases keep the folder as given: one with no `MUSIC` in it (any plain folder, or `E:\MUSIC`
+/// itself), and one where an earlier Flint already mirrored into it and left a manifest that
+/// names files. Moving that music is the owner's decision, not a side effect of an upgrade.
+// ponytail: a drive with no MUSIC folder yet is synced at its root. The player makes the folder
+// on any card it mounts; create it here if a card straight from the PC turns out to be common.
+pub fn sync_root(volume: &Path) -> PathBuf {
+    if !Manifest::load(volume).records.is_empty() {
+        return volume.to_path_buf();
+    }
+    ["MUSIC", "Music"].iter().map(|name| volume.join(name)).find(|p| p.is_dir()).unwrap_or_else(|| volume.to_path_buf())
+}
+
 /// What a sync was asked for: the command line's flags and the window's settings, one set of fields.
 pub struct Request<'a> {
     pub library: &'a Path,
@@ -700,6 +719,7 @@ pub fn prepare(
     let mut manifests = Vec::new();
     let mut on_device = Vec::new();
     for (index, root) in req.volumes.iter().enumerate() {
+        let root = &sync_root(root);
         let scan = scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
         let held: u64 = scan.files.values().map(|(size, _)| size).sum();
         // What this volume may hold: whatever is free now, plus what its music already occupies,
@@ -939,6 +959,30 @@ mod tests {
         assert_eq!(got["Both.m3u8"], vec!["Album/01.flac"]);
         assert_eq!(got.len(), 2);
         assert!(mbp_tracks(b"\xff\xff\xff\xff\xff\xff").is_empty());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_drive_is_synced_into_its_music_folder_unless_flint_already_mirrored_beside_it() {
+        let d = std::env::temp_dir().join(format!("flint-sync-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (player, plain, legacy) = (d.join("player"), d.join("plain"), d.join("legacy"));
+        fs::create_dir_all(player.join("MUSIC")).unwrap();
+        fs::create_dir_all(plain.join("Album")).unwrap();
+        fs::create_dir_all(legacy.join("MUSIC")).unwrap();
+        // The owner's player after the 2026-10-08 sync: a manifest at the drive root naming nothing.
+        Manifest::default().save(&player).unwrap();
+        let mut earlier = Manifest::default();
+        earlier.records.insert(
+            "Album/01.flac".into(),
+            Record { source_size: 1, source_mtime: 1, copy_size: 1, tag: String::new() },
+        );
+        earlier.save(&legacy).unwrap();
+
+        assert_eq!(sync_root(&player), player.join("MUSIC"));
+        assert_eq!(sync_root(&player.join("MUSIC")), player.join("MUSIC"));
+        assert_eq!(sync_root(&plain), plain);
+        assert_eq!(sync_root(&legacy), legacy);
         fs::remove_dir_all(&d).unwrap();
     }
 

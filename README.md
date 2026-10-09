@@ -88,6 +88,8 @@ flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists"          
 flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  copy
 ```
 
+- The music goes into the drive's `MUSIC` folder when it has one, which is where a Walkman looks.
+  The plan names the folder it will write to and sweep.
 - Albums move as a unit and are never split between internal memory and the card. Albums that share
   a playlist stay on the same volume, and an album already on a volume stays there.
 - `--playlists` reads `.m3u`, `.m3u8` and MusicBee `.mbp` files; each reaches the player as an

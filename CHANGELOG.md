@@ -4,6 +4,10 @@
 
 ### Playlists and copying
 
+- **Turning SensMe off no longer recopies the library.** With the SensMe box unticked, every
+  track already on the player with SensMe data counted as out of date, so the plan listed the
+  whole library "to copy" (4,606 files on the owner's player, for 33 that were new). A copy that
+  has SensMe data now counts as in step when none is asked for.
 - **A sync goes into the player's `MUSIC` folder.** Pointed at a drive (`E:\`), Flint mirrored
   into the drive itself: the albums landed beside `MUSIC`, where the player does not look, and the
   plan removed everything inside `MUSIC`. A drive that has a `MUSIC` folder is now synced into it,

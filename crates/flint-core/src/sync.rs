@@ -173,7 +173,10 @@ impl Manifest {
         r.source_size == source.size
             && source.mtime <= r.source_mtime + MTIME_TOLERANCE_SECONDS
             && r.copy_size == size
-            && r.tag == tag
+            // No tag wanted (SensMe switched off, or a track with no analysis yet) is met by a
+            // copy that has one: the audio is the same, and recopying it would only take the tag
+            // off. Without this, turning SensMe off planned a recopy of the whole library.
+            && (tag.is_empty() || r.tag == tag)
     }
 }
 
@@ -837,6 +840,10 @@ mod tests {
         let p = plan(&source, &volumes(100_000, 0), &[device.clone()], &[manifest.clone()], &BTreeMap::new(), tag);
         assert!(p.copies.is_empty(), "{:?}", p.copies);
         assert!(p.stale_files.is_empty());
+        // SensMe switched off asks for no tag; the tagged copy already there still counts.
+        assert!(plan(&source, &volumes(100_000, 0), &[device.clone()], &[manifest.clone()], &BTreeMap::new(), no_tags)
+            .copies
+            .is_empty());
         // A new analysis, a changed source, or a changed copy each bring the copy back.
         let newer = |_: &SourceFile| "flac-ab-2".to_string();
         assert_eq!(

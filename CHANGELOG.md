@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.3 — 2026-10-18
+
 ### Playlists and copying
 
 - **Turning SensMe off no longer recopies the library.** With the SensMe box unticked, every

@@ -63,12 +63,14 @@ pub struct Log {
 }
 
 impl Log {
-    /// Does the header say the timestamps are the player's wall clock (`#TZ/UNKNOWN`) rather than
-    /// UTC? Cinder and `unknown321/scrobbler` both write `UNKNOWN`, and the spec leaves the
-    /// conversion to the uploader — see [`crate::localtime`]. A log with no `#TZ` line is taken at
-    /// its word as UTC, which is what was always done with it.
+    /// Are the timestamps the player's wall clock (`#TZ/UNKNOWN`) rather than UTC? Cinder and
+    /// `unknown321/scrobbler` both write `UNKNOWN`, and the spec leaves the conversion to the
+    /// uploader — see [`crate::localtime`]. Only an explicit `#TZ/UTC` means UTC. A log that lost
+    /// its header (the owner's player, found 2026-10-19) is still Cinder's wall clock: reading it as
+    /// UTC put every play an hour late in summer time, so a play from 40 minutes ago showed on
+    /// Last.fm as 20 minutes in the future.
     pub fn local_time(&self) -> bool {
-        self.header.iter().any(|l| l.trim().eq_ignore_ascii_case("#TZ/UNKNOWN"))
+        !self.header.iter().any(|l| l.trim().eq_ignore_ascii_case("#TZ/UTC"))
     }
 
     pub fn plays(&self) -> impl Iterator<Item = &Entry> {
@@ -137,6 +139,13 @@ pub fn rewrite(log: &Log, sent: &[Entry]) -> String {
     for line in &log.header {
         out.push_str(line);
         out.push('\n');
+    }
+    // Put back a header the log lost, so every other reader of the file sees the clock it holds.
+    if !log.header.iter().any(|l| l.trim().to_ascii_uppercase().starts_with("#TZ/")) {
+        if log.header.is_empty() {
+            out.push_str("#AUDIOSCROBBLER/1.1\n");
+        }
+        out.push_str("#TZ/UNKNOWN\n");
     }
     let mut rows: Vec<(usize, &str)> = Vec::new();
     for (number, line, _) in &log.unreadable {
@@ -229,6 +238,17 @@ Bicep\tIsles\tAtlas\t1\t258\tS\t1758300600\t\n";
         let log = parse("Artist\tAlbum\tTitle\t1\t\tL\t1758300000\t\n");
         assert_eq!(log.entries.len(), 1);
         assert_eq!(log.entries[0].duration, 0);
+    }
+
+    /// The owner's player had lost its header since before 2026-10-08.
+    #[test]
+    fn a_log_with_no_header_is_the_players_clock_and_gets_its_header_back() {
+        let bare: String = LOG.lines().filter(|l| !l.starts_with('#')).map(|l| format!("{l}\n")).collect();
+        let log = parse(&bare);
+        assert!(log.local_time());
+        let after = parse(&rewrite(&log, &log.plays_to_send()));
+        assert_eq!(after.header, ["#AUDIOSCROBBLER/1.1", "#TZ/UNKNOWN"]);
+        assert_eq!(after.entries.len(), 1, "the skip stays");
     }
 
     #[test]

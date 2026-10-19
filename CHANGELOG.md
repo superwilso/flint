@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Last.fm
+
+- **Plays from a log with no header are sent at the right time.** The owner's player had lost the
+  `#TZ/UNKNOWN` line at the top of `.scrobbler.log`, so Flint read the player's clock as UTC: in
+  summer time every play reached Last.fm an hour late, and a play from 40 minutes earlier showed
+  as 20 minutes in the future. Only `#TZ/UTC` now means UTC, and a log missing its header gets it
+  back when Flint rewrites it.
+
 ## 0.2.3 — 2026-10-18
 
 ### Playlists and copying

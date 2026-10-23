@@ -90,8 +90,14 @@ flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  
 
 - The music goes into the drive's `MUSIC` folder when it has one, which is where a Walkman looks.
   The plan names the folder it will write to and sweep.
-- Albums move as a unit and are never split between internal memory and the card. Albums that share
+- A sync removes only what Flint put there. Anything else in that folder is listed as kept; tick
+  it in the window, or add `--also-remove <folder>` (`'*'` for all), to remove it with the copy.
+- An album is the folder that holds the music, with any `CD1`/`Disc 2` folders in it. Albums move
+  as a unit and are never split between internal memory and the card. Albums that share
   a playlist stay on the same volume, and an album already on a volume stays there.
+- The same recording on two albums (an album and a best-of, a single and its album) is found by
+  its audio. Tick it in the window, or answer `flint shared "D:\\Music" --yes N`, and the sync copies it
+  once. Cinder lists it under both albums from `flint-shared.tsv`. Sony's player shows the kept copy.
 - `--playlists` reads `.m3u`, `.m3u8` and MusicBee `.mbp` files; each reaches the player as an
   `.m3u8`.
 - Each volume is filled to its free space minus 0.5 GB; `--gb N` sets a budget instead.
@@ -121,6 +127,9 @@ flint scrobble E:\ --apply                  send it
 
 flint likes E:\ F:\                         show what would change, both ways
 flint likes E:\ F:\ --apply --playlist      apply, and write Liked Songs.m3u8
+flint likes E:\ --way player               only Last.fm's changes, onto the player (or --way lastfm)
+flint likes E:\ --add-only                 add likes, never remove one
+flint likes E:\ --apply --leave 2          make every change except removal 2 of the list
 ```
 
 **Scrobbles.** Cinder writes an Audioscrobbler `.scrobbler.log` at the root of the player. Flint
@@ -135,6 +144,11 @@ side (`likes-state.tsv`) so it can tell an unlike from a new like:
 - the first run only adds, never removes;
 - a player that isn't connected causes no removals;
 - a track changed on both sides keeps the like.
+
+A run can go one way only (*To the player* or *To Last.fm* in the window). The side it doesn't
+write keeps what it has, and its changes wait for the next run that does. *Only add, never remove*
+stops every removal. Each removal in a comparison is listed and ticked; untick one, or use `--leave N`,
+to leave that like where it is this run.
 
 Tracks match on artist and title, ignoring case, `feat.` credits and remaster/edition suffixes. Live,
 remix, acoustic and demo versions stay separate. `--playlist` also writes `Liked Songs.m3u8` per

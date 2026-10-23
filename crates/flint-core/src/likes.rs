@@ -349,6 +349,34 @@ pub enum Conflict {
     KeepRemoved,
 }
 
+/// Which way a run may move likes. A side the run may not write keeps what it has, and its changes
+/// wait in the merged list for a run that may.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Direction {
+    #[default]
+    Both,
+    /// Last.fm's changes reach the player; Last.fm is not written.
+    ToPlayer,
+    /// The player's changes reach Last.fm; the player is not written.
+    ToLastfm,
+}
+
+/// How a run behaves, as the owner chose it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    pub direction: Direction,
+    /// Never remove a like anywhere: an unlike on one side stays on that side only.
+    pub add_only: bool,
+    pub conflict: Conflict,
+}
+
+/// The side a removal would happen on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Side {
+    Player,
+    Lastfm,
+}
+
 /// What the run would do, before it does any of it.
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
@@ -362,16 +390,48 @@ pub struct Plan {
     pub notes: Vec<String>,
     /// True when no snapshot existed for a source, so nothing may be removed from it this run.
     pub first_run: bool,
+    /// Removals the owner left alone this run ([`Plan::leave`]): the like stays on that side.
+    pub left: Vec<(Side, Track)>,
 }
 
 impl Plan {
     pub fn changes(&self) -> usize {
         self.device_add.len() + self.device_remove.len() + self.lastfm_love.len() + self.lastfm_unlove.len()
     }
+
+    /// Every removal, numbered from 1 in this order: the player's, then Last.fm's.
+    pub fn removals(&self) -> impl Iterator<Item = (Side, &Track)> {
+        let player = self.device_remove.iter().map(|t| (Side::Player, t));
+        player.chain(self.lastfm_unlove.iter().map(|t| (Side::Lastfm, t)))
+    }
+
+    /// Take the removals `pick` names (by number from 1, side and track) out of the plan: those
+    /// likes stay where they are this run, and the next comparison offers them again.
+    pub fn leave(&mut self, pick: impl Fn(usize, Side, &Track) -> bool) {
+        let mut n = 0;
+        for (side, list) in [(Side::Player, &mut self.device_remove), (Side::Lastfm, &mut self.lastfm_unlove)] {
+            list.retain(|t| {
+                n += 1;
+                let left = pick(n, side, t);
+                if left {
+                    self.left.push((side, t.clone()));
+                }
+                !left
+            });
+        }
+    }
+
+    /// The list a side holds once the run is done: the merged list and what was left on it.
+    pub fn held(&self, side: Side) -> BTreeMap<String, Track> {
+        let mut out = self.liked.clone();
+        out.extend(self.left.iter().filter(|(s, _)| *s == side).map(|(_, t)| (t.key(), t.clone())));
+        out
+    }
 }
 
 /// Work out what should move. Pure: it reads nothing and writes nothing.
-pub fn plan(state: &State, device: &Source, lastfm: &Source, conflict: Conflict) -> Plan {
+pub fn plan(state: &State, device: &Source, lastfm: &Source, opts: &Options) -> Plan {
+    let conflict = opts.conflict;
     let mut out = Plan::default();
     let sources = [device, lastfm];
 
@@ -410,6 +470,9 @@ pub fn plan(state: &State, device: &Source, lastfm: &Source, conflict: Conflict)
         removed.extend(snapshot.keys().filter(|k| !source.tracks.contains_key(*k)).cloned());
     }
 
+    if opts.add_only {
+        removed.clear();
+    }
     // A key that was added on one side and removed on the other is the ambiguous case the
     // snapshots exist to narrow, and it can still happen when both changed since the last run.
     let conflicted: Vec<String> = added.intersection(&removed).cloned().collect();
@@ -447,8 +510,16 @@ pub fn plan(state: &State, device: &Source, lastfm: &Source, conflict: Conflict)
     // merged list lost to someone else's removal is not resurrected, but anything it has that was
     // never in the state at all has already been added above.
     out.liked = liked;
+    if opts.add_only {
+        // What either side holds stays, including an unlike an earlier run left on the other side.
+        for source in sources.iter().filter(|s| s.available) {
+            for (key, track) in &source.tracks {
+                out.liked.entry(key.clone()).or_insert_with(|| track.clone());
+            }
+        }
+    }
 
-    if device.available {
+    if device.available && opts.direction != Direction::ToLastfm {
         for (key, track) in &out.liked {
             if !device.tracks.contains_key(key) {
                 out.device_add.push(track.clone());
@@ -460,7 +531,7 @@ pub fn plan(state: &State, device: &Source, lastfm: &Source, conflict: Conflict)
             }
         }
     }
-    if lastfm.available {
+    if lastfm.available && opts.direction != Direction::ToPlayer {
         for (key, track) in &out.liked {
             if !lastfm.tracks.contains_key(key) {
                 out.lastfm_love.push(track.clone());
@@ -673,7 +744,7 @@ mod tests {
             &State::default(),
             &source("device", &[("Bonobo", "Kerala")]),
             &source("lastfm", &[("Bicep", "Atlas")]),
-            Conflict::default(),
+            &Options::default(),
         );
         assert!(plan.first_run);
         assert_eq!(plan.liked.len(), 2);
@@ -690,7 +761,7 @@ mod tests {
         // Both knew about Kerala last time; the player no longer has it, so it was unliked there.
         let state = state_with(&[("Bonobo", "Kerala")], &[("Bonobo", "Kerala")], &[("Bonobo", "Kerala")]);
         let plan =
-            plan(&state, &source("device", &[]), &source("lastfm", &[("Bonobo", "Kerala")]), Conflict::default());
+            plan(&state, &source("device", &[]), &source("lastfm", &[("Bonobo", "Kerala")]), &Options::default());
         assert!(plan.liked.is_empty());
         assert_eq!(plan.lastfm_unlove.len(), 1);
         assert!(plan.device_add.is_empty(), "it must not be pushed back to the player it was removed on");
@@ -703,7 +774,7 @@ mod tests {
             &state,
             &Source::missing("device", "the player is not plugged in"),
             &source("lastfm", &[("Bonobo", "Kerala")]),
-            Conflict::default(),
+            &Options::default(),
         );
         assert_eq!(plan.liked.len(), 1, "an unplugged player is not an unlike");
         assert!(plan.lastfm_unlove.is_empty());
@@ -723,7 +794,7 @@ mod tests {
         device.additive_only = true;
         device.note = "an import is still waiting to be merged — additive only".into();
         let plan =
-            plan(&state, &device, &source("lastfm", &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]), Conflict::default());
+            plan(&state, &device, &source("lastfm", &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]), &Options::default());
         assert_eq!(plan.liked.len(), 2);
         assert!(plan.lastfm_unlove.is_empty(), "the pending push must not come back as an unlove");
         assert_eq!(plan.device_add.len(), 1, "Atlas is still owed to the player");
@@ -735,12 +806,65 @@ mod tests {
         let state = state_with(&[("Bicep", "Atlas")], &[], &[("Bicep", "Atlas")]);
         let device = source("device", &[]);
         let lastfm = source("lastfm", &[("Bicep", "Atlas")]);
-        let keep = plan(&state, &device, &lastfm, Conflict::KeepLiked);
+        let keep = plan(&state, &device, &lastfm, &Options { conflict: Conflict::KeepLiked, ..Options::default() });
         assert_eq!(keep.liked.len(), 1);
         assert_eq!(keep.device_add.len(), 1);
-        let drop = plan(&state, &device, &lastfm, Conflict::KeepRemoved);
+        let drop = plan(&state, &device, &lastfm, &Options { conflict: Conflict::KeepRemoved, ..Options::default() });
         assert!(drop.liked.is_empty());
         assert_eq!(drop.lastfm_unlove.len(), 1);
+    }
+
+    #[test]
+    fn a_one_way_run_leaves_the_other_side_alone_and_owes_it_later() {
+        // Kerala unliked on the player; Atlas loved on Last.fm.
+        let state = state_with(&[("Bonobo", "Kerala")], &[("Bonobo", "Kerala")], &[("Bonobo", "Kerala")]);
+        let device = source("device", &[]);
+        let lastfm = source("lastfm", &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]);
+        let to_player = Options { direction: Direction::ToPlayer, ..Options::default() };
+        let p = plan(&state, &device, &lastfm, &to_player);
+        assert!(p.lastfm_love.is_empty() && p.lastfm_unlove.is_empty(), "Last.fm is not written");
+        assert_eq!(p.device_add.len(), 1, "Atlas reaches the player");
+        assert!(!p.liked.contains_key(&keys::key("Bonobo", "Kerala")), "the unlike is owed to Last.fm");
+        let to_lastfm = Options { direction: Direction::ToLastfm, ..Options::default() };
+        let p = plan(&state, &device, &lastfm, &to_lastfm);
+        assert!(p.device_add.is_empty() && p.device_remove.is_empty(), "the player is not written");
+        assert_eq!(p.lastfm_unlove.len(), 1);
+    }
+
+    #[test]
+    fn add_only_never_removes_on_either_side() {
+        let state = state_with(
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+        );
+        let device = source("device", &[("Bicep", "Atlas"), ("Burial", "Archangel")]);
+        let lastfm = source("lastfm", &[("Bonobo", "Kerala"), ("Bicep", "Atlas")]);
+        let p = plan(&state, &device, &lastfm, &Options { add_only: true, ..Options::default() });
+        assert!(p.device_remove.is_empty() && p.lastfm_unlove.is_empty());
+        assert_eq!((p.device_add.len(), p.lastfm_love.len()), (1, 1), "Kerala back, Archangel out");
+    }
+
+    #[test]
+    fn a_removal_left_alone_stays_on_its_side() {
+        let state = state_with(
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+            &[("Bonobo", "Kerala"), ("Bicep", "Atlas")],
+        );
+        // Kerala unloved on Last.fm, Atlas unliked on the player.
+        let mut p = plan(
+            &state,
+            &source("device", &[("Bonobo", "Kerala")]),
+            &source("lastfm", &[("Bicep", "Atlas")]),
+            &Options::default(),
+        );
+        let numbered: Vec<(Side, String)> = p.removals().map(|(s, t)| (s, t.title.clone())).collect();
+        assert_eq!(numbered, [(Side::Player, "Kerala".into()), (Side::Lastfm, "Atlas".into())]);
+        p.leave(|n, _, _| n == 1);
+        assert!(p.device_remove.is_empty() && p.lastfm_unlove.len() == 1);
+        assert!(p.held(Side::Player).contains_key(&keys::key("Bonobo", "Kerala")), "Kerala stays on the player");
+        assert!(!p.held(Side::Lastfm).contains_key(&keys::key("Bonobo", "Kerala")));
     }
 
     #[test]
@@ -749,7 +873,7 @@ mod tests {
             &State::default(),
             &source("device", &[("Little Simz feat. Cleo Sol", "Woman")]),
             &source("lastfm", &[("Little Simz", "Woman (Explicit)")]),
-            Conflict::default(),
+            &Options::default(),
         );
         assert_eq!(plan.liked.len(), 1, "one track, two spellings");
         assert!(plan.changes() == 0, "nothing to move — both sides already have it");

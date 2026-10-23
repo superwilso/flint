@@ -87,6 +87,16 @@ pub enum Id {
     ToggleSensMe,
     /// Copy cover art and lyrics that sit beside the music.
     ToggleExtras,
+    /// Tick row `n` of what is on the player that Flint did not put there, to remove it with the copy.
+    ToggleForeign(usize),
+    /// Tick pair `n` of the same recording on two albums, to store it once.
+    TogglePair(usize),
+    /// Likes & plays ▸ which way Compare and Sync may move likes.
+    LikesWay(flint_core::likes::Direction),
+    /// Likes & plays ▸ only add likes, never remove one.
+    ToggleAddOnly,
+    /// Likes & plays ▸ untick removal `n` of the comparison, to leave that like where it is.
+    ToggleLikeRemoval(usize),
     /// Work out what would be copied, and show it. Writes nothing.
     Plan,
     /// Carry the plan out.
@@ -275,13 +285,15 @@ pub fn lastfm_facts(c: &flint_core::lastfm::Credentials) -> Lastfm {
 }
 
 /// What "Compare likes" found would change.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct LikesPlan {
     pub liked: usize,
     pub device_add: usize,
     pub device_remove: usize,
     pub lastfm_love: usize,
     pub lastfm_unlove: usize,
+    /// Every removal, in the order `likes::Plan::removals` gives them.
+    pub removals: Vec<(flint_core::likes::Side, flint_core::likes::Track)>,
 }
 
 impl LikesPlan {
@@ -847,6 +859,14 @@ pub struct Model {
     pub planned: bool,
     /// The shown plan's key, which Copy must still match.
     pub plan_key: Option<u64>,
+    /// What the shown plan found on the player that Flint did not put there: kept unless ticked.
+    pub foreign: Vec<flint_core::sync::Foreign>,
+    /// The rows of `foreign` ticked for removal, as `(volume, name)`.
+    pub also_remove: std::collections::BTreeSet<(usize, String)>,
+    /// The same recording on two albums, as the last plan found it: ticked = stored once.
+    pub pairs: Vec<(flint_core::shared::Pair, bool)>,
+    /// Ticks and unticks of `pairs` not yet saved; the next plan saves them first.
+    pub pair_answers: Vec<(flint_core::shared::Pair, bool)>,
     /// What the library holds, once a job has read it.
     pub source: Option<LibraryFacts>,
     /// What each destination holds and what the plan would add, in the same order as `volumes`.
@@ -873,6 +893,12 @@ pub struct Model {
     pub check_verdict: Option<usize>,
     /// The last "Compare likes", until something makes it stale.
     pub likes_plan: Option<LikesPlan>,
+    /// Likes & plays ▸ which way likes may move. Per run: not kept in `gui.conf`.
+    pub likes_way: flint_core::likes::Direction,
+    /// Likes & plays ▸ only add, never remove. Kept in `gui.conf`.
+    pub likes_add_only: bool,
+    /// The removals of `likes_plan` unticked, as `(side, key)`: those likes stay where they are.
+    pub likes_leave: std::collections::BTreeSet<(flint_core::likes::Side, String)>,
     /// Where the analysis cache lives, for Settings.
     pub cache_dir: String,
     /// What new SensMe analysis still needs on this PC. Both false until the window has looked.
@@ -894,6 +920,13 @@ pub struct Model {
 impl Model {
     /// The state a freshly opened window is in. SensMe and the extras are on because they are what
     /// Flint is for; both are one click away from off.
+    /// What Sync likes would change: the comparison, less the removals unticked.
+    pub fn likes_changes(&self) -> Option<usize> {
+        let p = self.likes_plan.as_ref()?;
+        let left = p.removals.iter().filter(|(s, t)| self.likes_leave.contains(&(*s, t.key()))).count();
+        Some(p.changes() - left)
+    }
+
     pub fn new() -> Self {
         Model {
             sensme: true,
@@ -1100,6 +1133,8 @@ impl Model {
     /// it stays: it was true before the change and it is true after it.
     pub fn invalidate_plan(&mut self) {
         self.planned = false;
+        self.foreign.clear();
+        self.also_remove.clear();
         for d in self.dest.iter_mut().flatten() {
             d.to_copy = 0;
             d.albums = 0;
@@ -1615,6 +1650,70 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     }
     y += act_h + 10;
 
+    // ── what the plan asks of the owner ─────────────────────────────────────────────────────
+    //
+    // Two kinds of tick, in one list where the hand already is, each under its own line:
+    // * what Flint did not put on the player (audit F1): kept unless ticked;
+    // * the same recording on two albums: ticked, it is copied once and listed under both.
+    // Five lines show, then the list scrolls.
+    let mut lines: Vec<(Id, String, Option<bool>)> = Vec::new();
+    if !m.foreign.is_empty() {
+        let two = m.volumes[1].is_some();
+        lines.push((
+            Id::None,
+            "On the player, not put there by Flint. Kept unless ticked; ticked ones go with the copy.".into(),
+            None,
+        ));
+        for (i, f) in m.foreign.iter().enumerate() {
+            let place = if !two {
+                ""
+            } else if f.volume == 0 {
+                ", player"
+            } else {
+                ", card"
+            };
+            let what = if f.playlist {
+                "playlist".to_string()
+            } else if f.files == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", thousands(f.files))
+            };
+            let ticked = m.also_remove.contains(&(f.volume, f.name.clone()));
+            lines.push((Id::ToggleForeign(i), format!("{} ({what}{place})", f.name), Some(ticked)));
+        }
+    }
+    if !m.pairs.is_empty() {
+        lines.push((
+            Id::None,
+            "The same recording on two albums. Ticked: copied once, listed under both in Cinder.".into(),
+            None,
+        ));
+        for (i, (p, yes)) in m.pairs.iter().enumerate() {
+            lines.push((Id::TogglePair(i), format!("{}  (same as {})", p.also, p.keep), Some(*yes)));
+        }
+    }
+    if !lines.is_empty() {
+        const ROW: i32 = 24;
+        const ROWS: usize = 5;
+        y += 6;
+        let visible = lines.len().min(ROWS);
+        let first = m.scroll[Tab::Sync.index()][Area::Table as usize].min(lines.len() - visible);
+        for (k, (id, text, ticked)) in lines.iter().enumerate().skip(first).take(visible) {
+            let rect = Rect::new(PAD, y + (k - first) as i32 * ROW, inner - 20, 22);
+            out.push(match ticked {
+                Some(on_) => {
+                    Widget { id: *id, rect, kind: Kind::Check { on: *on_, enabled: on(*id) }, text: text.clone() }
+                }
+                None => hint(text.as_str(), Rect::new(rect.x, rect.y + 3, rect.w, 18)),
+            });
+        }
+        if lines.len() > visible {
+            pages::scrollbar(&mut out, Area::Table, (PAD, y, inner, visible as i32 * ROW), first, visible, lines.len());
+        }
+        y += visible as i32 * ROW + 10;
+    }
+
     // The library tools (analyse, import Music Center's work, check the FLACs) moved to the
     // SensMe and Check pages, which are about them. What is left here is the sync.
     y -= 10;
@@ -1813,7 +1912,7 @@ fn ready(m: &Model, job: Job) -> bool {
             m.lastfm.signed_in() && volume && m.player.read && m.player.plays.iter().any(|p| p.kind == "PLAY")
         }
         Job::CompareLikes => m.lastfm.signed_in() && volume,
-        Job::SyncLikes => m.lastfm.signed_in() && volume && m.likes_plan.is_some_and(|p| p.changes() > 0),
+        Job::SyncLikes => m.lastfm.signed_in() && volume && m.likes_changes().is_some_and(|n| n > 0),
         Job::SavePalette => m.draft.open && m.palette_dir.is_some() && m.draft.problems().is_empty(),
         Job::FetchPalettes => m.palette_dir.is_some(),
         Job::FetchShop => true,
@@ -1837,7 +1936,13 @@ pub fn live(m: &Model, id: Id) -> bool {
         | Id::GetFfmpeg => true,
         Id::PickLibrary => !m.library_locked(),
         Id::PickVolume(_) | Id::ClearVolume(_) => !m.volumes_locked(),
-        Id::PickPlaylists | Id::ClearPlaylists | Id::ToggleSensMe | Id::ToggleExtras => !m.sync_running(),
+        Id::PickPlaylists
+        | Id::ClearPlaylists
+        | Id::ToggleSensMe
+        | Id::ToggleExtras
+        | Id::ToggleForeign(_)
+        | Id::TogglePair(_) => !m.sync_running(),
+        Id::LikesWay(_) | Id::ToggleAddOnly | Id::ToggleLikeRemoval(_) => !m.held(Hold::Lastfm),
         Id::PickPalettes => !m.held(Hold::Palettes),
         Id::Field(Field::CheckFilter) | Id::BrowsePalettes => true,
         Id::NewPalette => !m.draft.open,
@@ -1887,6 +1992,44 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
         Id::ToggleExtras => {
             m.extras = !m.extras;
             m.invalidate_plan();
+        }
+        // A change to the plan: one file fewer to copy, perhaps one more to remove. Show it again.
+        Id::TogglePair(i) => {
+            if let Some((p, yes)) = m.pairs.get_mut(i) {
+                *yes = !*yes;
+                let answer = (p.clone(), *yes);
+                m.pair_answers.retain(|(q, _)| *q != answer.0);
+                m.pair_answers.push(answer);
+                m.invalidate_plan();
+            }
+        }
+        // Not a change to the plan: the plan already lists these, and Copy removes the ticked ones.
+        Id::ToggleForeign(i) => {
+            if let Some(f) = m.foreign.get(i) {
+                let key = (f.volume, f.name.clone());
+                if !m.also_remove.remove(&key) {
+                    m.also_remove.insert(key);
+                }
+            }
+        }
+        // Another way or rule is another comparison: the one shown no longer says what Sync does.
+        Id::LikesWay(d) => {
+            if m.likes_way != d {
+                m.likes_way = d;
+                m.likes_plan = None;
+            }
+        }
+        Id::ToggleAddOnly => {
+            m.likes_add_only = !m.likes_add_only;
+            m.likes_plan = None;
+        }
+        Id::ToggleLikeRemoval(i) => {
+            if let Some((side, t)) = m.likes_plan.as_ref().and_then(|p| p.removals.get(i)) {
+                let key = (*side, t.key());
+                if !m.likes_leave.remove(&key) {
+                    m.likes_leave.insert(key);
+                }
+            }
         }
         Id::ClearVolume(i) => {
             m.volumes[i] = None;
@@ -2102,6 +2245,11 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
             m.planned = job == Job::Plan;
             m.plan_key = Some(key);
         }
+        Update::Pairs(rows) => m.pairs = rows,
+        Update::Foreign(rows) => {
+            m.also_remove.retain(|(v, n)| rows.iter().any(|f| f.volume == *v && &f.name == n));
+            m.foreign = rows;
+        }
         Update::Library(facts) => m.source = Some(facts),
         Update::Volume(i, facts) => {
             if let Some(slot) = m.dest.get_mut(i) {
@@ -2155,7 +2303,13 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
             m.player.plays = plays;
             m.player.unreadable = unreadable;
         }
-        Update::Likes(plan) => m.likes_plan = plan,
+        Update::Likes(plan) => {
+            if let Some(p) = &plan {
+                m.likes_leave.retain(|(s, k)| p.removals.iter().any(|(rs, t)| rs == s && &t.key() == k));
+                m.scroll[Tab::Likes.index()][Area::Table as usize] = 0;
+            }
+            m.likes_plan = plan;
+        }
         // The platform opens it; there is nothing to keep.
         Update::Open(_) => {}
     }
@@ -2993,6 +3147,29 @@ mod tests {
         // Choosing a theme is a click like any other, and starts nothing.
         assert_eq!(click(&mut m, Id::Theme(ThemePref::Dark)), None);
         assert_eq!(m.theme, ThemePref::Dark);
+    }
+
+    /// An unticked removal is left out of Sync's count; another way or rule needs a new comparison.
+    #[test]
+    fn likes_removals_can_be_left_and_the_way_makes_the_comparison_stale() {
+        use flint_core::likes::{Direction, Side, Track};
+        let mut m = Model::new();
+        let plan = LikesPlan {
+            device_remove: 1,
+            lastfm_love: 1,
+            removals: vec![(Side::Player, Track::new("Bonobo", "Kerala"))],
+            ..LikesPlan::default()
+        };
+        update(&mut m, Job::CompareLikes, job::Update::Likes(Some(plan.clone())));
+        assert_eq!(m.likes_changes(), Some(2));
+        click(&mut m, Id::ToggleLikeRemoval(0));
+        assert_eq!(m.likes_changes(), Some(1), "the unticked removal does not happen");
+        update(&mut m, Job::CompareLikes, job::Update::Likes(Some(plan)));
+        assert_eq!(m.likes_leave.len(), 1, "a fresh comparison keeps the untick of a removal still in it");
+        click(&mut m, Id::LikesWay(Direction::ToLastfm));
+        assert!(m.likes_plan.is_none());
+        click(&mut m, Id::ToggleAddOnly);
+        assert!(m.likes_add_only);
     }
 
     /// A clear button only exists when there is something to clear.

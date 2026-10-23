@@ -12,6 +12,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::cache::write_atomic;
 use crate::sync::{Copy, Manifest, Plan, Record, Volume};
 use crate::{flac, id3};
 
@@ -149,6 +150,7 @@ pub fn apply(
                 continue;
             }
         }
+        manifests.get_mut(*v).map(|m| m.records.remove(name));
         out.removed += 1;
         on_event(&Event::Removed { volume: *v, rel: name.clone() });
     }
@@ -214,7 +216,17 @@ pub fn apply(
     for (name, (v, tracks)) in playlists {
         let path = volumes[*v].root.join(name);
         let body = playlist_body(tracks);
+        // In the manifest like a copy, so a later sync knows this playlist is Flint's to remove.
+        // Recorded when it already matches too: one an older Flint wrote is claimed that way.
+        let claim = |m: &mut [Manifest]| {
+            if !dry_run {
+                let record =
+                    Record { source_size: 0, source_mtime: 0, copy_size: body.len() as u64, tag: String::new() };
+                m.get_mut(*v).map(|m| m.records.insert(name.clone(), record));
+            }
+        };
         if fs::read_to_string(&path).is_ok_and(|on_device| on_device == body) {
+            claim(manifests);
             continue;
         }
         if !dry_run {
@@ -225,8 +237,28 @@ pub fn apply(
                 continue;
             }
         }
+        claim(manifests);
         out.playlists += 1;
         on_event(&Event::Playlist { name: name.clone(), volume: *v, tracks: tracks.len() });
+    }
+
+    // The songs stored once, after the copies they name. Left for the next run after a Stop, like
+    // the playlists.
+    if !out.stopped && !dry_run {
+        for (v, body) in &plan.shared_lists {
+            let path = volumes[*v].root.join(crate::shared::LIST_NAME);
+            let done = match body {
+                Some(b) => write_atomic(&path, b.as_bytes()),
+                None => {
+                    fs::remove_file(&path)
+                        .or_else(|e| if e.kind() == io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+                }
+            };
+            if let Err(e) = done {
+                out.failed += 1;
+                on_event(&Event::Failed { what: path.display().to_string(), error: e.to_string() });
+            }
+        }
     }
 
     if !dry_run {
@@ -333,6 +365,9 @@ mod tests {
             "Gone/Disc 1/01.flac".into(),
             Record { source_size: 1, source_mtime: 1, copy_size: 1, tag: String::new() },
         );
+        manifests[0]
+            .records
+            .insert("old.m3u8".into(), Record { source_size: 0, source_mtime: 0, copy_size: 20, tag: String::new() });
         let plan = sync::plan(
             &[],
             &volumes,
@@ -372,6 +407,7 @@ mod tests {
 
         apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, || false, |_| {}).unwrap();
         assert_eq!(fs::read_to_string(dev.join("mix.m3u8")).unwrap(), "Artist/01.flac\n");
+        assert!(manifests[0].records.contains_key("mix.m3u8"), "the playlist is Flint's to sweep later");
         // A second run leaves an unchanged playlist alone.
         assert!(playlists_to_write(&plan, &volumes).is_empty());
         let out = apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, || false, |_| {}).unwrap();

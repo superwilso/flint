@@ -6,7 +6,6 @@
 //! both sides, says what it would do, and writes nothing — the same dry run the terminal has always
 //! had.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::{lastfm, likes, scrobblelog};
@@ -18,8 +17,11 @@ pub struct ScrobbleReport {
     pub found: usize,
     pub accepted: usize,
     pub ignored: usize,
-    /// Plays Last.fm refused. They stay in the log.
+    /// Plays Last.fm refused for now (code 4, too new, and anything else). They stay in the log.
     pub kept: usize,
+    /// Plays Last.fm refused for good (code 3, more than 14 days old): moved out of the log into
+    /// `.scrobbler.refused.log` beside it, with the reason, rather than re-sent on every run.
+    pub refused: usize,
     /// Rows taken out of the logs because Last.fm has them now.
     pub removed: usize,
     /// Why the run stopped early, when it did. What was accepted before that is still removed.
@@ -88,11 +90,12 @@ pub fn scrobble(
     let mut client = lastfm::Client::new(creds).map_err(|e| e.to_string())?;
     'volumes: for (path, log, plays) in &found {
         let mut accepted_rows: Vec<scrobblelog::Entry> = Vec::new();
+        let mut refused_rows: Vec<(scrobblelog::Entry, String)> = Vec::new();
         let (mut accepted, mut ignored) = (0usize, 0usize);
         for batch in plays.chunks(lastfm::BATCH) {
             if cancel() {
                 report.stopped = Some("stopped before the next batch".into());
-                rewrite(path, log, &accepted_rows, &mut report, say)?;
+                rewrite(path, log, &accepted_rows, &refused_rows, &mut report, say)?;
                 break 'volumes;
             }
             // What goes over the wire carries real UTC; what comes out of the file is found by
@@ -103,19 +106,23 @@ pub fn scrobble(
                 Ok(result) => {
                     accepted += result.accepted;
                     ignored += result.ignored;
-                    report.kept += result.rejected.len();
-                    let refused: HashSet<_> = result.rejected.iter().map(|(entry, _)| entry.identity()).collect();
-                    for (entry, why) in &result.rejected {
-                        say(format!("    kept: {} — {} ({why})", entry.artist, entry.track));
+                    for (entry, why, code) in &result.rejected {
+                        let what = if *code == TOO_OLD { "moved to the refused log" } else { "kept" };
+                        say(format!("    {what}: {} — {} ({why})", entry.artist, entry.track));
                     }
-                    // Only what Last.fm took comes out of the file.
-                    accepted_rows.extend(
-                        batch
-                            .iter()
-                            .zip(&wire)
-                            .filter(|(_, sent)| !refused.contains(&sent.identity()))
-                            .map(|(e, _)| e.clone()),
-                    );
+                    // What Last.fm took comes out of the file, and so does what it can never take,
+                    // into the refused log; the rest stays to be sent again.
+                    for (original, sent) in batch.iter().zip(&wire) {
+                        let refusal = result.rejected.iter().find(|(e, _, _)| e.identity() == sent.identity());
+                        match refusal {
+                            None => accepted_rows.push(original.clone()),
+                            Some((_, why, code)) if *code == TOO_OLD => {
+                                refused_rows.push((original.clone(), why.clone()));
+                                report.refused += 1;
+                            }
+                            _ => report.kept += 1,
+                        }
+                    }
                 }
                 Err(e) => {
                     // Stop at the first batch that fails: the file is rewritten with whatever was
@@ -129,7 +136,7 @@ pub fn scrobble(
         report.accepted += accepted;
         report.ignored += ignored;
         say(format!("{}: {} accepted, {} ignored by Last.fm", path.display(), thousands(accepted), ignored));
-        rewrite(path, log, &accepted_rows, &mut report, say)?;
+        rewrite(path, log, &accepted_rows, &refused_rows, &mut report, say)?;
         if report.stopped.is_some() {
             break;
         }
@@ -149,19 +156,45 @@ fn to_send(log: &scrobblelog::Log, batch: &[scrobblelog::Entry]) -> Vec<scrobble
         .collect()
 }
 
+/// Last.fm's ignored-message code for a timestamp more than 14 days old: it will never be taken.
+const TOO_OLD: u32 = 3;
+
+/// The file beside each `.scrobbler.log` that keeps the plays Last.fm refused for good.
+pub const REFUSED_LOG: &str = ".scrobbler.refused.log";
+
 fn rewrite(
     path: &Path,
     log: &scrobblelog::Log,
     sent: &[scrobblelog::Entry],
+    refused: &[(scrobblelog::Entry, String)],
     report: &mut ScrobbleReport,
     say: &mut dyn FnMut(String),
 ) -> Result<(), String> {
-    if sent.is_empty() {
+    if sent.is_empty() && refused.is_empty() {
         return Ok(());
     }
-    let body = scrobblelog::rewrite(log, sent);
+    // The refused rows are written BEFORE they leave the log, so a pulled cable between the two
+    // leaves a row in both files rather than in neither.
+    if !refused.is_empty() {
+        let out = path.with_file_name(REFUSED_LOG);
+        let mut body = std::fs::read_to_string(&out).unwrap_or_default();
+        if body.is_empty() {
+            body.push_str("# Plays Last.fm refused for good (more than 14 days old), moved here by Flint.\n");
+            body.push_str("# Each row is as the player wrote it, after a line saying why.\n");
+        }
+        for (entry, why) in refused {
+            body.push_str(&format!("# {why}\n{}\n", entry.raw));
+        }
+        write_atomic(&out, &body).map_err(|e| format!("{}: {e}", out.display()))?;
+    }
+    let mut gone: Vec<scrobblelog::Entry> = sent.to_vec();
+    gone.extend(refused.iter().map(|(e, _)| e.clone()));
+    let body = scrobblelog::rewrite(log, &gone);
     write_atomic(path, &body).map_err(|e| format!("{}: {e}", path.display()))?;
     say(format!("    {} row(s) removed from the log", thousands(sent.len())));
+    if !refused.is_empty() {
+        say(format!("    {} row(s) moved to {REFUSED_LOG}", thousands(refused.len())));
+    }
     report.removed += sent.len();
     Ok(())
 }
@@ -193,12 +226,17 @@ pub struct LikesReport {
     pub pushed: bool,
 }
 
-/// Keep the player's liked songs and Last.fm's loved tracks in step, both ways. `state_path` is
-/// where the last run's picture of each side is kept; `playlist` also writes `Liked Songs.m3u8`.
+/// Keep the player's liked songs and Last.fm's loved tracks in step, the ways `opts` allows.
+/// `state_path` is where the last run's picture of each side is kept; `leave` names removals to
+/// leave alone this run, numbered as [`likes::Plan::removals`] lists them; `playlist` also writes
+/// `Liked Songs.m3u8`.
+#[allow(clippy::too_many_arguments)]
 pub fn likes(
     roots: &[PathBuf],
     creds: lastfm::Credentials,
     state_path: &Path,
+    opts: &likes::Options,
+    leave: &dyn Fn(usize, likes::Side, &likes::Track) -> bool,
     apply: bool,
     playlist: bool,
     cancel: &dyn Fn() -> bool,
@@ -270,7 +308,15 @@ pub fn likes(
     ));
 
     let state = likes::State::load(state_path);
-    let plan = likes::plan(&state, &device, &lastfm_source, likes::Conflict::default());
+    let mut plan = likes::plan(&state, &device, &lastfm_source, opts);
+    match opts.direction {
+        likes::Direction::Both => {}
+        likes::Direction::ToPlayer => plan.notes.push("to the player only: Last.fm is not written".into()),
+        likes::Direction::ToLastfm => plan.notes.push("to Last.fm only: the player is not written".into()),
+    }
+    if opts.add_only {
+        plan.notes.push("add only: nothing is removed on either side".into());
+    }
     for note in &plan.notes {
         say(format!("  note: {note}"));
     }
@@ -285,9 +331,16 @@ pub fn likes(
     for track in plan.lastfm_love.iter().take(3) {
         say(format!("    love   {} — {}", track.artist, track.title));
     }
-    for track in plan.lastfm_unlove.iter().take(3) {
-        say(format!("    unlove {} — {}", track.artist, track.title));
+    // Every removal, numbered, so one can be left alone (`--leave N`).
+    for (n, (side, track)) in plan.removals().enumerate() {
+        let what = match side {
+            likes::Side::Player => "take off the player",
+            likes::Side::Lastfm => "unlove on Last.fm",
+        };
+        let left = if leave(n + 1, side, track) { "  (left alone)" } else { "" };
+        say(format!("  {:>3}  {what}: {} — {}{left}", n + 1, track.artist, track.title));
     }
+    plan.leave(leave);
 
     let mut report =
         LikesReport { device: device.available, lastfm: lastfm_source.available, ..LikesReport::default() };
@@ -332,8 +385,9 @@ pub fn likes(
     }
 
     // ── the player: the whole list, to the internal volume (where cinder_liked.conf lives) ──
-    if let Some(volume) = present.first() {
-        let tracks: Vec<likes::Track> = plan.liked.values().cloned().collect();
+    let held = plan.held(likes::Side::Player);
+    if let Some(volume) = present.first().filter(|_| opts.direction != likes::Direction::ToLastfm) {
+        let tracks: Vec<likes::Track> = held.values().cloned().collect();
         likes::write_import(volume, &tracks).map_err(|e| format!("{}: {e}", volume.import_path().display()))?;
         say(format!("player: {} track(s) written to {}", thousands(tracks.len()), volume.import_path().display()));
         say("        Cinder merges it on the next start and renames it .done".into());
@@ -347,13 +401,13 @@ pub fn likes(
         for volume in &present {
             let mut seen = 0usize;
             let index = likes::index_volume(volume, |n| seen = n + 1);
-            let rows = likes::playlist_rows(&plan.liked, &index);
+            let rows = likes::playlist_rows(&held, &index);
             likes::write_playlist(volume, &rows).map_err(|e| format!("{}: {e}", volume.playlist_path().display()))?;
             say(format!(
                 "{}: {} of {} liked track(s) found among {} file(s) — {}",
                 volume.label,
                 rows.len(),
-                plan.liked.len(),
+                held.len(),
                 thousands(seen),
                 volume.playlist_path().display()
             ));
@@ -365,12 +419,16 @@ pub fn likes(
     // once it merges, and recording the old one would make the push look like an unlike.
     let mut next = likes::State { last_sync: now_unix(), liked: plan.liked.clone(), ..likes::State::default() };
     if device.available {
-        next.snapshots.insert("device".into(), if report.pushed { plan.liked.clone() } else { device.tracks.clone() });
+        next.snapshots.insert("device".into(), if report.pushed { held } else { device.tracks.clone() });
     } else if let Some(old) = state.snapshots.get("device") {
         next.snapshots.insert("device".into(), old.clone());
     }
     if lastfm_source.available {
-        next.snapshots.insert("lastfm".into(), plan.liked.clone());
+        let written = opts.direction != likes::Direction::ToPlayer;
+        next.snapshots.insert(
+            "lastfm".into(),
+            if written { plan.held(likes::Side::Lastfm) } else { lastfm_source.tracks.clone() },
+        );
     } else if let Some(old) = state.snapshots.get("lastfm") {
         next.snapshots.insert("lastfm".into(), old.clone());
     }
@@ -410,6 +468,30 @@ mod tests {
     const LOG: &str = "#AUDIOSCROBBLER/1.1\n#TZ/UNKNOWN\n#CLIENT/Cinder\n\
         A\tAl\tFirst\t1\t200\tL\t1700000000\t\n\
         A\tAl\tSecond\t2\t200\tS\t1700000300\t\n";
+
+    /// Plays Last.fm took leave the log; plays it refused for good leave it too, into the refused
+    /// log with the reason, before the log is rewritten; everything else stays.
+    #[test]
+    fn refused_for_good_moves_to_its_own_log() {
+        let vol = tmp("refused");
+        let path = vol.join(".scrobbler.log");
+        let body = "#AUDIOSCROBBLER/1.1\n#TZ/UTC\n\
+            A\tAl\tTaken\t1\t200\tL\t1700000000\t\n\
+            A\tAl\tOld\t2\t200\tL\t1600000000\t\n\
+            A\tAl\tLater\t3\t200\tL\t1700000600\t\n";
+        std::fs::write(&path, body).unwrap();
+        let log = scrobblelog::parse(body);
+        let row = |t: &str| log.entries.iter().find(|e| e.track == t).unwrap().clone();
+        let mut report = ScrobbleReport::default();
+        let refused = vec![(row("Old"), "Timestamp too old (code 3)".to_string())];
+        rewrite(&path, &log, &[row("Taken")], &refused, &mut report, &mut |_| {}).unwrap();
+        let left = std::fs::read_to_string(&path).unwrap();
+        let moved = std::fs::read_to_string(vol.join(REFUSED_LOG)).unwrap();
+        let _ = std::fs::remove_dir_all(&vol);
+        assert!(left.contains("\tLater\t") && !left.contains("\tTaken\t") && !left.contains("\tOld\t"));
+        assert!(moved.contains("# Timestamp too old (code 3)\nA\tAl\tOld\t2\t200\tL\t1600000000\t"));
+        assert_eq!(report.removed, 1, "only what Last.fm took counts as sent");
+    }
 
     /// A dry run reads the log, counts the plays and writes nothing — and needs no account.
     #[test]
@@ -468,6 +550,8 @@ mod tests {
             std::slice::from_ref(&vol),
             lastfm::Credentials::default(),
             &state,
+            &likes::Options::default(),
+            &|_, _, _| false,
             false,
             false,
             &|| false,

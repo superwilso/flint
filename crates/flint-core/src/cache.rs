@@ -91,12 +91,22 @@ pub fn content_key(path: &Path) -> io::Result<Option<String>> {
         f.seek(SeekFrom::Start(layout.audio_offset))?;
         return Ok(Some(format!("flacraw-{:016x}-{len}", fnv1a(&mut f, len)?)));
     }
-    let start = match id3::read_tag(&mut f) {
+    f.seek(SeekFrom::Start(0))?;
+    let Some((start, len)) = mp3_audio_span(&mut f)? else { return Ok(None) };
+    f.seek(SeekFrom::Start(start))?;
+    Ok(Some(format!("mp3-{:016x}-{len}", fnv1a(&mut f, len)?)))
+}
+
+/// Where an MP3's audio starts and how long it is: past the ID3v2 tag, short of any ID3v1 tag.
+/// `None` when the file does not start its audio with an MPEG frame sync. Cheap — two small
+/// reads — so two files can be told apart by length before either is hashed.
+pub fn mp3_audio_span<R: Read + Seek>(f: &mut R) -> io::Result<Option<(u64, u64)>> {
+    let start = match id3::read_tag(f) {
         Ok(Some(tag)) => tag.total_len as u64,
         Ok(None) => 0,
         Err(_) => return Ok(None),
     };
-    let total = f.get_ref().metadata()?.len();
+    let total = f.seek(SeekFrom::End(0))?;
     let mut end = total;
     if total >= start + 128 {
         f.seek(SeekFrom::Start(total - 128))?;
@@ -111,9 +121,7 @@ pub fn content_key(path: &Path) -> io::Result<Option<String>> {
     if f.read_exact(&mut head).is_err() || !(head[0] == 0xff && head[1] & 0xe0 == 0xe0) {
         return Ok(None);
     }
-    f.seek(SeekFrom::Start(start))?;
-    let len = end - start;
-    Ok(Some(format!("mp3-{:016x}-{len}", fnv1a(&mut f, len)?)))
+    Ok(Some((start, end - start)))
 }
 
 pub fn stat(path: &Path) -> io::Result<(u64, i64)> {

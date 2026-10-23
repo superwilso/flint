@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.2.3 — 2026-10-23
+
+### Copying
+
+- **A sync removes only what Flint put on the player.** It used to remove anything the plan did
+  not place, so a first sync onto a player filled by Music Center or by hand planned to delete
+  all of it. Flint now removes only files and playlists its manifest says it wrote, and copies of
+  the library's own tracks. Everything else is listed under *On the player, not put there by
+  Flint*, kept, and removed only if you tick it before Copy (`--also-remove <folder>` or
+  `--also-remove '*'` on the command line). Their space is not counted as free until they are
+  gone. Playlists Flint writes are now recorded in the manifest, so it knows them as its own.
+- **An album is the folder that holds the music.** The unit kept together on one volume was the
+  top-level folder, so in an `Artist/Album` library a whole discography had to fit on the player or
+  the card, and was skipped when it fitted on neither. Each album folder now moves on its own; disc
+  folders (`CD1`, `Disc 2`) stay with their album, and art in a subfolder (`Scans/`) goes with the
+  album above it.
+- **A song on two albums is copied once.** Flint finds the same recording in two album folders by
+  its audio, not its tags, and asks: tick the pair in the window, or `flint shared <library> --yes N`.
+  A ticked pair copies one file, and `flint-shared.tsv` on the player lists the other album's entry
+  with its own tags, so Cinder shows the song on both albums. A "no" is remembered and not asked again.
+
+### Palettes
+
+- **The palette checker is held to the player's verdicts.** A shared set of palette files
+  (`contracts/palettes/`) with the reason the player refuses each one; Flint must give the same
+  reasons word for word, and Cinder's tests hold the player to the same list.
+- **The palette shop opens faster on Windows.** Every file was fetched over a new WinHTTP session,
+  so a shop of 200 palettes made 200 TLS handshakes. One session now serves the whole run and
+  WinHTTP reuses its connection.
+
 ### Last.fm
 
 - **Plays from a log with no header are sent at the right time.** The owner's player had lost the
@@ -9,8 +39,13 @@
   summer time every play reached Last.fm an hour late, and a play from 40 minutes earlier showed
   as 20 minutes in the future. Only `#TZ/UTC` now means UTC, and a log missing its header gets it
   back when Flint rewrites it.
-
-## 0.2.3 — 2026-10-18
+- **Likes sync is no longer all or nothing.** Choose which way a run goes (both, to the player, to
+  Last.fm), switch on *Only add, never remove*, and untick any single removal to leave that like where
+  it is. On the command line: `--way player|lastfm`, `--add-only` and `--leave N`.
+- **Plays Last.fm will never take stop being re-sent.** Last.fm refuses a play more than 14 days
+  old, and Flint kept it in `.scrobbler.log` and sent it again on every run. Such plays now move
+  to `.scrobbler.refused.log` beside it, each after a line saying why. Plays refused for any other
+  reason stay in the log as before.
 
 ### Playlists and copying
 

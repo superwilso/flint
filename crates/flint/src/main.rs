@@ -11,11 +11,13 @@
 //! flint analyse <track> [--out result.smfmf] [--param id=value]   run Sony's engine, summarise
 //! flint tag-copy <src> <dst> [--smfmf result.smfmf]                 copy with SensMe data (FLAC, MP3)
 //! flint sync <library> --to <volume> [--to <volume>] [--apply]   copy the library to the player
+//! flint shared <library> [--yes N|all] [--no N|all]               a song on two albums, stored once
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
 //! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
 //! flint lastfm key|login|status                                   the Last.fm account, once
 //! flint scrobble <volume> [--apply]                               send the plays in .scrobbler.log
-//! flint likes <volume> [--apply] [--playlist]                     liked songs: player <-> Last.fm
+//! flint likes <volume> [--apply] [--way player|lastfm] [--add-only] [--leave N|all] [--playlist]
+//!                                                                 liked songs: player <-> Last.fm
 //! flint stats <volume> [--to <sd card>] [--apply]                 seed the player's play counts from its scrobble log
 //! flint gui                                                       open the window (Windows)
 //! flint gui-preview <out.svg> [--state name]                      draw the window to an SVG, anywhere
@@ -42,12 +44,13 @@ usage:
   flint check <library folder | file.flac> [--jobs N] [--cache dir] [--all] [--verbose]
   flint analyse <track> [--out result.smfmf] [--param id=value]...
   flint tag-copy <src.flac|src.mp3> <dst> [--smfmf result.smfmf] [--param id=value]...
-  flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras]
+  flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras] [--also-remove <folder|playlist|*>]...
+  flint shared <library folder> [--yes N|all]... [--no N|all]... [--cache dir]
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
   flint lastfm key <api-key> <api-secret> | login <username> | status
   flint scrobble <volume> [<volume>...] [--apply]
-  flint likes <volume> [<volume>...] [--apply] [--playlist]
+  flint likes <volume> [<volume>...] [--apply] [--way both|player|lastfm] [--add-only] [--leave N|all]... [--playlist]
   flint stats <volume> [--to <sd card>] [--apply]
   flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]
   flint gui [--dark | --light]
@@ -69,6 +72,7 @@ fn main() -> ExitCode {
         Some("scan") => scan(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("sync") => sync_cmd(&args[1..]),
+        Some("shared") => shared_cmd(&args[1..]),
         Some("analyse" | "analyze") => analyse(&args[1..]),
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
@@ -124,6 +128,17 @@ struct Opts {
     playlist: bool,
     /// `--library`: the PC's music folder, for `flint playlists` to name files in.
     library: Option<PathBuf>,
+    /// `--also-remove`: folders and playlists on the player that Flint did not write, to sweep too.
+    also_remove: Vec<String>,
+    /// `flint shared --yes / --no`: suggestion numbers, or `all`.
+    yes: Vec<String>,
+    no: Vec<String>,
+    /// `flint likes --way`: which side a run may write.
+    way: Option<String>,
+    /// `flint likes --add-only`: never remove a like anywhere.
+    add_only: bool,
+    /// `flint likes --leave`: removal numbers to leave alone, or `all`.
+    leave: Vec<String>,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -147,6 +162,12 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         dark: None,
         playlist: false,
         library: None,
+        also_remove: Vec::new(),
+        yes: Vec::new(),
+        no: Vec::new(),
+        way: None,
+        add_only: false,
+        leave: Vec::new(),
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -162,6 +183,12 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
             "--from" => o.from = Some(value("--from")?.into()),
             "--library" => o.library = Some(value("--library")?.into()),
+            "--also-remove" => o.also_remove.push(value("--also-remove")?),
+            "--yes" => o.yes.push(value("--yes")?),
+            "--no" => o.no.push(value("--no")?),
+            "--way" => o.way = Some(value("--way")?),
+            "--add-only" => o.add_only = true,
+            "--leave" => o.leave.push(value("--leave")?),
             "--state" => o.state = Some(value("--state")?),
             "--playlist" => o.playlist = true,
             "--dark" => o.dark = Some(true),
@@ -559,6 +586,52 @@ fn print_spectrum(m: &lossless::Measurement) {
     }
 }
 
+/// `flint shared <library> [--yes N|all] [--no N|all]` — the same recording on two albums: list
+/// what Flint found, and answer. A yes stores the song once from the next sync on; a no stops it
+/// being suggested.
+fn shared_cmd(args: &[String]) -> Result<(), String> {
+    use flint_core::shared::{suggest, Answers};
+    let o = opts(args)?;
+    let [library] = o.pos.as_slice() else { return Err(USAGE.into()) };
+    let library = Path::new(library);
+    let cache_dir = o.cache.clone().unwrap_or_else(cache::default_dir);
+    let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
+    let mut answers = Answers::load(&cache_dir);
+    let open: Vec<_> = suggest(library, &source).into_iter().filter(|p| !answers.answered(library, p)).collect();
+    let picked = |list: &[String]| -> Result<Vec<usize>, String> {
+        let mut out = Vec::new();
+        for v in list {
+            if v == "all" {
+                out.extend(0..open.len());
+            } else {
+                match v.parse::<usize>() {
+                    Ok(n) if (1..=open.len()).contains(&n) => out.push(n - 1),
+                    _ => return Err(format!("{v}: give a number from the list (1 to {}) or all", open.len())),
+                }
+            }
+        }
+        Ok(out)
+    };
+    let (yes, no) = (picked(&o.yes)?, picked(&o.no)?);
+    for (list, answer) in [(&yes, true), (&no, false)] {
+        for &i in list {
+            answers.set(library, open[i].clone(), answer);
+        }
+    }
+    if !yes.is_empty() || !no.is_empty() {
+        answers.save(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
+        println!("saved: {} stored once, {} not", yes.len(), no.len());
+    }
+    let left: Vec<(usize, &flint_core::shared::Pair)> =
+        open.iter().enumerate().filter(|(i, _)| !yes.contains(i) && !no.contains(i)).collect();
+    for (i, p) in &left {
+        println!("  {:>3}  {}\n       same recording as {}", i + 1, p.also, p.keep);
+    }
+    let stored = answers.confirmed(library).len();
+    println!("{} found and not answered; {stored} stored once. Answer with --yes N or --no N (or all).", left.len());
+    Ok(())
+}
+
 fn sync_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let [library] = o.pos.as_slice() else { return Err(USAGE.into()) };
@@ -571,6 +644,16 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
 
     println!("reading {}", library.display());
     let budget_gb: Vec<Option<f64>> = o.gb.iter().copied().map(Some).collect();
+    // A yes holds only while the two files still hold the same audio (`flint shared`).
+    let shared: Vec<_> = {
+        let confirmed = flint_core::shared::Answers::load(&cache_dir).confirmed(library);
+        if confirmed.is_empty() {
+            confirmed
+        } else {
+            let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
+            flint_core::shared::suggest(library, &source).into_iter().filter(|p| confirmed.contains(p)).collect()
+        }
+    };
     let req = sync::Request {
         library,
         volumes: &o.to,
@@ -578,6 +661,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         playlists: o.playlists.as_deref(),
         sensme: !o.no_sensme,
         extras: !o.no_extras,
+        shared: &shared,
     };
     let p = sync::prepare(&req, &mut analysis, &mut |n| match n {
         sync::Note::Library { files, bytes } => println!("  {files} files, {}", space::human(bytes)),
@@ -598,8 +682,20 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
         ),
         sync::Note::Playlists(n) => println!("  {n} playlists"),
     })?;
+    let mut p = p;
+    p.plan.also_remove(|_, name| o.also_remove.iter().any(|a| a == "*" || a == name));
     let nothing = p.is_empty();
     let sync::Prepared { plan, volumes, mut manifests, tagged, pending_playlists, .. } = p;
+    // What Flint did not write stays; saying so before "nothing to do" too, or it is never seen.
+    let foreign = plan.foreign();
+    if !foreign.is_empty() {
+        println!("\nkept: {} on the player that Flint did not put there", foreign.len());
+        for f in &foreign {
+            let what = if f.playlist { "playlist".to_string() } else { format!("{} files", f.files) };
+            println!("  kept  {}/{}  ({what})", volumes[f.volume].root.display(), f.name);
+        }
+        println!("to remove one as well, add --also-remove <name>; --also-remove '*' removes them all");
+    }
     println!(
         "\nplan: {} to copy ({} tagged with SensMe data), {} to remove, {} playlists to write",
         plan.copies.len(),
@@ -613,6 +709,9 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     }
     if !plan.skipped.is_empty() {
         println!("  no room for {} albums: {}", plan.skipped.len(), plan.skipped.join(", "));
+    }
+    if !plan.shared.is_empty() {
+        println!("  {} songs stored once, listed under a second album", plan.shared.len());
     }
     if nothing {
         println!("nothing to do.");
@@ -743,11 +842,25 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 "would copy    Aphex Twin - Selected Ambient Works 85-92/02 Tha.flac  +SensMe",
                 "would copy    Bicep - Isles/01 Atlas.flac  +SensMe",
                 "would remove  E:\\Bonobo - Migration/03 Break Apart.flac",
+                "kept          E:\\MUSIC/Music Center  (not Flint's; tick it above to remove it)",
+                "kept          E:\\MUSIC/road trip.m3u8  (not Flint's; tick it above to remove it)",
                 "in all: 2,190 to copy, 1 to remove — scroll up to see each one",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect();
+            m.foreign = vec![
+                sync::Foreign { volume: 0, name: "Music Center".into(), files: 38, playlist: false },
+                sync::Foreign { volume: 0, name: "road trip.m3u8".into(), files: 1, playlist: true },
+            ];
+            m.also_remove.insert((0, "Music Center".into()));
+            m.pairs = vec![(
+                flint_core::shared::Pair {
+                    keep: "Bicep - Isles/01 Atlas.flac".into(),
+                    also: "Bicep - Best of 2017-2021/04 Atlas.flac".into(),
+                },
+                true,
+            )];
             m.status = "Nothing has been written. 2,190 files would be copied — press Copy to the player.".into();
         }
         "working" => {
@@ -861,14 +974,20 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                 m.likes_plan = Some(flint_gui::LikesPlan {
                     liked: 16,
                     device_add: 2,
-                    device_remove: 0,
+                    device_remove: 1,
                     lastfm_love: 3,
-                    lastfm_unlove: 1,
+                    lastfm_unlove: 2,
+                    removals: vec![
+                        (likes::Side::Player, likes::Track::new("Bonobo", "Kerala")),
+                        (likes::Side::Lastfm, likes::Track::new("Bicep", "Glue")),
+                        (likes::Side::Lastfm, likes::Track::new("Floating Points", "Last Bloom")),
+                    ],
                 });
+                m.likes_leave.insert((likes::Side::Lastfm, likes::Track::new("Bicep", "Glue").key()));
                 m.lastfm_log = [
                     "E:\\: 14 liked on the player",
                     "last.fm: 13 loved tracks for you",
-                    "merged: 16 liked; the player gains 2, loses 0; last.fm loves 3, unloves 1",
+                    "merged: 16 liked; the player gains 2, loses 1; last.fm loves 3, unloves 2",
                 ]
                 .iter()
                 .map(|s| s.to_string())
@@ -1123,17 +1242,31 @@ fn scrobble_cmd(args: &[String]) -> Result<(), String> {
 }
 
 /// `flint likes <volume>… [--apply]` — the player's liked songs and Last.fm's loved tracks, kept
-/// in step in both directions.
+/// in step: both ways, or one way with `--way`. `--add-only` never removes; `--leave N` keeps
+/// removal N (as the comparison numbers them) where it is this run.
 fn likes_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let roots: Vec<PathBuf> = if o.pos.is_empty() { o.to.clone() } else { o.pos.iter().map(PathBuf::from).collect() };
     if roots.is_empty() {
         return Err("give the player's drive: flint likes E:\\ [--to F:\\] [--apply]".into());
     }
+    let direction = match o.way.as_deref() {
+        None | Some("both") => likes::Direction::Both,
+        Some("player") => likes::Direction::ToPlayer,
+        Some("lastfm") => likes::Direction::ToLastfm,
+        Some(w) => return Err(format!("--way {w}: give both, player or lastfm")),
+    };
+    let all = o.leave.iter().any(|v| v == "all");
+    let mut leave = Vec::new();
+    for v in o.leave.iter().filter(|v| *v != "all") {
+        leave.push(v.parse::<usize>().map_err(|_| format!("--leave {v}: give a number from the list, or all"))?);
+    }
     lastfm_sync::likes(
         &roots,
         lastfm::Credentials::load(),
         &likes::State::path(),
+        &likes::Options { direction, add_only: o.add_only, ..likes::Options::default() },
+        &|n, _, _| all || leave.contains(&n),
         o.apply,
         o.playlist,
         &|| false,

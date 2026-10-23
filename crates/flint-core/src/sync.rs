@@ -3,11 +3,13 @@
 //! This is the part of the Python `Sony-sync` this replaces (`build_library_plan`, `build_copy_jobs`,
 //! `iter_stale_*`), with the same rules:
 //!
-//! * The library is a folder of album folders. An album is the unit that moves; it is never split.
+//! * An album is the folder that holds the audio ([`album_of`]), at any depth: `Album/`,
+//!   `Artist/Album/`, a disc folder counted with its album. It is the unit that moves; never split.
 //! * Albums that share a playlist are kept together on one volume, so no playlist spans two.
 //! * An album already on a volume stays there if it still fits: a reshuffle would recopy gigabytes.
 //! * Otherwise the album goes wherever leaves the most room, internal memory or card.
-//! * Anything on a volume that the plan does not put there is stale, and swept.
+//! * Anything on a volume that the plan does not put there is stale. Flint sweeps what it wrote
+//!   itself; anything else is listed, and removed only when the owner ticks it (audit F1).
 //!
 //! **The manifest** is what Flint adds. Sony-sync decides a file is up to date by comparing size and
 //! mtime with the source; a SensMe-tagged copy is a few kilobytes larger than its source, so that test
@@ -17,7 +19,7 @@
 //! manifest, the copy on the device is still the size the manifest recorded, and the tag is the one
 //! Flint would write now.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -59,9 +61,34 @@ pub struct SourceFile {
     pub mtime: i64,
 }
 
+/// The album a file belongs to: the folder that holds it, or the one above a disc folder (`CD1`,
+/// `Disc 2`), so the discs of one album move together. A file at the root is its own album.
+///
+/// Until 10-23 it was the top-level folder, which in an `Artist/Album` library made a whole
+/// discography one unit: too big for either volume, it was skipped whole (audit E7).
+// ponytail: disc folders by name only (cd/disc/disk + a number); a box set laid out some other
+// way splits by folder, which still never splits a folder.
+pub fn album_of(rel: &str) -> &str {
+    let Some((dir, _)) = rel.rsplit_once('/') else { return rel };
+    let (parent, last) = dir.rsplit_once('/').unwrap_or(("", dir));
+    let l = last.to_ascii_lowercase();
+    let disc = ["cd", "disc", "disk"].iter().any(|p| {
+        l.strip_prefix(p).is_some_and(|n| {
+            let n = n.trim_start_matches([' ', '-', '_']);
+            !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
+        })
+    });
+    if disc && !parent.is_empty() {
+        parent
+    } else {
+        dir
+    }
+}
+
 impl SourceFile {
+    /// The album this file moves with ([`album_of`]).
     pub fn folder(&self) -> &str {
-        self.rel.split_once('/').map_or(self.rel.as_str(), |(f, _)| f)
+        album_of(&self.rel)
     }
 
     /// Cover art or lyrics travelling with an album — see [`SIDECAR_EXT`].
@@ -100,17 +127,6 @@ pub struct DeviceScan {
 
 /// The suffix of the temporary name every copy is written under before its rename.
 pub const PARTIAL_SUFFIX: &str = ".flint-partial";
-
-impl DeviceScan {
-    pub fn folder_files(&self) -> BTreeMap<&str, Vec<&str>> {
-        let mut out: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for rel in self.files.keys() {
-            let folder = rel.split_once('/').map_or(rel.as_str(), |(f, _)| f);
-            out.entry(folder).or_default().push(rel);
-        }
-        out
-    }
-}
 
 /// What Flint wrote to a volume last time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,19 +215,87 @@ pub struct Plan {
     /// Album folder -> volume index.
     pub assignments: BTreeMap<String, usize>,
     pub copies: Vec<Copy>,
-    /// Files on a volume the plan does not want: (volume index, relative path).
+    /// Files on a volume the plan does not want, that Flint wrote: (volume index, relative path).
     pub stale_files: Vec<(usize, String)>,
     pub stale_playlists: Vec<(usize, String)>,
+    /// Files and playlists the plan does not want that Flint did not write ([`owned`]): Music
+    /// Center's transfers, drag-and-drop, another tool's playlists. Kept unless [`Plan::also_remove`]
+    /// picks them.
+    pub foreign_files: Vec<(usize, String)>,
+    pub foreign_playlists: Vec<(usize, String)>,
     /// Playlist name -> (volume index, its tracks' relative paths).
     pub playlists: BTreeMap<String, (usize, Vec<String>)>,
     /// Albums that fit on no volume.
     pub skipped: Vec<String>,
+    /// Songs stored once ([`crate::shared`]): `(volume of the kept file, also, keep)`.
+    pub shared: Vec<(usize, String, String)>,
+    /// Each volume's [`crate::shared::LIST_NAME`] that has to change: the new body, or `None` to
+    /// remove it. Written after the copies.
+    pub shared_lists: Vec<(usize, Option<String>)>,
 }
 
 impl Plan {
     pub fn bytes_to_copy(&self, volume: usize) -> u64 {
         self.copies.iter().filter(|c| c.volume == volume).map(|c| c.extra_bytes).sum()
     }
+
+    /// Sweep the foreign files and playlists `pick` names as well: `pick(volume, name)` is asked
+    /// with each playlist's name, and with each file's top-level folder (the file's own name at
+    /// the root), so a folder is ticked as one.
+    pub fn also_remove(&mut self, pick: impl Fn(usize, &str) -> bool) {
+        let (take, keep) = self.foreign_files.drain(..).partition(|(v, rel)| pick(*v, top_folder(rel)));
+        self.foreign_files = keep;
+        self.stale_files.extend::<Vec<_>>(take);
+        let (take, keep) = self.foreign_playlists.drain(..).partition(|(v, name)| pick(*v, name));
+        self.foreign_playlists = keep;
+        self.stale_playlists.extend::<Vec<_>>(take);
+        self.stale_files.sort();
+        self.stale_playlists.sort();
+    }
+}
+
+/// One thing on the player Flint did not write, as the owner ticks it: a top-level folder (or a
+/// file at the root), or a playlist.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Foreign {
+    pub volume: usize,
+    pub name: String,
+    /// Files in the folder; 1 for a playlist or a file at the root.
+    pub files: usize,
+    pub playlist: bool,
+}
+
+impl Plan {
+    /// The foreign files by folder, then the foreign playlists: what [`Plan::also_remove`] picks from.
+    pub fn foreign(&self) -> Vec<Foreign> {
+        let mut out: Vec<Foreign> = Vec::new();
+        for (v, rel) in &self.foreign_files {
+            let name = top_folder(rel);
+            match out.last_mut() {
+                Some(f) if f.volume == *v && f.name == name => f.files += 1,
+                _ => out.push(Foreign { volume: *v, name: name.to_string(), files: 1, playlist: false }),
+            }
+        }
+        out.extend(self.foreign_playlists.iter().map(|(v, name)| Foreign {
+            volume: *v,
+            name: name.clone(),
+            files: 1,
+            playlist: true,
+        }));
+        out
+    }
+}
+
+/// The folder a volume-relative path sits in at the top, or the file's own name at the root.
+pub fn top_folder(rel: &str) -> &str {
+    rel.split_once('/').map_or(rel, |(f, _)| f)
+}
+
+/// Did Flint put `rel` on this volume? Its manifest names it, or it is a path the library has: a
+/// copy of the library's own track (from Sony-sync or a Flint before the manifest), which the plan
+/// replaces or moves with nothing lost. Everything else is someone else's to remove.
+fn owned(manifest: Option<&Manifest>, in_library: &HashSet<&str>, rel: &str) -> bool {
+    manifest.is_some_and(|m| m.records.contains_key(rel)) || in_library.contains(rel)
 }
 
 /// An album, or a set of albums a playlist ties together.
@@ -277,15 +361,15 @@ fn group_folders(sizes: &BTreeMap<String, u64>, playlist_folders: &BTreeMap<Stri
     groups
 }
 
-/// Bytes on a volume per top-level folder, counting only files inside a folder: what
+/// Bytes on a volume per album ([`album_of`]), counting only files inside a folder: what
 /// [`preferred_volume`] asks of every group, built once per volume rather than by walking every
 /// file on the volume for every group (which made planning quadratic — 36 s of CPU for 4,000
 /// albums on one volume, run again for each volume and again on Copy).
 fn bytes_by_folder(scan: &DeviceScan) -> HashMap<&str, u64> {
     let mut out: HashMap<&str, u64> = HashMap::new();
     for (rel, (size, _)) in &scan.files {
-        if let Some((folder, _)) = rel.split_once('/') {
-            *out.entry(folder).or_default() += size;
+        if rel.contains('/') {
+            *out.entry(album_of(rel)).or_default() += size;
         }
     }
     out
@@ -336,27 +420,33 @@ pub fn plan(
 ) -> Plan {
     let mut files_by_folder: BTreeMap<String, Vec<&SourceFile>> = BTreeMap::new();
     let mut sizes: BTreeMap<String, u64> = BTreeMap::new();
-    // MUSIC decides whether a folder is an album and how big it is; a sidecar rides along with one.
-    // Sized separately so a folder of nothing but pictures is not an album that fills a volume.
-    let mut audio_bytes: BTreeMap<String, u64> = BTreeMap::new();
-    for f in source {
-        files_by_folder.entry(f.folder().to_string()).or_default().push(f);
-        *sizes.entry(f.folder().to_string()).or_default() += f.size;
+    // MUSIC decides what an album is. A sidecar rides with the album it sits in or under
+    // (`Album/Scans/cover.jpg` goes with `Album`), so a folder of nothing but pictures is not an
+    // album that fills a volume, and never reaches the device.
+    let albums: BTreeSet<&str> = source.iter().filter(|f| !f.is_sidecar()).map(SourceFile::folder).collect();
+    let unit = |f: &SourceFile| -> Option<String> {
         if !f.is_sidecar() {
-            *audio_bytes.entry(f.folder().to_string()).or_default() += f.size;
+            return Some(f.folder().to_string());
         }
+        let mut dir = f.rel.as_str();
+        while let Some((up, _)) = dir.rsplit_once('/') {
+            if albums.contains(up) {
+                return Some(up.to_string());
+            }
+            dir = up;
+        }
+        None
+    };
+    for f in source {
+        let Some(album) = unit(f) else { continue };
+        *sizes.entry(album.clone()).or_default() += f.size;
+        files_by_folder.entry(album).or_default().push(f);
     }
-    // An album folder with no music in it never reaches the device; it is not an album.
-    sizes.retain(|folder, _| audio_bytes.get(folder).is_some_and(|b| *b > 0));
-    files_by_folder.retain(|f, _| sizes.contains_key(f));
 
     let mut playlist_folders: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (name, tracks) in playlist_tracks {
-        let folders: BTreeSet<String> = tracks
-            .iter()
-            .filter_map(|t| t.split_once('/').map(|(f, _)| f.to_string()))
-            .filter(|f| sizes.contains_key(f))
-            .collect();
+        let folders: BTreeSet<String> =
+            tracks.iter().map(|t| album_of(t).to_string()).filter(|f| sizes.contains_key(f)).collect();
         if !folders.is_empty() {
             playlist_folders.insert(name.clone(), folders);
         }
@@ -409,7 +499,9 @@ pub fn plan(
     }
 
     // Anything on a volume that this plan does not put there, apart from Flint's own manifest.
+    let in_library: HashSet<&str> = source.iter().map(|f| f.rel.as_str()).collect();
     for (v, scan) in scans.iter().enumerate() {
+        let manifest = manifests.get(v);
         for rel in scan.files.keys() {
             if rel == MANIFEST_NAME {
                 continue;
@@ -419,12 +511,13 @@ pub fn plan(
             if is_sidecar_path(rel) {
                 continue;
             }
-            let folder = rel.split_once('/').map_or(rel.as_str(), |(f, _)| f);
+            let folder = album_of(rel);
             match out.assignments.get(folder) {
                 Some(&assigned) if assigned == v && file_volume.contains_key(rel.as_str()) => {}
                 // An album that fit nowhere stays where it is rather than being deleted.
                 None if out.skipped.iter().any(|s| s == folder) => {}
-                _ => out.stale_files.push((v, rel.clone())),
+                _ if owned(manifest, &in_library, rel) => out.stale_files.push((v, rel.clone())),
+                _ => out.foreign_files.push((v, rel.clone())),
             }
         }
         // Flint's own leftovers. Only ever names Flint itself writes, so this can never sweep
@@ -436,12 +529,18 @@ pub fn plan(
             let managed = MANAGED_PLAYLISTS.iter().any(|m| m.eq_ignore_ascii_case(name));
             let wanted = out.playlists.get(name).is_some_and(|(pv, _)| *pv == v);
             if !managed && !wanted {
-                out.stale_playlists.push((v, name.clone()));
+                if manifest.is_some_and(|m| m.records.contains_key(name)) {
+                    out.stale_playlists.push((v, name.clone()));
+                } else {
+                    out.foreign_playlists.push((v, name.clone()));
+                }
             }
         }
     }
     out.stale_files.sort();
     out.stale_playlists.sort();
+    out.foreign_files.sort();
+    out.foreign_playlists.sort();
     out.copies.sort_by(|a, b| a.rel.cmp(&b.rel));
     out
 }
@@ -628,6 +727,8 @@ pub struct Request<'a> {
     pub sensme: bool,
     /// Cover art and lyrics travel with their albums ([`SIDECAR_EXT`]).
     pub extras: bool,
+    /// Songs the owner said to store once ([`crate::shared::Answers::confirmed`]).
+    pub shared: &'a [crate::shared::Pair],
 }
 
 /// A plan ready to show, or to hand to [`crate::apply::apply`].
@@ -635,7 +736,7 @@ pub struct Prepared {
     pub plan: Plan,
     pub volumes: Vec<Volume>,
     pub manifests: Vec<Manifest>,
-    /// The bytes of music each volume holds now.
+    /// The bytes of music each volume holds now that Flint owns ([`owned`]): the room it may reuse.
     pub on_device: Vec<u64>,
     /// Playlists the apply would write ([`crate::apply::playlists_to_write`]).
     pub pending_playlists: usize,
@@ -654,6 +755,9 @@ impl Prepared {
         }
         self.plan.stale_files.hash(&mut h);
         self.plan.stale_playlists.hash(&mut h);
+        self.plan.foreign_files.hash(&mut h);
+        self.plan.foreign_playlists.hash(&mut h);
+        self.plan.shared.hash(&mut h);
         h.finish()
     }
 
@@ -662,6 +766,7 @@ impl Prepared {
         self.plan.copies.is_empty()
             && self.plan.stale_files.is_empty()
             && self.plan.stale_playlists.is_empty()
+            && self.plan.shared_lists.is_empty()
             && self.pending_playlists == 0
     }
 }
@@ -700,6 +805,23 @@ pub fn prepare(
     if !req.extras {
         source.retain(|f| !f.is_sidecar());
     }
+    // Songs stored once: the `also` file is not copied. A pair counts while both files are still in
+    // the library, each `also` once, and never a file another pair keeps.
+    let pairs: Vec<crate::shared::Pair> = {
+        let have: HashSet<&str> = source.iter().map(|f| f.rel.as_str()).collect();
+        let kept: HashSet<&str> = req.shared.iter().map(|p| p.keep.as_str()).collect();
+        let mut seen = HashSet::new();
+        req.shared
+            .iter()
+            .filter(|p| p.keep != p.also && have.contains(p.keep.as_str()) && have.contains(p.also.as_str()))
+            .filter(|p| !kept.contains(p.also.as_str()) && seen.insert(p.also.clone()))
+            .cloned()
+            .collect()
+    };
+    let also_of: HashMap<String, String> = pairs.iter().map(|p| (p.also.clone(), p.keep.clone())).collect();
+    // A copy of an `also` already on the player is the library's own, so Flint's to remove.
+    let in_library_before: HashSet<String> = source.iter().map(|f| f.rel.clone()).collect();
+    source.retain(|f| !also_of.contains_key(&f.rel));
     note(Note::Library { files: source.len(), bytes: source.iter().map(|f| f.size).sum() });
     let full = |f: &SourceFile| lib.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
 
@@ -721,12 +843,21 @@ pub fn prepare(
     let mut scans = Vec::new();
     let mut manifests = Vec::new();
     let mut on_device = Vec::new();
+    let in_library: HashSet<&str> = in_library_before.iter().map(String::as_str).collect();
     for (index, root) in req.volumes.iter().enumerate() {
         let root = &sync_root(root);
         let scan = scan_volume(root).map_err(|e| format!("{}: {e}", root.display()))?;
-        let held: u64 = scan.files.values().map(|(size, _)| size).sum();
-        // What this volume may hold: whatever is free now, plus what its music already occupies,
-        // less the headroom — unless a size was given.
+        let manifest = Manifest::load(root);
+        // Only what Flint owns is room it may reuse: a file it did not write stays unless ticked,
+        // and one ticked now frees its space for the next sync, not this one.
+        let held: u64 = scan
+            .files
+            .iter()
+            .filter(|(rel, _)| owned(Some(&manifest), &in_library, rel))
+            .map(|(_, (size, _))| size)
+            .sum();
+        // What this volume may hold: whatever is free now, plus what Flint's music already
+        // occupies, less the headroom — unless a size was given.
         let budget = match req.budget_gb.get(index).copied().flatten() {
             Some(gb) => (gb * 1024.0 * 1024.0 * 1024.0) as u64,
             None => match crate::space::free_bytes(root) {
@@ -742,15 +873,23 @@ pub fn prepare(
         };
         note(Note::Volume { index, root, on_device: held, files: scan.files.len(), budget });
         volumes.push(Volume { name: root.display().to_string(), root: root.clone(), budget_bytes: budget });
-        manifests.push(Manifest::load(root));
+        manifests.push(manifest);
         scans.push(scan);
         on_device.push(held);
     }
 
-    let playlists = match req.playlists {
+    let mut playlists = match req.playlists {
         Some(dir) => read_playlists(dir, lib).map_err(|e| format!("{}: {e}", dir.display()))?,
         None => BTreeMap::new(),
     };
+    // A playlist naming an `also` names the file that is there; Sony's player reads it too.
+    for tracks in playlists.values_mut() {
+        for t in tracks.iter_mut() {
+            if let Some(keep) = also_of.get(t.as_str()) {
+                t.clone_from(keep);
+            }
+        }
+    }
     if !playlists.is_empty() {
         note(Note::Playlists(playlists.len()));
     }
@@ -763,7 +902,34 @@ pub fn prepare(
             String::new()
         }
     };
-    let plan = plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
+    let mut plan = plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
+    let (theirs, ours): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut plan.foreign_files).into_iter().partition(|(_, rel)| !in_library_before.contains(rel));
+    plan.foreign_files = theirs;
+    plan.stale_files.extend(ours);
+    plan.stale_files.sort();
+    for p in &pairs {
+        if let Some(&v) = plan.assignments.get(album_of(&p.keep)) {
+            plan.shared.push((v, p.also.clone(), p.keep.clone()));
+        }
+    }
+    for (v, volume) in volumes.iter().enumerate() {
+        let entries: Vec<(String, String, crate::tags::Tags)> = plan
+            .shared
+            .iter()
+            .filter(|(sv, _, _)| *sv == v)
+            .map(|(_, also, keep)| {
+                let tags = crate::tags::read(&lib.join(also.replace('/', std::path::MAIN_SEPARATOR_STR)));
+                (also.clone(), keep.clone(), tags.unwrap_or_default())
+            })
+            .collect();
+        let path = volume.root.join(crate::shared::LIST_NAME);
+        let on_device = fs::read_to_string(&path).ok();
+        let want = (!entries.is_empty()).then(|| crate::shared::list_body(&entries));
+        if want != on_device {
+            plan.shared_lists.push((v, want));
+        }
+    }
     let tagged = plan.copies.iter().filter(|c| !c.tag.is_empty()).count();
     let pending_playlists = crate::apply::playlists_to_write(&plan, &volumes).len();
     Ok(Prepared { plan, volumes, manifests, on_device, pending_playlists, tagged })
@@ -865,18 +1031,94 @@ mod tests {
     }
 
     #[test]
-    fn what_the_plan_does_not_want_is_stale_and_managed_playlists_are_not() {
+    fn an_album_is_the_folder_holding_the_audio_with_its_discs() {
+        assert_eq!(album_of("Album/01.flac"), "Album");
+        assert_eq!(album_of("Artist/Album/01.flac"), "Artist/Album");
+        assert_eq!(album_of("Artist/Box/CD1/01.flac"), "Artist/Box");
+        assert_eq!(album_of("Box/Disc 2/01.flac"), "Box");
+        assert_eq!(album_of("Box/disk_3/01.flac"), "Box");
+        assert_eq!(album_of("CD1/01.flac"), "CD1", "a disc folder at the top is the album");
+        assert_eq!(album_of("Artist/CDs I Like/01.flac"), "Artist/CDs I Like");
+        assert_eq!(album_of("loose.flac"), "loose.flac");
+    }
+
+    /// Audit E7: a discography bigger than either volume splits by album rather than being skipped.
+    #[test]
+    fn a_discography_splits_across_the_volumes_by_album() {
+        let source = vec![
+            src("Artist/One/01.flac", 60),
+            src("Artist/One/Scans/cover.jpg", 1),
+            src("Artist/Two/CD1/01.flac", 30),
+            src("Artist/Two/CD2/01.flac", 30),
+            src("Artist/photo.jpg", 5),
+        ];
+        let p = plan(
+            &source,
+            &volumes(70, 70),
+            &[DeviceScan::default(), DeviceScan::default()],
+            &[],
+            &BTreeMap::new(),
+            no_tags,
+        );
+        assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+        assert_ne!(p.assignments["Artist/One"], p.assignments["Artist/Two"]);
+        assert_eq!(p.assignments.len(), 2, "the discs are one album: {:?}", p.assignments);
+        let copied: Vec<&str> = p.copies.iter().map(|c| c.rel.as_str()).collect();
+        assert!(copied.contains(&"Artist/One/Scans/cover.jpg"), "art under an album goes with it");
+        assert!(!copied.contains(&"Artist/photo.jpg"), "art above any album is not an album");
+    }
+
+    /// Audit F1: Flint sweeps only what its manifest says it wrote. The rest (Music Center's
+    /// transfers, another tool's playlist) is listed, and removed only when picked.
+    #[test]
+    fn flint_sweeps_what_it_wrote_and_lists_the_rest() {
         let source = vec![src("A/1.flac", 10)];
         let mut device = DeviceScan::default();
         device.files.insert("A/1.flac".into(), (10, 1000));
         device.files.insert("A/old.flac".into(), (10, 1000));
         device.files.insert("Gone/1.flac".into(), (10, 1000));
+        device.files.insert("Gone/2.flac".into(), (10, 1000));
+        device.files.insert("Theirs/1.flac".into(), (10, 1000));
         device.files.insert(MANIFEST_NAME.into(), (10, 1000));
         device.playlists.insert("stale.m3u8".into());
+        device.playlists.insert("theirs.m3u8".into());
         device.playlists.insert("Liked Songs.m3u8".into());
-        let p = plan(&source, &volumes(100, 0), &[device], &[], &BTreeMap::new(), no_tags);
-        assert_eq!(p.stale_files, vec![(0, "A/old.flac".to_string()), (0, "Gone/1.flac".to_string())]);
-        assert_eq!(p.stale_playlists, vec![(0, "stale.m3u8".to_string())]);
+        let mut manifest = Manifest::default();
+        let rec = Record { source_size: 10, source_mtime: 1000, copy_size: 10, tag: String::new() };
+        for rel in ["A/old.flac", "Gone/1.flac", "stale.m3u8"] {
+            manifest.records.insert(rel.into(), rec.clone());
+        }
+        let mut p = plan(&source, &volumes(100, 0), &[device], &[manifest], &BTreeMap::new(), no_tags);
+        let pair = |r: &str| (0, r.to_string());
+        assert_eq!(p.stale_files, vec![pair("A/old.flac"), pair("Gone/1.flac")]);
+        assert_eq!(p.stale_playlists, vec![pair("stale.m3u8")]);
+        assert_eq!(p.foreign_files, vec![pair("Gone/2.flac"), pair("Theirs/1.flac")]);
+        assert_eq!(p.foreign_playlists, vec![pair("theirs.m3u8")]);
+        // Ticking a folder takes all of it; what is not ticked stays listed.
+        let names: Vec<(String, usize)> = p.foreign().into_iter().map(|f| (f.name, f.files)).collect();
+        let theirs = ("Theirs".to_string(), 1);
+        assert_eq!(names, vec![("Gone".to_string(), 1), theirs, ("theirs.m3u8".to_string(), 1)]);
+        p.also_remove(|v, name| v == 0 && (name == "Gone" || name == "theirs.m3u8"));
+        assert_eq!(p.stale_files, vec![pair("A/old.flac"), pair("Gone/1.flac"), pair("Gone/2.flac")]);
+        assert_eq!(p.stale_playlists, vec![pair("stale.m3u8"), pair("theirs.m3u8")]);
+        assert_eq!(p.foreign_files, vec![pair("Theirs/1.flac")]);
+        assert!(p.foreign_playlists.is_empty());
+        let names: Vec<(String, usize)> = p.foreign().into_iter().map(|f| (f.name, f.files)).collect();
+        assert_eq!(names, vec![("Theirs".to_string(), 1)]);
+    }
+
+    /// A file at a path the library has is the library's own track, copied by Sony-sync or a Flint
+    /// before the manifest: it may be replaced or moved, and counts as room.
+    #[test]
+    fn a_copy_of_a_library_track_is_flints_without_a_manifest() {
+        let source = vec![src("A/1.flac", 10)];
+        let mut device = DeviceScan::default();
+        device.files.insert("A/1.flac".into(), (10, 1000));
+        // The album moves to the card, which has room; the old copy is Flint's to sweep.
+        let p = plan(&source, &volumes(5, 100), &[device, DeviceScan::default()], &[], &BTreeMap::new(), no_tags);
+        assert_eq!(p.assignments["A"], 1);
+        assert_eq!(p.stale_files, vec![(0, "A/1.flac".to_string())]);
+        assert!(p.foreign_files.is_empty());
     }
 
     #[test]
@@ -1008,13 +1250,10 @@ mod tests {
             "art and lyrics come too — Music Center transfers artwork, and Cinder reads .lrc",
         );
         assert!(!files[0].is_sidecar() && files[1].is_sidecar() && files[2].is_sidecar());
-        assert_eq!(files[0].folder(), "Artist");
+        assert_eq!(files[0].folder(), "Artist/Album");
         let scan = scan_volume(&d).unwrap();
         assert_eq!(scan.playlists.iter().map(String::as_str).collect::<Vec<_>>(), vec!["mix.m3u8"]);
-        // `folder_files` groups out of a HashMap, so it has no order of its own to assert.
-        let mut on_volume = scan.folder_files()["Artist"].clone();
-        on_volume.sort_unstable();
-        assert_eq!(on_volume, vec!["Artist/Album/01.flac", "Artist/Album/01.lrc", "Artist/cover.jpg"]);
+        assert_eq!(scan.files.len(), 3);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -1122,7 +1361,12 @@ mod tests {
         let mut scan = DeviceScan::default();
         scan.files.insert("Album/other-art.png".into(), (1234, 1));
         scan.files.insert("Stale/gone.flac".into(), (999, 1));
-        let plan = plan(&source, &volumes, &[scan], &[Manifest::default()], &BTreeMap::new(), |_| String::new());
+        let mut manifest = Manifest::default();
+        manifest.records.insert(
+            "Stale/gone.flac".into(),
+            Record { source_size: 999, source_mtime: 1, copy_size: 999, tag: String::new() },
+        );
+        let plan = plan(&source, &volumes, &[scan], &[manifest], &BTreeMap::new(), |_| String::new());
 
         let copied: Vec<&str> = plan.copies.iter().map(|c| c.rel.as_str()).collect();
         assert_eq!(copied, vec!["Album/01.flac", "Album/01.lrc", "Album/cover.jpg"]);

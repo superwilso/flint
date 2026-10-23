@@ -38,6 +38,15 @@ pub struct Settings {
     pub expect_plan: Option<u64>,
     /// Copy cover art and lyrics that sit beside the music.
     pub extras: bool,
+    /// What the owner ticked of what Flint did not put on the player, as `(volume, name)`
+    /// ([`sync::Plan::also_remove`]): removed by Copy as well.
+    pub also_remove: Vec<(usize, String)>,
+    /// Pairs the owner ticked or unticked in the window since; saved before the plan is made.
+    pub pair_answers: Vec<(flint_core::shared::Pair, bool)>,
+    /// Likes & plays ▸ which way, and whether removals happen at all.
+    pub likes: flint_core::likes::Options,
+    /// Removals the owner unticked, as `(side, key)`: left where they are by Sync likes.
+    pub likes_leave: Vec<(flint_core::likes::Side, String)>,
     pub cache: PathBuf,
     pub jobs: usize,
     /// Where Music Center keeps its data, when it is not where it usually is.
@@ -68,6 +77,10 @@ impl Settings {
             sensme: true,
             expect_plan: None,
             extras: true,
+            also_remove: Vec::new(),
+            pair_answers: Vec::new(),
+            likes: Default::default(),
+            likes_leave: Vec::new(),
             cache: cache::default_dir(),
             jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
             music_center: None,
@@ -93,6 +106,10 @@ pub enum Update {
     Progress(Option<f32>),
     /// A plan was made and shown, so COPY may be offered. Its [`sync::Prepared::key`].
     Planned(u64),
+    /// What is on the player that Flint did not put there, for the window to offer as ticks.
+    Foreign(Vec<sync::Foreign>),
+    /// The same recording on two albums, and whether each is stored once.
+    Pairs(Vec<(flint_core::shared::Pair, bool)>),
     /// What the library turned out to hold. The window draws it under the folder's name.
     Library(crate::LibraryFacts),
     /// What a destination holds, and what this plan would add to it. Sent twice per volume: once
@@ -250,6 +267,9 @@ fn scrobble_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update))
     if report.kept > 0 {
         word.push_str(&format!(", {} kept in the log — see why below", report.kept));
     }
+    if report.refused > 0 {
+        word.push_str(&format!(", {} too old for Last.fm, moved to .scrobbler.refused.log", report.refused));
+    }
     if let Some(why) = report.stopped {
         word.push_str(&format!(". Stopped: {why}"));
     }
@@ -263,6 +283,9 @@ fn likes_job(s: &Settings, apply: bool, cancel: &AtomicBool, emit: &mut dyn FnMu
         &s.volumes,
         Credentials::load_in(&s.cache),
         &s.cache.join("likes-state.tsv"),
+        &s.likes,
+        // A comparison lists every removal, so an unticked one can be ticked again.
+        &|_, side, t| apply && s.likes_leave.contains(&(side, t.key())),
         apply,
         false,
         &|| stopped(cancel),
@@ -275,11 +298,13 @@ fn likes_job(s: &Settings, apply: bool, cancel: &AtomicBool, emit: &mut dyn FnMu
         device_remove: p.device_remove.len(),
         lastfm_love: p.lastfm_love.len(),
         lastfm_unlove: p.lastfm_unlove.len(),
+        removals: p.removals().map(|(s, t)| (s, t.clone())).collect(),
     };
     if !apply {
+        let (changes, liked) = (plan.changes(), plan.liked);
         emit(Update::Likes(Some(plan)));
-        return Ok(match plan.changes() {
-            0 => format!("Likes are in step: {} on both sides. Nothing to change.", plan.liked),
+        return Ok(match changes {
+            0 => format!("Likes are in step: {liked} on both sides. Nothing to change."),
             n => format!("{n} change(s) would keep likes in step. Nothing has been written yet."),
         });
     }
@@ -588,6 +613,32 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
 
     emit(Update::Say(format!("reading {}", s.library.display())));
     emit(Update::Progress(None));
+    // The same recording on two albums: the window's answers first, then what is stored once.
+    let mut answers = flint_core::shared::Answers::load(&s.cache);
+    if !s.pair_answers.is_empty() {
+        for (p, yes) in &s.pair_answers {
+            answers.set(&s.library, p.clone(), *yes);
+        }
+        answers.save(&s.cache).map_err(|e| format!("{}: {e}", s.cache.display()))?;
+    }
+    // A yes holds only while the two files still hold the same audio: an edited file is copied again.
+    let suggested = {
+        let source = sync::scan_library(&s.library).map_err(|e| format!("{}: {e}", s.library.display()))?;
+        flint_core::shared::suggest(&s.library, &source)
+    };
+    let confirmed = answers.confirmed(&s.library);
+    let shared: Vec<_> = suggested.iter().filter(|p| confirmed.contains(p)).cloned().collect();
+    if !write {
+        let rows: Vec<_> = suggested
+            .into_iter()
+            .filter(|p| !answers.answered(&s.library, p) || shared.contains(p))
+            .map(|p| {
+                let yes = shared.contains(&p);
+                (p, yes)
+            })
+            .collect();
+        emit(Update::Pairs(rows));
+    }
     let req = sync::Request {
         library: &s.library,
         volumes: &s.volumes,
@@ -595,6 +646,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         playlists: s.playlists.as_deref(),
         sensme: s.sensme,
         extras: s.extras,
+        shared: &shared,
     };
     let p = sync::prepare(&req, &mut analysis, &mut |n| match n {
         sync::Note::Library { files, bytes } => {
@@ -617,19 +669,31 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         }
         sync::Note::Playlists(n) => emit(Update::Log(format!("{n} playlists"))),
     })?;
-    let nothing = p.is_empty();
     let key = p.key();
     if write && s.expect_plan.is_some_and(|k| k != key) {
         return Err("The library or the player changed since the plan was shown, so nothing was \
                     copied or removed. Show what would happen again."
             .into());
     }
+    // The ticks join the sweep only on Copy: the key above is the plan as shown, ticks aside.
+    let mut p = p;
+    if write {
+        p.plan.also_remove(|v, name| s.also_remove.iter().any(|(sv, sn)| *sv == v && sn == name));
+    }
+    let nothing = p.is_empty();
     let sync::Prepared { plan, volumes, mut manifests, on_device, tagged, pending_playlists } = p;
+    let foreign = plan.foreign();
+    emit(Update::Foreign(foreign.clone()));
 
     emit(Update::Say(format!(
-        "{} to copy ({tagged} with SensMe), {} to remove, {pending_playlists} playlists",
+        "{} to copy ({tagged} with SensMe), {} to remove, {pending_playlists} playlists{}",
         plan.copies.len(),
         plan.stale_files.len() + plan.stale_playlists.len(),
+        if foreign.is_empty() {
+            String::new()
+        } else {
+            format!(", {} kept that Flint did not put there", foreign.len())
+        },
     )));
     for (i, v) in volumes.iter().enumerate() {
         let albums = plan.assignments.values().filter(|&&a| a == i).count();
@@ -643,8 +707,13 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     if !plan.skipped.is_empty() {
         emit(Update::Log(format!("no room for {} albums: {}", plan.skipped.len(), plan.skipped.join(", "))));
     }
+    if !plan.shared.is_empty() {
+        emit(Update::Log(format!("{} songs stored once, listed under a second album", plan.shared.len())));
+    }
 
-    if nothing {
+    // With things Flint did not put there, the preview still ends in a plan: ticking one of them
+    // is a Copy to make.
+    if nothing && (write || foreign.is_empty()) {
         emit(Update::Progress(Some(1.0)));
         return Ok("The player already matches the library — nothing to do.".into());
     }
@@ -670,6 +739,13 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         }
         for (v, name) in &plan.stale_playlists {
             emit(Update::Log(format!("would remove  playlist {name} ({})", volumes[*v].root.display())));
+        }
+        for f in &foreign {
+            emit(Update::Log(format!(
+                "kept          {}/{}  (not Flint's; tick it above to remove it)",
+                volumes[f.volume].root.display(),
+                f.name
+            )));
         }
         let removes = plan.stale_files.len() + plan.stale_playlists.len();
         emit(Update::Log(format!(
@@ -1210,6 +1286,103 @@ mod tests {
         let word = run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
         assert!(word.contains("Stopped with 2 left to copy"), "{word}");
         assert!(!volume.join("Artist - Album/01 One.flac").exists(), "a copy was made after Stop");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Audit F1: what Flint did not put on the player is offered, kept, and removed only once
+    /// ticked. Ticking is not a change to the plan, so the shown plan's Copy still runs.
+    #[test]
+    fn what_flint_did_not_write_stays_until_ticked() {
+        let root = tmp("foreign");
+        let library = root.join("music");
+        let volume = root.join("player");
+        write_flac(&library.join("Artist - Album/01 One.flac"), 1024);
+        write_flac(&volume.join("Music Center/01.flac"), 1024);
+        fs::write(volume.join("theirs.m3u8"), "Music Center/01.flac\n").unwrap();
+        let mut s = settings(library, volume.clone(), root.join("cache"));
+        let cancel = AtomicBool::new(false);
+        let plan = |s: &Settings| {
+            let (mut key, mut rows) = (None, Vec::new());
+            run(Job::Plan, s, &cancel, &mut |u| match u {
+                Update::Planned(k) => key = Some(k),
+                Update::Foreign(r) => rows = r,
+                _ => {}
+            })
+            .unwrap();
+            (key, rows)
+        };
+
+        let (key, rows) = plan(&s);
+        let names: Vec<&str> = rows.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Music Center", "theirs.m3u8"]);
+        s.expect_plan = key;
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(volume.join("Artist - Album/01 One.flac").is_file());
+        assert!(volume.join("Music Center/01.flac").is_file(), "removed a file nobody ticked");
+        assert!(volume.join("theirs.m3u8").is_file());
+
+        // Nothing left to copy: the plan still stands, so a tick can be carried out.
+        let (key, rows) = plan(&s);
+        assert!(key.is_some(), "a plan with only things to tick must still offer Copy");
+        assert_eq!(rows.len(), 2);
+        s.expect_plan = key;
+        s.also_remove = vec![(0, "Music Center".into())];
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(!volume.join("Music Center").exists(), "the ticked folder stayed");
+        assert!(volume.join("theirs.m3u8").is_file(), "removed a playlist nobody ticked");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The same recording on two albums: suggested, and once ticked copied once with the second
+    /// album's entry in the list on the player. Unticked, both are copied again and the list goes.
+    #[test]
+    fn a_song_on_two_albums_is_stored_once_when_ticked() {
+        let root = tmp("pairs");
+        let library = root.join("music");
+        let volume = root.join("player");
+        fs::create_dir_all(&volume).unwrap();
+        write_flac(&library.join("Album/03 Song.flac"), 777);
+        write_flac(&library.join("Best Of/11 Song.flac"), 777);
+        write_flac(&library.join("Best Of/12 Other.flac"), 778);
+        let mut s = settings(library, volume.clone(), root.join("cache"));
+        let cancel = AtomicBool::new(false);
+        let plan = |s: &Settings| {
+            let (mut key, mut rows) = (None, Vec::new());
+            run(Job::Plan, s, &cancel, &mut |u| match u {
+                Update::Planned(k) => key = Some(k),
+                Update::Pairs(r) => rows = r,
+                _ => {}
+            })
+            .unwrap();
+            (key, rows)
+        };
+        let (_, rows) = plan(&s);
+        assert_eq!(rows.len(), 1);
+        let (pair, yes) = rows[0].clone();
+        assert!(!yes, "suggested, not yet stored once");
+        assert_eq!((pair.keep.as_str(), pair.also.as_str()), ("Album/03 Song.flac", "Best Of/11 Song.flac"));
+        // Copied both first, as before the owner answered: the tick then takes the second copy off.
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(volume.join("Best Of/11 Song.flac").is_file());
+
+        s.pair_answers = vec![(pair.clone(), true)];
+        let (key, rows) = plan(&s);
+        assert!(rows[0].1, "the tick was saved");
+        s.expect_plan = key;
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(volume.join("Album/03 Song.flac").is_file());
+        assert!(!volume.join("Best Of/11 Song.flac").exists(), "stored once");
+        assert!(volume.join("Best Of/12 Other.flac").is_file());
+        let list = fs::read_to_string(volume.join(flint_core::shared::LIST_NAME)).unwrap();
+        assert!(list.lines().nth(1).unwrap().starts_with("Best Of/11 Song.flac\tAlbum/03 Song.flac\t"));
+
+        s.pair_answers = vec![(pair, false)];
+        let (key, rows) = plan(&s);
+        assert!(rows.is_empty(), "a no is not suggested again");
+        s.expect_plan = key;
+        run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
+        assert!(volume.join("Best Of/11 Song.flac").is_file(), "copied again");
+        assert!(!volume.join(flint_core::shared::LIST_NAME).exists(), "the list goes with the last entry");
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -146,7 +146,7 @@ fn table(
 const BAR_W: i32 = 8;
 
 /// The bar for a list at `(x, y, width, height)`, in its right edge.
-fn scrollbar(
+pub(crate) fn scrollbar(
     out: &mut Vec<Widget>,
     area: Area,
     list: (i32, i32, i32, i32),
@@ -604,10 +604,10 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
     };
     let mut items = vec![(Id::ReadPlayer, "Read the player".to_string()), (Id::Scrobble, send)];
     items.push((Id::CompareLikes, "Compare likes".into()));
-    if let Some(p) = m.likes_plan {
+    if let Some(n) = m.likes_changes() {
         items.push((
             Id::SyncLikes,
-            match p.changes() {
+            match n {
                 0 => "Nothing to change".into(),
                 1 => "Make 1 change".into(),
                 n => format!("Make {} changes", thousands(n)),
@@ -616,6 +616,26 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
     }
     tools(out, m, PAD, y, &items);
     y += 38;
+
+    // Which way, and whether removals happen at all: both change what Compare finds.
+    use flint_core::likes::{Direction, Side};
+    let ways =
+        [(Direction::Both, "Both ways"), (Direction::ToPlayer, "To the player"), (Direction::ToLastfm, "To Last.fm")];
+    for (i, (d, label)) in ways.iter().enumerate() {
+        out.push(w(
+            Id::LikesWay(*d),
+            Rect::new(PAD + i as i32 * 120, y, 120, 30),
+            Kind::Segment { on: m.likes_way == *d },
+            *label,
+        ));
+    }
+    out.push(w(
+        Id::ToggleAddOnly,
+        Rect::new(PAD + 384, y + 4, 260, 22),
+        Kind::Check { on: m.likes_add_only, enabled: live(m, Id::ToggleAddOnly) },
+        "Only add, never remove",
+    ));
+    y += 40;
 
     // One line under the buttons: what is missing, what is in the way, or what Compare found.
     let busy_with =
@@ -626,7 +646,7 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
         "Sending plays and keeping likes in step need Last.fm: sign in on the Settings page.".to_string()
     } else if let Some(why) = busy_with {
         why
-    } else if let Some(p) = m.likes_plan {
+    } else if let Some(p) = &m.likes_plan {
         format!(
             "Likes: {} to add to the player, {} to take off · {} to love on Last.fm, {} to unlove.",
             p.device_add, p.device_remove, p.lastfm_love, p.lastfm_unlove
@@ -649,6 +669,32 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
     let table_bottom = bottom - if log_h > 0 { log_h + 10 } else { 0 };
     if log_h > 0 {
         log_pane(out, &m.lastfm_log, "", (PAD, bottom - log_h, inner, log_h), m.scrolled(Area::Log));
+    }
+    // A comparison with removals in it: each one, ticked to happen. It takes the table's place
+    // until Sync carries it out or something makes it stale.
+    if let Some(p) = m.likes_plan.as_ref().filter(|p| !p.removals.is_empty()) {
+        hint(out, PAD, y, inner, "Removals. Ticked ones happen; untick one to leave that like where it is this time.");
+        y += 26;
+        const ROW: i32 = 24;
+        let visible = p.removals.len().min(((table_bottom - y) / ROW).max(1) as usize);
+        let first = m.scrolled(Area::Table).min(p.removals.len() - visible);
+        for (k, (side, t)) in p.removals.iter().enumerate().skip(first).take(visible) {
+            let id = Id::ToggleLikeRemoval(k);
+            let what = match side {
+                Side::Player => "Take off the player",
+                Side::Lastfm => "Unlove on Last.fm",
+            };
+            out.push(w(
+                id,
+                Rect::new(PAD, y + (k - first) as i32 * ROW, inner - 20, 22),
+                Kind::Check { on: !m.likes_leave.contains(&(*side, t.key())), enabled: live(m, id) },
+                format!("{what}: {} — {}", t.artist, t.title),
+            ));
+        }
+        if p.removals.len() > visible {
+            scrollbar(out, Area::Table, (PAD, y, inner, visible as i32 * ROW), first, visible, p.removals.len());
+        }
+        return;
     }
     if !m.player.read {
         return;

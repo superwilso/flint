@@ -1,0 +1,4 @@
+# The contract files are shared with Cinder byte for byte (tools/check_contracts.sh there), and
+# the tests compare bytes. Windows runners check text out as CRLF unless told not to: v0.2.3-rc2's
+# release run failed on contracts/flint-shared.tsv arriving with \r\n.
+contracts/** -text

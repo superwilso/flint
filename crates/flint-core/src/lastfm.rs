@@ -215,9 +215,9 @@ pub struct Loved {
 pub struct Accepted {
     pub accepted: usize,
     pub ignored: usize,
-    /// `(entry, why)` for each row Last.fm would not take — a timestamp too old, an artist it
-    /// refuses to file. These stay in the log.
-    pub rejected: Vec<(Entry, String)>,
+    /// `(entry, why, code)` for each row Last.fm would not take — a timestamp too old, an artist
+    /// it refuses to file. Code 3 (too old) can never succeed; the rest stay in the log.
+    pub rejected: Vec<(Entry, String, u32)>,
 }
 
 impl Client {
@@ -479,7 +479,8 @@ impl Client {
                 "" => "rejected by Last.fm".to_string(),
                 text => text.to_string(),
             };
-            rejected.push((entry.clone(), format!("{reason} (code {code})")));
+            let n = code.parse().unwrap_or(0);
+            rejected.push((entry.clone(), format!("{reason} (code {code})"), n));
         }
         Ok(Accepted { accepted, ignored, rejected })
     }

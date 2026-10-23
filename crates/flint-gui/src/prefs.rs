@@ -1,4 +1,4 @@
-//! What the window remembers between runs: the folders, the two switches and the theme.
+//! What the window remembers between runs: the folders, the switches and the theme.
 //!
 //! Until 0.2 the window forgot everything when it closed, so every session began by choosing the
 //! music folder and the player's drive again — the most repetitive thing the window asked of anyone,
@@ -36,6 +36,7 @@ pub fn render(m: &Model) -> String {
     put("palette_dir", &m.palette_dir);
     out.push_str(&format!("sensme={}\n", u8::from(m.sensme)));
     out.push_str(&format!("extras={}\n", u8::from(m.extras)));
+    out.push_str(&format!("likes_add_only={}\n", u8::from(m.likes_add_only)));
     out.push_str(&format!("theme={}\n", m.theme.word()));
     out
 }
@@ -59,6 +60,7 @@ pub fn apply(m: &mut Model, body: &str) {
             "palette_dir" => m.palette_dir = path(),
             "sensme" => m.sensme = v != "0",
             "extras" => m.extras = v != "0",
+            "likes_add_only" => m.likes_add_only = v != "0",
             "theme" => m.theme = ThemePref::from_word(v),
             _ => {}
         }

@@ -447,9 +447,19 @@ impl State {
         s.volumes = self.model.volumes.iter().flatten().cloned().collect();
         s.playlists = self.model.playlists.clone();
         s.sensme = self.model.sensme;
+        s.pair_answers = self.model.pair_answers.clone();
         s.extras = self.model.extras;
+        s.likes = flint_core::likes::Options {
+            direction: self.model.likes_way,
+            add_only: self.model.likes_add_only,
+            ..Default::default()
+        };
+        if job == Job::SyncLikes {
+            s.likes_leave = self.model.likes_leave.iter().cloned().collect();
+        }
         if job == Job::Apply {
             s.expect_plan = self.model.plan_key;
+            s.also_remove = self.model.also_remove.iter().cloned().collect();
         }
         s.internal = self.model.volumes[0].clone();
         s.palette_dir = self.model.palette_dir.clone();

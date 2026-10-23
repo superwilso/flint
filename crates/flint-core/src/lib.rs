@@ -17,6 +17,7 @@ pub mod musiccenter;
 pub mod palette;
 pub mod playlists;
 pub mod scrobblelog;
+pub mod shared;
 pub mod smfmf;
 pub mod space;
 pub mod stats;

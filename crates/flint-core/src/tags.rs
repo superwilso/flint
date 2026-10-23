@@ -4,8 +4,10 @@
 //! the liked-songs playlist does: `Liked Songs.m3u8` has to name the files on the player that match
 //! the artist-and-title pairs the sync deals in, and nothing but the tags can say which those are.
 //!
-//! Two containers, two fields, and nothing else is read: FLAC's VORBIS_COMMENT and MP3's ID3v2
-//! `TPE1`/`TIT2`. A file that has neither simply does not match, which costs one playlist row.
+//! Two containers: FLAC's VORBIS_COMMENT and MP3's ID3v2. Artist and title for the likes; album,
+//! album artist, track number and year as well for a song stored once under two albums
+//! (`shared.rs`), whose second entry carries its own album's tags. A file with no artist or title
+//! simply does not match, which costs one playlist row.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -20,6 +22,11 @@ const VORBIS_COMMENT: u8 = 4;
 pub struct Tags {
     pub artist: String,
     pub title: String,
+    pub album: String,
+    pub album_artist: String,
+    /// As written: "3" or "3/12".
+    pub track: String,
+    pub year: String,
 }
 
 impl Tags {
@@ -73,6 +80,10 @@ pub fn parse_vorbis_comment(data: &[u8]) -> Tags {
         match key.to_ascii_uppercase().as_str() {
             "ARTIST" if tags.artist.is_empty() => tags.artist = value,
             "TITLE" if tags.title.is_empty() => tags.title = value,
+            "ALBUM" if tags.album.is_empty() => tags.album = value,
+            "ALBUMARTIST" | "ALBUM ARTIST" if tags.album_artist.is_empty() => tags.album_artist = value,
+            "TRACKNUMBER" if tags.track.is_empty() => tags.track = value,
+            "DATE" | "YEAR" if tags.year.is_empty() => tags.year = value,
             _ => {}
         }
     }
@@ -87,6 +98,10 @@ fn read_mp3(path: &Path) -> Option<Tags> {
         match &frame.id {
             b"TPE1" if tags.artist.is_empty() => tags.artist = decode_text(&frame.body),
             b"TIT2" if tags.title.is_empty() => tags.title = decode_text(&frame.body),
+            b"TALB" if tags.album.is_empty() => tags.album = decode_text(&frame.body),
+            b"TPE2" if tags.album_artist.is_empty() => tags.album_artist = decode_text(&frame.body),
+            b"TRCK" if tags.track.is_empty() => tags.track = decode_text(&frame.body),
+            b"TDRC" | b"TYER" if tags.year.is_empty() => tags.year = decode_text(&frame.body),
             _ => {}
         }
     }
@@ -151,7 +166,18 @@ mod tests {
         let block = vorbis_block(&["ALBUM=Isles", "artist=Bicep", "TITLE=Atlas", "DATE=2021"]);
         let tags = parse_vorbis_comment(&block);
         // Keys are case-insensitive in the wild; the values are not touched.
-        assert_eq!(tags, Tags { artist: "Bicep".into(), title: "Atlas".into() });
+        assert_eq!(
+            tags,
+            Tags {
+                artist: "Bicep".into(),
+                title: "Atlas".into(),
+                album: "Isles".into(),
+                year: "2021".into(),
+                ..Tags::default()
+            }
+        );
+        let more = parse_vorbis_comment(&vorbis_block(&["AlbumArtist=Various", "TRACKNUMBER=3/12"]));
+        assert_eq!((more.album_artist.as_str(), more.track.as_str()), ("Various", "3/12"));
     }
 
     #[test]
@@ -195,7 +221,7 @@ mod tests {
         file.extend_from_slice(&comment);
         std::fs::write(&path, &file).unwrap();
 
-        assert_eq!(read(&path), Some(Tags { artist: "Bonobo".into(), title: "Kerala".into() }));
+        assert_eq!(read(&path), Some(Tags { artist: "Bonobo".into(), title: "Kerala".into(), ..Tags::default() }));
         // Something that is not a music file at all is simply no match.
         let other = dir.join("cover.jpg");
         std::fs::write(&other, b"not audio").unwrap();

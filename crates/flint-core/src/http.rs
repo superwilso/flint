@@ -7,8 +7,9 @@
 //! Flint owns none of them. Everywhere else — which in practice means development on Linux — it
 //! shells out to `curl`, so the same code paths can be exercised without a Windows box.
 //!
-//! Scope is deliberately tiny: form-encoded POST and GET, text responses, one timeout. Last.fm is
-//! the only thing on the other end, and a bigger client would only be more to get wrong.
+//! Scope is deliberately tiny: form-encoded POST and GET, text responses, one timeout. Last.fm and
+//! GitHub's raw files (the palette shop) are the only things on the other end, and a bigger client
+//! would only be more to get wrong.
 
 use std::fmt;
 
@@ -168,29 +169,43 @@ mod windows_impl {
         }
     }
 
+    /// One session for the whole process, opened on first use and never closed. WinHTTP keeps a
+    /// finished connection alive per session, so the palette shop's files (up to 200) share a TLS
+    /// connection instead of a handshake each (audit E11). Session handles are thread-safe.
+    fn session() -> Result<Handle, Error> {
+        static SESSION: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+        let mut held = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        if *held == 0 {
+            let agent = wide(concat!("flint/", env!("CARGO_PKG_VERSION")));
+            unsafe {
+                let h = WinHttpOpen(
+                    agent.as_ptr(),
+                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                );
+                if h.is_null() {
+                    return Err(Error(format!("could not start WinHTTP (error {})", GetLastError())));
+                }
+                // 30 s each, the same figure the Python tool used: long enough for a slow link,
+                // short enough that a dead network does not look like a hang.
+                WinHttpSetTimeouts(h, 30_000, 30_000, 30_000, 30_000);
+                *held = h as usize;
+            }
+        }
+        Ok(*held as Handle)
+    }
+
     pub fn send(url: &str, body: Option<&str>) -> Result<Response, Error> {
         let (host, path) = split_url(url)?;
-        let agent = wide(concat!("flint/", env!("CARGO_PKG_VERSION")));
         let host_w = wide(&host);
         let path_w = wide(&path);
         let verb = wide(if body.is_some() { "POST" } else { "GET" });
+        let session = session()?;
 
         unsafe {
-            let session = Owned(WinHttpOpen(
-                agent.as_ptr(),
-                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                std::ptr::null(),
-                std::ptr::null(),
-                0,
-            ));
-            if session.0.is_null() {
-                return Err(Error(format!("could not start WinHTTP (error {})", GetLastError())));
-            }
-            // 30 s each, the same figure the Python tool used: long enough for a slow link, short
-            // enough that a dead network does not look like a hang.
-            WinHttpSetTimeouts(session.0, 30_000, 30_000, 30_000, 30_000);
-
-            let connect = Owned(WinHttpConnect(session.0, host_w.as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0));
+            let connect = Owned(WinHttpConnect(session, host_w.as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0));
             if connect.0.is_null() {
                 return Err(Error(format!("could not reach {host} (error {})", GetLastError())));
             }
@@ -337,6 +352,17 @@ mod tests {
     fn fields_join_in_order() {
         let fields = vec![("method".into(), "track.love".into()), ("artist".into(), "A B".into())];
         assert_eq!(encode_form(&fields), "method=track.love&artist=A%20B");
+    }
+
+    /// Requests in a row go through the one session (audit E11). Needs the network, so it runs by
+    /// hand: `cargo test -p flint-core --lib http -- --ignored`, on Windows for WinHTTP.
+    #[test]
+    #[ignore]
+    fn requests_in_a_row_all_answer() {
+        for _ in 0..3 {
+            let r = super::get_form(crate::palette::SHARED_INDEX, &[]).unwrap();
+            assert_eq!(r.status, 200);
+        }
     }
 
     #[test]

@@ -749,6 +749,34 @@ pub fn share_url(name: &str, body: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The shared corpus (`contracts/palettes/`): the checker gives each file the player's verdict,
+    /// word for word, as `verdicts.tsv` records it. Cinder's suite holds the player to the same file.
+    #[test]
+    fn the_shared_corpus_gets_the_players_verdicts() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/palettes");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|f| palette_stem(f).is_some())
+            .collect();
+        files.sort();
+        let mut got = String::new();
+        for f in &files {
+            let body = std::fs::read_to_string(dir.join(f)).unwrap();
+            match check_file(f, &body).unwrap().1 {
+                Ok(_) => got.push_str(&format!("{f}\tok\n")),
+                Err(errs) => errs.iter().for_each(|e| got.push_str(&format!("{f}\t{e}\n"))),
+            }
+        }
+        let want: String = std::fs::read_to_string(dir.join("verdicts.tsv"))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(got, want, "Flint's verdicts:\n{got}");
+    }
+
     // Cinder's shipped palettes, copied from `player/cinder-ui/palettes/`. They load on the player,
     // so they must load here.
     const SLATE: &str = "name = Slate\nday.bg = #0e1116\nday.panel = #141820\nday.line = #232a35\n\

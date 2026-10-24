@@ -1,15 +1,18 @@
 //! Flint's library. The command-line tool (`crates/flint`) is a thin layer over this.
 
 pub mod apply;
+pub mod backup;
 pub mod cache;
 pub mod engine;
 pub mod flac;
+pub mod health;
 pub mod http;
 pub mod id3;
 pub mod lastfm;
 pub mod lastfm_sync;
 pub mod library;
 pub mod likes;
+pub mod lint;
 pub mod localtime;
 pub mod lossless;
 pub mod md5;

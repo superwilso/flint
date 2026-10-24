@@ -210,6 +210,8 @@ extern "system" {
     fn OpenClipboard(hwnd: Hwnd) -> i32;
     fn CloseClipboard() -> i32;
     fn GetClipboardData(format: u32) -> *mut c_void;
+    fn EmptyClipboard() -> i32;
+    fn SetClipboardData(format: u32, mem: *mut c_void) -> *mut c_void;
     fn DestroyWindow(hwnd: Hwnd) -> i32;
 }
 
@@ -241,6 +243,8 @@ extern "system" {
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     fn GlobalLock(mem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(mem: *mut c_void) -> i32;
+    fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+    fn GlobalFree(mem: *mut c_void) -> *mut c_void;
 }
 
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
@@ -268,6 +272,7 @@ const WM_JOB: u32 = 0x8000 + 1;
 /// A worker thread has finished. `wparam` is its job's [`Job::code`].
 const WM_JOB_DONE: u32 = 0x8000 + 2;
 const CF_UNICODETEXT: u32 = 13;
+const GMEM_MOVEABLE: u32 = 0x0002;
 const SW_SHOWNORMAL: i32 = 1;
 
 const SW_SHOW: i32 = 5;
@@ -720,6 +725,33 @@ fn clipboard_text(hwnd: Hwnd) -> Option<String> {
     }
 }
 
+/// Put `text` on the clipboard. False when another program holds it.
+fn set_clipboard(hwnd: Hwnd, text: &str) -> bool {
+    let w: Vec<u16> = text.replace('\n', "\r\n").encode_utf16().chain([0]).collect();
+    unsafe {
+        if OpenClipboard(hwnd) == 0 {
+            return false;
+        }
+        EmptyClipboard();
+        let h = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2);
+        let mut ok = false;
+        if !h.is_null() {
+            let p = GlobalLock(h) as *mut u16;
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
+                GlobalUnlock(h);
+                // The clipboard owns the memory once this succeeds.
+                ok = !SetClipboardData(CF_UNICODETEXT, h).is_null();
+            }
+            if !ok {
+                GlobalFree(h);
+            }
+        }
+        CloseClipboard();
+        ok
+    }
+}
+
 /// A message box with Flint's name on it.
 pub fn message(text: &str) {
     let (text, cap) = (wide(text), wide("Flint"));
@@ -775,6 +807,20 @@ unsafe fn press(hwnd: Hwnd, id: Id) {
                     }
                 });
             }
+        }
+        Id::CopyReport => {
+            let report = STATE.with(|st| st.borrow().as_ref().map(|s| s.model.player.report.clone()));
+            let ok = report.is_some_and(|r| set_clipboard(hwnd, &r));
+            STATE.with(|st| {
+                if let Some(state) = st.borrow_mut().as_mut() {
+                    state.model.say(if ok {
+                        "Copied the player's health and the end of its logs. Paste them into the issue."
+                    } else {
+                        "Could not put the report on the clipboard."
+                    });
+                }
+            });
+            InvalidateRect(hwnd, std::ptr::null(), 0);
         }
         Id::Stop => STATE.with(|st| {
             if let Some(state) = st.borrow_mut().as_mut() {

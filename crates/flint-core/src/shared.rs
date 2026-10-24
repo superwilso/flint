@@ -9,7 +9,8 @@
 //!
 //! The answers live in Flint's cache folder ([`STORE_NAME`]), one line per pair:
 //! `library \t keep \t also \t yes|no`, paths relative to that library. A "no" is kept so the pair
-//! is not suggested again.
+//! is not suggested again. A yes may name the pair the other way round from the suggestion: that is
+//! the owner choosing which copy is copied, and so which one Sony's player shows ([`holding`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -31,6 +32,13 @@ const LIST_HEADER: &str = "#FLINT-SHARED/1\talso\tkeep\ttitle\tartist\talbum\tal
 pub struct Pair {
     pub keep: String,
     pub also: String,
+}
+
+impl Pair {
+    /// The same two files, the other one kept.
+    pub fn swapped(&self) -> Pair {
+        Pair { keep: self.also.clone(), also: self.keep.clone() }
+    }
 }
 
 /// The owner's answers, for every library.
@@ -70,13 +78,17 @@ impl Answers {
         self.lines.iter().filter(|((l, _), yes)| **yes && *l == lib).map(|((_, p), _)| p.clone()).collect()
     }
 
-    /// Has `library`'s owner answered this pair either way?
+    /// Has `library`'s owner answered this pair, either way and either way round?
     pub fn answered(&self, library: &Path, p: &Pair) -> bool {
-        self.lines.contains_key(&(library.to_string_lossy().into_owned(), p.clone()))
+        let lib = library.to_string_lossy().into_owned();
+        self.lines.contains_key(&(lib.clone(), p.clone())) || self.lines.contains_key(&(lib, p.swapped()))
     }
 
+    /// One answer per two files: setting it either way round replaces the other.
     pub fn set(&mut self, library: &Path, p: Pair, yes: bool) {
-        self.lines.insert((library.to_string_lossy().into_owned(), p), yes);
+        let lib = library.to_string_lossy().into_owned();
+        self.lines.remove(&(lib.clone(), p.swapped()));
+        self.lines.insert((lib, p), yes);
     }
 }
 
@@ -85,8 +97,6 @@ impl Answers {
 ///
 /// Cheap first: a FLAC's key is its STREAMINFO MD5 (one metadata read), and an MP3 is hashed only
 /// when another MP3 has an audio part of exactly the same length.
-// ponytail: the kept copy is the first by path, not the "original" album; a swap option when an
-// owner wants the other one on Sony's player.
 pub fn suggest(library: &Path, source: &[SourceFile]) -> Vec<Pair> {
     let full = |f: &SourceFile| library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
     let mut by_key: BTreeMap<String, Vec<&str>> = BTreeMap::new();
@@ -120,6 +130,22 @@ pub fn suggest(library: &Path, source: &[SourceFile]) -> Vec<Pair> {
         }
     }
     out
+}
+
+/// The suggestions that hold: each one the owner said yes to, the way round they said it. A yes
+/// counts only while Flint still suggests the two files, i.e. while their audio is still the same.
+pub fn holding(suggested: &[Pair], confirmed: &[Pair]) -> Vec<Pair> {
+    suggested
+        .iter()
+        .filter_map(|p| {
+            let other = p.swapped();
+            if confirmed.contains(p) {
+                Some(p.clone())
+            } else {
+                confirmed.contains(&other).then_some(other)
+            }
+        })
+        .collect()
 }
 
 /// The list for one volume: one line per `(also, keep)` entry, with `also`'s own tags.
@@ -191,6 +217,21 @@ mod tests {
         assert_eq!(b.confirmed(Path::new("D:/Music")), vec![p.clone()]);
         assert!(b.answered(Path::new("D:/Music"), &q), "a no is remembered");
         assert_eq!(b.confirmed(Path::new("E:/Other")), vec![q]);
+    }
+
+    #[test]
+    fn the_owner_can_keep_the_other_copy() {
+        let lib = Path::new("D:/Music");
+        let p = Pair { keep: "Album/03 Song.flac".into(), also: "Best Of/11 Song.flac".into() };
+        let mut a = Answers::default();
+        a.set(lib, p.clone(), true);
+        a.set(lib, p.swapped(), true);
+        assert_eq!(a.lines.len(), 1, "one answer for the two files");
+        assert!(a.answered(lib, &p), "answered, the other way round");
+        let held = holding(std::slice::from_ref(&p), &a.confirmed(lib));
+        assert_eq!(held, vec![p.swapped()], "the best-of copy is the one copied");
+        a.set(lib, p.clone(), false);
+        assert!(holding(&[p], &a.confirmed(lib)).is_empty(), "a later no undoes it");
     }
 
     /// The list Cinder reads (`contracts/flint-shared.tsv`; Cinder's `cinder-ffi/src/shared.rs` parses

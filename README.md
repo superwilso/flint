@@ -97,7 +97,8 @@ flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  
   a playlist stay on the same volume, and an album already on a volume stays there.
 - The same recording on two albums (an album and a best-of, a single and its album) is found by
   its audio. Tick it in the window, or answer `flint shared "D:\\Music" --yes N`, and the sync copies it
-  once. Cinder lists it under both albums from `flint-shared.tsv`. Sony's player shows the kept copy.
+  once. Cinder lists it under both albums from `flint-shared.tsv`. Sony's player shows the kept copy;
+  **Swap** in the window (or `--keep-other N`) keeps the other one.
 - `--playlists` reads `.m3u`, `.m3u8` and MusicBee `.mbp` files; each reaches the player as an
   `.m3u8`.
 - Each volume is filled to its free space minus 0.5 GB; `--gb N` sets a budget instead.
@@ -163,6 +164,17 @@ Cinder keeps three things on the player that Sony's database has no place for: s
 play counts (`cinder_stats.tsv`), smart playlists (`cinder_views.conf`) and the playlists you make
 on the player (`cinder_playlists`). A sync never removes any of them.
 
+**Health.** *On the player* also shows what Cinder's own files on the drive say about the last
+start (version, firmware, library size, system space), and **Copy a report** puts that with the end
+of the player's logs on the clipboard, for an issue.
+
+**A copy on the PC.** Each time the window reads the player, it copies what the player keeps for
+itself (those three, the likes, the settings, the palettes and `.scrobbler.log`) into `backups` in
+Flint's data folder, unless nothing has changed since the last copy. The newest 20 are kept. After a
+reset or a format, `flint restore E:\` lists them and `flint restore E:\ "<name>" --apply` puts one
+back; it copies the player as it is first, so the restore can be undone. `flint backup E:\` takes a
+copy by hand.
+
 **In the window**, *On the player* shows each album's stars and plays, and counts the rated tracks,
 the smart playlists and the playlists made on the player. The log names each one.
 
@@ -212,6 +224,11 @@ Tested on transcodes of four albums: MP3 128 and 320, Opus 160, upsampled and bi
 all caught; Vorbis q6 1 of 4; LAME V0 and AAC 256 none (they keep content up to ~22 kHz). No
 originals were flagged. A clean result isn't proof, and `SUSPECT` isn't an accusation. Results are
 cached by audio content, so moved or retagged files aren't decoded again.
+
+**Tags.** The same check, and `flint lint "D:\\Music"`, reads every FLAC's and MP3's tags and lists
+what would look wrong on the player: an album folder that would show as several albums (a
+compilation with no album artist, or files that disagree), tracks with no number, and files with no
+artist or title. Fix them in your tagger before the copy.
 
 ## Layout
 

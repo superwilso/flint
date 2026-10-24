@@ -627,14 +627,15 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
         flint_core::shared::suggest(&s.library, &source)
     };
     let confirmed = answers.confirmed(&s.library);
-    let shared: Vec<_> = suggested.iter().filter(|p| confirmed.contains(p)).cloned().collect();
+    let shared = flint_core::shared::holding(&suggested, &confirmed);
     if !write {
+        // Each row the way round the owner answered it, so a swapped yes shows the copy kept.
         let rows: Vec<_> = suggested
             .into_iter()
-            .filter(|p| !answers.answered(&s.library, p) || shared.contains(p))
-            .map(|p| {
-                let yes = shared.contains(&p);
-                (p, yes)
+            .filter(|p| !answers.answered(&s.library, p) || shared.contains(p) || shared.contains(&p.swapped()))
+            .map(|p| match shared.iter().find(|q| **q == p || **q == p.swapped()) {
+                Some(q) => (q.clone(), true),
+                None => (p, false),
             })
             .collect();
         emit(Update::Pairs(rows));
@@ -901,6 +902,17 @@ fn import_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, Stri
 fn check_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
     let mut store = lossless::Store::open(&s.cache).map_err(|e| format!("{}: {e}", s.cache.display()))?;
     emit(Update::Progress(None));
+    // Tags first: cheap, needs no FFmpeg, and what it finds shows on the player as split albums.
+    emit(Update::Say("reading the tags…".into()));
+    let source = sync::scan_library(&s.library).map_err(|e| format!("{}: {e}", s.library.display()))?;
+    let tag_problems = flint_core::lint::lint(&s.library, &source);
+    for f in &tag_problems {
+        emit(Update::Log(format!("Tags: {}", f.line())));
+    }
+    let tags_note = match tag_problems.len() {
+        0 => String::new(),
+        n => format!(" {n} tag problem(s) would show on the player — see the log."),
+    };
     emit(Update::Say("looking for FFmpeg…".into()));
     let ffmpeg = engine::locate_ffmpeg()?;
     let mut stop_note = false;
@@ -944,8 +956,11 @@ fn check_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) ->
     emit(Update::Checked(checked.len()));
     emit(Update::Progress(Some(1.0)));
     Ok(match flagged {
-        0 => format!("Checked {} FLACs; none look like anything but the lossless audio they claim.", checked.len()),
-        n => format!("Checked {} FLACs; {n} are worth a closer look — see the log.", checked.len()),
+        0 => format!(
+            "Checked {} FLACs; none look like anything but the lossless audio they claim.{tags_note}",
+            checked.len()
+        ),
+        n => format!("Checked {} FLACs; {n} are worth a closer look — see the log.{tags_note}", checked.len()),
     })
 }
 
@@ -975,6 +990,26 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
         }
     }
     (facts.plays, facts.unreadable) = plays_on(&s.volumes);
+    // A copy of what the player keeps for itself, whenever it is read (flint_core::backup), and
+    // its health, from the files Cinder leaves on the drive (flint_core::health).
+    if let Some(root) = s.volumes.first() {
+        let drive = flint_core::stats::drive_root(root);
+        let health = flint_core::health::read(&drive);
+        facts.health = flint_core::health::lines(&health);
+        facts.report = flint_core::health::report(&drive, &health);
+    }
+    if let Some(root) = s.volumes.first() {
+        use flint_core::backup::{self, Taken};
+        let drive = flint_core::stats::drive_root(root);
+        match backup::take(&drive, &s.cache, &backup::stamp_now()) {
+            Ok(Taken::New { name, files, .. }) => emit(Update::Log(format!(
+                "Copied the player's playlists, likes and settings ({files} files) to {}",
+                s.cache.join(backup::FOLDER).join(name).display()
+            ))),
+            Ok(_) => {}
+            Err(e) => emit(Update::Log(format!("Could not copy the player's own files: {e}"))),
+        }
+    }
     facts.palettes.sort_by_key(|p| p.name.to_lowercase());
     remembered_by_the_player(s, &mut facts, emit);
     let summary = format!(
@@ -1507,6 +1542,7 @@ mod tests {
         let before: Vec<_> = walk(&vol);
 
         let mut s = Settings::new(PathBuf::new());
+        s.cache = tmp("readplayer-data");
         s.volumes = vec![vol.clone()];
         let mut facts = None;
         let word = run(Job::ReadPlayer, &s, &AtomicBool::new(false), &mut |u| {
@@ -1530,6 +1566,7 @@ mod tests {
         assert_eq!(f.palettes.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["moss.palette"]);
         assert!(word.contains("2 albums"), "{word}");
         assert_eq!(walk(&vol), before, "reading the player wrote to it");
+        assert_eq!(flint_core::backup::list(&s.cache).len(), 1, "and copied its own files to the PC");
         let _ = fs::remove_dir_all(&vol);
     }
 
@@ -1562,6 +1599,8 @@ mod tests {
         let before: Vec<_> = walk(&vol);
 
         let mut s = Settings::new(library.clone());
+        s.cache = root.join("flint-data");
+
         s.volumes = vec![vol.clone()];
         let (mut facts, mut lines) = (None, Vec::new());
         run(Job::ReadPlayer, &s, &AtomicBool::new(false), &mut |u| match u {

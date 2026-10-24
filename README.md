@@ -17,8 +17,8 @@ see *Unreleased* in [`CHANGELOG.md`](CHANGELOG.md). Replaces the Python `Sony-sy
 4. Press **Show what would happen**. Nothing is written yet.
 5. Press **Copy to the player**.
 
-Everything the window does is also a command: run the same file from a terminal with a command
-after it (Linux: `flint-linux-x64`). At a `cmd` prompt, `start /wait flint-windows-x64.exe ...`
+Everything the window does is also a command, and every command has its place in the window (a
+test keeps the two in step): run the same file from a terminal with a command after it (Linux: `flint-linux-x64`). At a `cmd` prompt, `start /wait flint-windows-x64.exe ...`
 makes the prompt wait for it.
 
 ## SensMe
@@ -45,11 +45,11 @@ the player reads. Full comparison: [`docs/MUSIC_CENTER.md`](docs/MUSIC_CENTER.md
 
 | Page | What it does |
 |---|---|
-| **Sync** | Plans the copy (what's added, removed, tagged, and whether it fits), then copies. |
-| **On the player** | Lists what's on each drive and whether Flint put it there, with the ratings and play counts the player keeps. Takes playlists you changed on the player back to the PC. |
-| **Check** | Finds FLACs that aren't really lossless. Click a verdict or type to filter. |
-| **SensMe** | Analyses the library, or imports Music Center's results. |
-| **Likes & plays** | Sends scrobbles to Last.fm and syncs liked songs. |
+| **Sync** | Plans the copy (what's added, removed, tagged, and whether it fits), then copies. *Use at most … GB* on a drive keeps room free on it. |
+| **On the player** | Lists what's on each drive and whether Flint put it there, with the ratings and play counts the player keeps. Takes playlists you changed on the player back to the PC. **Backup** steps through the copies of the player's playlists, likes and settings that Flint takes on each read, and **Put back** restores one. |
+| **Check** | Finds FLACs that aren't really lossless, and tags that would look wrong on the player. Click a verdict (or OK, for the clean files) or type to filter. |
+| **SensMe** | Analyses the library, or imports Music Center's results (**Music Center folder…** when Flint can't find it). **Fetch lyrics** gets synced lyrics from LRCLIB. |
+| **Likes & plays** | Sends scrobbles to Last.fm and syncs liked songs (optionally as a Liked Songs playlist too). **Fill in play counts** gives tracks the player never counted their plays from the scrobble log. |
 | **Palettes** | Makes Cinder colour palettes, checks them with Cinder's own rules and sends the ones that pass. **Shared palettes** lists everything in [cinder-themes](https://github.com/superwilso/cinder-themes): search it, see each one by day and night, and install one onto the player in one click. |
 | **Settings** | Theme, folders, the analysis cache, Last.fm key and sign-in. |
 
@@ -105,6 +105,11 @@ flint sync "D:\\Music" --to E:\\ --to F:\\ --playlists "D:\\Playlists" --apply  
   `--no-sensme` copies without tagging.
 - Cover art and lyrics (`.jpg`, `.png`, `.lrc`) in an album folder are copied with it;
   `--no-extras` leaves them on the PC. Flint never deletes artwork it didn't put there.
+- `flint lyrics "D:\\Music" --apply` asks [LRCLIB](https://lrclib.net) for synced lyrics for each
+  track that has none to show as they are sung, and writes `Song.lrc` beside `Song.flac` in the
+  library, where Cinder and MusicBee look and where the next sync picks it up. It never replaces a
+  `.lrc`, skips tracks whose tags already hold synced lyrics, and remembers the tracks LRCLIB does
+  not know so the next run does not ask again. Without `--apply` it only counts them. In the window: SensMe ▸ Fetch lyrics.
 - Copies are written to a temp file and renamed, so an interrupted copy leaves the old file or the
   new one, never half of one. `flint-manifest.tsv` on each volume records what each copy came from.
 

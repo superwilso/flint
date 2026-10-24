@@ -2,12 +2,39 @@
 
 ## Unreleased
 
+### The window does everything the command line does
+
+- **Restore** (On the player ▸ Backup): step through the copies Flint takes on each read and put one
+  back. It asks once before writing, and copies the player as it is first, like `flint restore`.
+- **Fill in play counts** (Likes & plays): `flint stats --apply` — tracks the player never counted
+  get their plays from `.scrobbler.log`, and histories follow albums that moved between drives.
+- **Also write a Liked Songs playlist** (Likes & plays): `flint likes --playlist`.
+- **Use at most … GB** on each drive (Sync): `flint sync --gb`.
+- **Music Center folder…** (SensMe): `flint import --from`, for when Flint cannot find it.
+- **The OK count lists the clean files** (Check): `flint check --all`.
+- **Fetch lyrics** (SensMe): `flint lyrics --apply`.
+- A test now lists every command and option in the usage text with its control in the window, or
+  the reason it has none (`--jobs`, `--cache`, and the tools for working on Flint itself), so a new
+  option fails the build until the window has it too.
+
 ### Checking
 
 - **Tags that would look wrong on the player.** *Check the library* (and `flint lint`) now also reads
   the tags and lists albums that would show split on the player (a compilation with no album
   artist, files that disagree on the album artist or album), tracks with no number, and files with
   no artist or title. It needs no FFmpeg and changes nothing.
+- **FLACs the player cannot play, before they are copied.** Check also lists FLACs wider than 24
+  bits: the player's decoder stalls on them and Cinder skips them. Convert them to 24-bit first.
+
+### Lyrics
+
+- **Synced lyrics from LRCLIB.** `flint lyrics <library> --apply` asks LRCLIB (lrclib.net, free,
+  no key) about each track with no lyrics to show as they are sung, and writes `Song.lrc` beside
+  the track in the library, which the sync already carries to the player. A `.lrc` is never
+  replaced; tracks whose tags hold synced lyrics are skipped, and tracks with plain lyrics in their
+  tags take synced ones only. Tracks LRCLIB does not know are remembered, so a second run asks
+  only about new music. A busy server is waited out (up to 50 seconds), then the run stops and
+  carries on next time. In the window it is SensMe ▸ Fetch lyrics, with a bar and a Stop.
 
 ### The player
 
@@ -25,6 +52,19 @@
 
 ### Copying
 
+- **Music already on the player is kept, not copied again.** A player filled by Sony-sync, or by a
+  Flint whose `flint-manifest.tsv` was lost, used to get every file copied again on the first sync.
+  A file already where Flint would put it, with the same audio and the same tags as the library's,
+  is now kept and written into the manifest. Checking reads a FLAC's metadata only; an MP3's audio
+  is read once. Files with SensMe data still to add are copied, since adding it rewrites the file.
+  A file the library has under another path is still copied; moving it is the next step.
+- **The health card reads Cinder's real log lines** (taken from a player's boot), and says how
+  the last install or uninstall ended: finished, stopped and put Sony's player back, or cut short.
+- **A shared song is not lost when its kept album does not fit.** For a song stored once for two
+  albums, the other album's entry pointed at the kept file even when the kept album fitted on no
+  volume, so the song went missing from both on the player. The other album now gets its own copy
+  in that case. Removing either album from the library also ends the pairing at the next sync
+  (now tested).
 - **Choose which copy of a shared song is copied.** For a song stored once for two albums, Flint
   copied the file whose path sorts first, and that is the one Sony's player shows. **Swap** on its
   row in the window, or `flint shared <library> --keep-other N`, copies the other one instead.

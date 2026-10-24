@@ -124,6 +124,38 @@ pub fn mp3_audio_span<R: Read + Seek>(f: &mut R) -> io::Result<Option<(u64, u64)
     Ok(Some((start, end - start)))
 }
 
+/// Is `b` the same file as `a`, without reading all of it? The same size, the same audio
+/// ([`content_key`]), and the same bytes ahead of the audio and in the last 128 (the tags: a
+/// FLAC's metadata, an MP3's ID3v2 and ID3v1). Equal tags matter as much as equal audio: the player
+/// shows what the file says. A FLAC costs its metadata twice; an MP3's key reads its audio.
+pub fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
+    let len = fs::metadata(a)?.len();
+    if fs::metadata(b)?.len() != len {
+        return Ok(false);
+    }
+    let (Some(ka), Some(kb)) = (content_key(a)?, content_key(b)?) else { return Ok(false) };
+    if ka != kb {
+        return Ok(false);
+    }
+    let mut f = BufReader::new(File::open(a)?);
+    let start = match flac::read_layout(&mut f) {
+        Ok(layout) => layout.audio_offset,
+        Err(_) => {
+            f.seek(SeekFrom::Start(0))?;
+            mp3_audio_span(&mut f)?.map_or(0, |(start, _)| start)
+        }
+    };
+    let tail = len.min(128);
+    let bytes = |path: &Path, at: u64, n: u64| -> io::Result<Vec<u8>> {
+        let mut f = File::open(path)?;
+        f.seek(SeekFrom::Start(at))?;
+        let mut buf = vec![0; usize::try_from(n).unwrap_or(usize::MAX)];
+        f.read_exact(&mut buf)?;
+        Ok(buf)
+    };
+    Ok(bytes(a, 0, start)? == bytes(b, 0, start)? && bytes(a, len - tail, tail)? == bytes(b, len - tail, tail)?)
+}
+
 pub fn stat(path: &Path) -> io::Result<(u64, i64)> {
     let m = fs::metadata(path)?;
     let mtime = m.modified()?.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -279,6 +311,39 @@ mod tests {
         let mut f = flac::encode_metadata(&[], &blocks).unwrap();
         f.extend_from_slice(b"\xff\xf8frames");
         f
+    }
+
+    #[test]
+    fn same_file_wants_the_same_audio_and_the_same_tags() {
+        let d = tmpdir("same");
+        let (a, b) = (d.join("a.flac"), d.join("b.flac"));
+        let tag = |t: &[u8]| [flac::Block { kind: 4, data: t.to_vec() }];
+        fs::write(&a, flac_with([7; 16], 99, &tag(b"artist=A"))).unwrap();
+        fs::write(&b, flac_with([7; 16], 99, &tag(b"artist=A"))).unwrap();
+        assert!(same_file(&a, &b).unwrap());
+        // The same length of tag, saying something else: the player would show the old one.
+        fs::write(&b, flac_with([7; 16], 99, &tag(b"artist=B"))).unwrap();
+        assert!(!same_file(&a, &b).unwrap());
+        fs::write(&b, flac_with([8; 16], 99, &tag(b"artist=A"))).unwrap();
+        assert!(!same_file(&a, &b).unwrap(), "other audio");
+        fs::write(&b, flac_with([7; 16], 99, &tag(b"artist=AA"))).unwrap();
+        assert!(!same_file(&a, &b).unwrap(), "another size");
+        // An MP3 with an ID3v1 tag: same audio, the last 128 bytes differ.
+        let (m, n) = (d.join("m.mp3"), d.join("n.mp3"));
+        let v1 = |title: &[u8]| {
+            let mut f = b"\xff\xfb\x90\x64some-mpeg-frames".to_vec();
+            let mut t = b"TAG".to_vec();
+            t.extend_from_slice(title);
+            t.resize(128, b' ');
+            f.extend_from_slice(&t);
+            f
+        };
+        fs::write(&m, v1(b"One")).unwrap();
+        fs::write(&n, v1(b"One")).unwrap();
+        assert!(same_file(&m, &n).unwrap());
+        fs::write(&n, v1(b"Two")).unwrap();
+        assert!(!same_file(&m, &n).unwrap());
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

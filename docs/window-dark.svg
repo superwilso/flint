@@ -28,6 +28,10 @@
 <rect x="22.5" y="226.5" width="875" height="95" rx="8" fill="#232120" stroke="#332f2d" stroke-width="1"/>
 <text x="38" y="249" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ede9e5" text-anchor="start" dominant-baseline="central">Player</text>
 <text x="158" y="249" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="15" fill="#ede9e5" text-anchor="start" dominant-baseline="central">E:\</text>
+<text x="596" y="249" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a938d" text-anchor="end" dominant-baseline="central">Use at most</text>
+<rect x="602.5" y="234.5" width="79" height="29" rx="5" fill="#232120" stroke="#3d3936" stroke-width="1"/>
+<text x="612" y="249" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#857e77" text-anchor="start" dominant-baseline="central">No limit</text>
+<text x="712" y="249" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a938d" text-anchor="end" dominant-baseline="central">GB</text>
 <rect x="716.5" y="234.5" width="61" height="29" rx="5" fill="#2b2826" stroke="#3d3936" stroke-width="1"/>
 <text x="747" y="249" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ede9e5" text-anchor="middle" dominant-baseline="central">Clear</text>
 <rect x="786.5" y="234.5" width="95" height="29" rx="5" fill="#2b2826" stroke="#3d3936" stroke-width="1"/>
@@ -40,6 +44,10 @@
 <rect x="22.5" y="332.5" width="875" height="95" rx="8" fill="#232120" stroke="#332f2d" stroke-width="1"/>
 <text x="38" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ede9e5" text-anchor="start" dominant-baseline="central">Memory card</text>
 <text x="158" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="15" fill="#ede9e5" text-anchor="start" dominant-baseline="central">F:\</text>
+<text x="596" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a938d" text-anchor="end" dominant-baseline="central">Use at most</text>
+<rect x="602.5" y="340.5" width="79" height="29" rx="5" fill="#232120" stroke="#3d3936" stroke-width="1"/>
+<text x="612" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#857e77" text-anchor="start" dominant-baseline="central">No limit</text>
+<text x="712" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a938d" text-anchor="end" dominant-baseline="central">GB</text>
 <rect x="716.5" y="340.5" width="61" height="29" rx="5" fill="#2b2826" stroke="#3d3936" stroke-width="1"/>
 <text x="747" y="355" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ede9e5" text-anchor="middle" dominant-baseline="central">Clear</text>
 <rect x="786.5" y="340.5" width="95" height="29" rx="5" fill="#2b2826" stroke="#3d3936" stroke-width="1"/>
@@ -64,7 +72,9 @@
 <text x="46" y="571" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#ede9e5" text-anchor="start" dominant-baseline="central">Music Center (38 files, player)</text>
 <rect x="22.5" y="587.5" width="15" height="15" rx="3" fill="#232120" stroke="#3d3936" stroke-width="1"/>
 <text x="46" y="595" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#ede9e5" text-anchor="start" dominant-baseline="central">road trip.m3u8 (playlist, player)</text>
-<text x="22" y="620" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a938d" text-anchor="start" dominant-baseline="central">The same recording on two albums. Ticked: copied once, listed under both in Cinder.</text>
+<text x="22" y="620" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" fill="#9a938d" text-anchor="start" dominant-baseline="central">The same recording on two albums. Ticked: copied once, listed under both in Cinder. Swap copies the other file, the one Sony&apos;s player sh…</text>
+<rect x="816.5" y="632.5" width="61" height="21" rx="5" fill="#2b2826" stroke="#3d3936" stroke-width="1"/>
+<text x="847" y="643" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#ede9e5" text-anchor="middle" dominant-baseline="central">Swap</text>
 <rect x="22.5" y="635.5" width="15" height="15" rx="3" fill="#e0dbd5" stroke="#e0dbd5" stroke-width="1"/>
 <polyline points="26,643 29,646 34,640" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <text x="46" y="643" font-family="Segoe UI,Selawik,Inter,DejaVu Sans,Helvetica,Arial,sans-serif" font-size="14" fill="#ede9e5" text-anchor="start" dominant-baseline="central">Bicep - Best of 2017-2021/04 Atlas.flac  (same as Bicep - Isles/01 Atlas.flac)</text>

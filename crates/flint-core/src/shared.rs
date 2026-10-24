@@ -245,6 +245,7 @@ mod tests {
             album_artist: album_artist.into(),
             track: track.into(),
             year: year.into(),
+            ..Tags::default()
         };
         let body = list_body(&[
             (

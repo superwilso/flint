@@ -321,6 +321,49 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
             "Puts this and the end of the player's logs on the clipboard, to paste into an issue.",
         ) + 14;
     }
+    // Backups: the copies of the player's own files Flint took on each read, stepped through
+    // newest first. Put back asks once; the second click is the one that writes.
+    if let Some(last) = m.player.backups.len().checked_sub(1) {
+        let shown = m.restore_pick.filter(|i| *i <= last).unwrap_or(last);
+        hint(out, PAD, y + 6, 70, "Backup");
+        let mut x = PAD + 70;
+        for (to, label, name_w) in [
+            (shown.checked_sub(1), "‹ Older", 0),
+            (Some(shown), m.player.backups[shown].as_str(), 150),
+            ((shown < last).then_some(shown + 1), "Newer ›", 0),
+        ] {
+            let bw = if name_w > 0 { name_w } else { tool_w(label) };
+            let rect = Rect::new(x, y, bw, 30);
+            match to {
+                Some(i) if name_w > 0 => {
+                    out.push(w(Id::PickBackup(i), rect, Kind::Segment { on: m.restore_pick == Some(i) }, label))
+                }
+                Some(i) => {
+                    out.push(w(Id::PickBackup(i), rect, Kind::Tool { enabled: live(m, Id::PickBackup(i)) }, label))
+                }
+                None => out.push(w(Id::None, rect, Kind::Tool { enabled: false }, label)),
+            }
+            x += bw + 8;
+        }
+        hint(
+            out,
+            x + 6,
+            y + 6,
+            PAD + inner - x - 6,
+            &format!("{} of {} · copied each time the player is read", last - shown + 1, last + 1),
+        );
+        y += 38;
+        let (label, note) = match m.restore_pick.and_then(|i| m.player.backups.get(i)) {
+            None => ("Put back", "Choose a copy to put back its playlists, likes and settings.".to_string()),
+            Some(name) if m.restore_armed => {
+                ("Click again to put it back", format!("Replaces the player's own files with the copy of {name}."))
+            }
+            Some(name) => {
+                ("Put back", format!("Puts back the copy of {name}; the player as it is now is copied first."))
+            }
+        };
+        y = action(out, m, y, inner, Id::Restore, label, &note) + 14;
+    }
     let rows: Vec<Vec<(String, Tone, bool)>> = m
         .player
         .albums
@@ -438,7 +481,7 @@ fn check(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
             ),
         };
         // A verdict's card is a choice once there is something to choose between.
-        if i < VERDICTS.len() && !m.findings.is_empty() {
+        if (i < VERDICTS.len() && !m.findings.is_empty()) || (i == VERDICTS.len() && !m.clean.is_empty()) {
             out.push(w(Id::Verdict(i), r, Kind::Pick { on: m.check_verdict == Some(i) }, ""));
         } else {
             out.push(w(Id::None, r, Kind::Card { filled: true }, ""));
@@ -455,8 +498,14 @@ fn check(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
     if m.checked.is_none() {
         return;
     }
-    if m.findings.is_empty() {
-        hint(out, PAD, y, inner, "Nothing to look at: every FLAC checked is the lossless audio it claims to be.");
+    if m.findings.is_empty() && m.check_verdict != Some(VERDICTS.len()) {
+        hint(
+            out,
+            PAD,
+            y,
+            inner,
+            "Nothing to look at: every FLAC checked is the lossless audio it claims to be. Click OK to list them.",
+        );
         return;
     }
 
@@ -513,6 +562,14 @@ fn sensme(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         inner,
         "New analysis needs Music Center for PC. Tracks it already analysed are imported, not redone.",
     );
+    y += 20;
+    hint(
+        out,
+        PAD,
+        y,
+        inner,
+        "Fetch lyrics asks LRCLIB for synced lyrics and saves a .lrc beside each track in the music folder.",
+    );
     y += 28;
     // What is missing, each with the one button that gets it. Nothing is shown once both are here.
     let needs = [
@@ -529,11 +586,23 @@ fn sensme(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         out.push(w(Id::None, Rect::new(x + 4, y + 6, (PAD + inner - x - 4).max(40), 18), Kind::Hint, text.to_string()));
         y += 38;
     }
-    let x = tools(out, m, PAD, y, &[(Id::Scan, "Analyse library".into()), (Id::Import, "Import Music Center".into())]);
+    let x = tools(
+        out,
+        m,
+        PAD,
+        y,
+        &[
+            (Id::Scan, "Analyse library".into()),
+            (Id::Import, "Import Music Center".into()),
+            (Id::Lyrics, "Fetch lyrics".into()),
+            (Id::PickMusicCenter, "Music Center folder…".into()),
+        ],
+    );
     let note = if m.library.is_none() {
         Some("Choose the music folder on the Sync page first.".to_string())
     } else {
         m.waits_for(crate::Job::Scan)
+            .or_else(|| m.music_center.as_ref().map(|d| format!("Import reads {}", d.display())))
     };
     if let Some(note) = note {
         out.push(w(Id::None, Rect::new(x + 4, y + 6, (PAD + inner - x - 4).max(40), 18), Kind::Hint, note));
@@ -621,6 +690,7 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
         n => format!("Send {} plays", thousands(n)),
     };
     let mut items = vec![(Id::ReadPlayer, "Read the player".to_string()), (Id::Scrobble, send)];
+    items.push((Id::SeedStats, "Fill in play counts".into()));
     items.push((Id::CompareLikes, "Compare likes".into()));
     if let Some(n) = m.likes_changes() {
         items.push((
@@ -653,7 +723,13 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
         Kind::Check { on: m.likes_add_only, enabled: live(m, Id::ToggleAddOnly) },
         "Only add, never remove",
     ));
-    y += 40;
+    out.push(w(
+        Id::ToggleLikesPlaylist,
+        Rect::new(PAD + 384, y + 30, 320, 22),
+        Kind::Check { on: m.likes_playlist, enabled: live(m, Id::ToggleLikesPlaylist) },
+        "Also write a Liked Songs playlist",
+    ));
+    y += 66;
 
     // One line under the buttons: what is missing, what is in the way, or what Compare found.
     let busy_with =

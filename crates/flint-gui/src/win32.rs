@@ -454,6 +454,14 @@ impl State {
         s.sensme = self.model.sensme;
         s.pair_answers = self.model.pair_answers.clone();
         s.extras = self.model.extras;
+        // One budget per chosen volume, in the order `volumes` keeps them.
+        s.budget_gb = (0..2)
+            .filter(|i| self.model.volumes[*i].is_some())
+            .map(|i| self.model.budget[i].trim().replace(',', ".").parse::<f64>().ok().filter(|gb| *gb > 0.0))
+            .collect();
+        s.likes_playlist = self.model.likes_playlist;
+        s.music_center = self.model.music_center.clone();
+        s.restore_name = self.model.restore_pick.and_then(|i| self.model.player.backups.get(i).cloned());
         s.likes = flint_core::likes::Options {
             direction: self.model.likes_way,
             add_only: self.model.likes_add_only,
@@ -789,9 +797,10 @@ unsafe fn press(hwnd: Hwnd, id: Id) {
         return;
     }
     match id {
-        Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists | Id::PickPalettes => {
+        Id::PickLibrary | Id::PickVolume(_) | Id::PickPlaylists | Id::PickPalettes | Id::PickMusicCenter => {
             let title = match id {
                 Id::PickLibrary => "Where is your music?",
+                Id::PickMusicCenter => "Where does Music Center keep its data?",
                 Id::PickPlaylists => "Where are your playlists?",
                 Id::PickPalettes => "Where are your .palette files?",
                 _ => "Which drive is the player?",
@@ -1083,7 +1092,13 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: Wparam, l: Lparam) -
                     c => char::from_u32(c).map(Key::Char),
                 };
                 let job = k.and_then(|k| {
-                    STATE.with(|st| st.borrow_mut().as_mut().and_then(|state| crate::key(&mut state.model, k)))
+                    STATE.with(|st| {
+                        st.borrow_mut().as_mut().and_then(|state| {
+                            let job = crate::key(&mut state.model, k);
+                            save_prefs(&state.model);
+                            job
+                        })
+                    })
                 });
                 if let Some(job) = job {
                     launch(hwnd, job);

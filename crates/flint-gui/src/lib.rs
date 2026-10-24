@@ -107,6 +107,18 @@ pub enum Id {
     Scan,
     /// Take the analysis Music Center has already done.
     Import,
+    /// Ask LRCLIB for synced lyrics, written as a `.lrc` beside each track that has none.
+    Lyrics,
+    /// SensMe ▸ where Music Center keeps its analysis, when Flint cannot find it by itself.
+    PickMusicCenter,
+    /// On the player ▸ choose backup `n`, as `PlayerFacts::backups` lists them.
+    PickBackup(usize),
+    /// On the player ▸ put the chosen backup back. The first click asks; the second does it.
+    Restore,
+    /// Likes & plays ▸ give the player's play counts the plays in its scrobble log.
+    SeedStats,
+    /// Likes & plays ▸ also write `Liked Songs.m3u8` when likes are synced.
+    ToggleLikesPlaylist,
     /// Look for FLACs that are not the lossless audio they claim to be.
     Check,
     /// Ask the running job to stop at the next file.
@@ -194,6 +206,8 @@ pub enum Field {
     Colour(u8),
     /// Palettes ▸ the shared palettes ▸ what to look for.
     ShopSearch,
+    /// Sync ▸ the most a volume may hold, in GB, instead of its free space. Empty is no limit.
+    Budget(u8),
 }
 
 impl Field {
@@ -212,6 +226,7 @@ impl Field {
             Field::PaletteName => "Name it",
             Field::Colour(_) => "#rrggbb",
             Field::ShopSearch => "Search by name, light, dark or accent",
+            Field::Budget(_) => "No limit",
         }
     }
 
@@ -219,6 +234,7 @@ impl Field {
     pub fn max(self) -> usize {
         match self {
             Field::Colour(_) => 7,
+            Field::Budget(_) => 6,
             Field::PaletteName => flint_core::palette::MAX_NAME,
             _ => Field::MAX,
         }
@@ -232,6 +248,7 @@ impl Field {
             Field::ApiSecret => Field::ApiKey,
             Field::CheckFilter => Field::CheckFilter,
             Field::ShopSearch => Field::ShopSearch,
+            Field::Budget(i) => Field::Budget(1 - i),
             Field::PaletteName => Field::Colour(0),
             Field::Colour(i) if (i as usize) + 1 < colours => Field::Colour(i + 1),
             Field::Colour(_) => Field::PaletteName,
@@ -462,6 +479,8 @@ pub struct PlayerFacts {
     pub health: Vec<String>,
     /// The card and the ends of the player's logs, for Copy a report.
     pub report: String,
+    /// The copies of the player's own files on this PC (`flint_core::backup`), oldest first.
+    pub backups: Vec<String>,
 }
 
 /// A job a worker thread runs. The window never runs one itself — see `win32::start`.
@@ -501,6 +520,12 @@ pub enum Job {
     FetchShop,
     /// Put one shared palette in the folder, and on the player, then check the folder.
     InstallShared,
+    /// Ask LRCLIB for synced lyrics and write a `.lrc` beside each track it has them for.
+    Lyrics,
+    /// Put a backup of the player's own files back, after taking one of them as they are.
+    Restore,
+    /// Give the tracks the player has never counted their plays from `.scrobbler.log`.
+    SeedStats,
 }
 
 /// Something a job needs to itself while it runs. Two jobs that need the same one cannot run at
@@ -524,11 +549,14 @@ pub enum Hold {
     Palettes,
     /// The Last.fm credentials file and the account itself.
     Lastfm,
+    /// The `.lrc` files Flint writes into the music folder, and the list of tracks LRCLIB had
+    /// nothing for.
+    Lyrics,
 }
 
 impl Job {
     /// Every job, in the order `code` numbers them.
-    pub const ALL: [Job; 19] = [
+    pub const ALL: [Job; 22] = [
         Job::Plan,
         Job::Apply,
         Job::Scan,
@@ -548,6 +576,9 @@ impl Job {
         Job::FetchShop,
         Job::InstallShared,
         Job::PullPlaylists,
+        Job::Lyrics,
+        Job::Restore,
+        Job::SeedStats,
     ];
 
     /// A small number for the platform layer's messages.
@@ -564,7 +595,7 @@ impl Job {
             Job::Plan | Job::Apply => &[Hold::Cache, Hold::Player],
             Job::Scan | Job::Import => &[Hold::Cache],
             Job::Check => &[Hold::Checks],
-            Job::ReadPlayer | Job::PullPlaylists => &[Hold::Player],
+            Job::ReadPlayer | Job::PullPlaylists | Job::Restore | Job::SeedStats => &[Hold::Player],
             // The shop's list reads the folder and the player to say what each one is there as.
             Job::CheckPalettes
             | Job::SendPalettes
@@ -574,12 +605,13 @@ impl Job {
             | Job::InstallShared => &[Hold::Palettes],
             Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Hold::Lastfm],
             Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Hold::Lastfm, Hold::Player],
+            Job::Lyrics => &[Hold::Lyrics],
         }
     }
 
     /// Does it read the music folder? Then the folder cannot change under it.
     pub fn reads_library(self) -> bool {
-        matches!(self, Job::Plan | Job::Apply | Job::Scan | Job::Check)
+        matches!(self, Job::Plan | Job::Apply | Job::Scan | Job::Check | Job::Lyrics)
     }
 
     /// Does it read or write the player's drives? Then they cannot change under it.
@@ -590,6 +622,8 @@ impl Job {
                 | Job::Apply
                 | Job::ReadPlayer
                 | Job::PullPlaylists
+                | Job::Restore
+                | Job::SeedStats
                 | Job::CheckPalettes
                 | Job::SendPalettes
                 | Job::SavePalette
@@ -606,10 +640,10 @@ impl Job {
     pub fn pages(self) -> &'static [Tab] {
         match self {
             Job::Plan | Job::Apply => &[Tab::Sync],
-            Job::Scan | Job::Import => &[Tab::SensMe],
+            Job::Scan | Job::Import | Job::Lyrics => &[Tab::SensMe],
             Job::Check => &[Tab::Check],
             Job::ReadPlayer => &[Tab::Player, Tab::Likes],
-            Job::PullPlaylists => &[Tab::Player],
+            Job::PullPlaylists | Job::Restore => &[Tab::Player],
             Job::CheckPalettes
             | Job::SendPalettes
             | Job::SavePalette
@@ -617,7 +651,7 @@ impl Job {
             | Job::FetchShop
             | Job::InstallShared => &[Tab::Palettes],
             Job::LastfmKey | Job::LastfmSignIn | Job::LastfmSignOut => &[Tab::Settings],
-            Job::Scrobble | Job::CompareLikes | Job::SyncLikes => &[Tab::Likes],
+            Job::Scrobble | Job::CompareLikes | Job::SyncLikes | Job::SeedStats => &[Tab::Likes],
         }
     }
 
@@ -628,6 +662,9 @@ impl Job {
             Job::Apply => "copying to the player",
             Job::Scan => "analysing the library",
             Job::Import => "importing Music Center's analysis",
+            Job::Lyrics => "fetching lyrics",
+            Job::Restore => "putting a backup back",
+            Job::SeedStats => "filling in play counts",
             Job::Check => "checking the FLACs",
             Job::ReadPlayer => "reading the player",
             Job::PullPlaylists => "taking playlists back",
@@ -649,13 +686,14 @@ impl Job {
     /// Which log its lines go to.
     pub fn pane(self) -> Pane {
         match self {
-            Job::Scan | Job::Import => Pane::SensMe,
+            Job::Scan | Job::Import | Job::Lyrics => Pane::SensMe,
             Job::LastfmKey
             | Job::LastfmSignIn
             | Job::LastfmSignOut
             | Job::Scrobble
             | Job::CompareLikes
-            | Job::SyncLikes => Pane::Lastfm,
+            | Job::SyncLikes
+            | Job::SeedStats => Pane::Lastfm,
             _ => Pane::Sync,
         }
     }
@@ -887,6 +925,17 @@ pub struct Model {
     pub checked: Option<usize>,
     /// What the last check found, one row per flagged file.
     pub findings: Vec<CheckRow>,
+    /// The files the last check found nothing wrong with, for the OK count's list.
+    pub clean: Vec<CheckRow>,
+    /// Sync ▸ the most each volume may hold, in GB, as typed. Kept in `gui.conf`.
+    pub budget: [String; 2],
+    /// Likes & plays ▸ also write `Liked Songs.m3u8`. Kept in `gui.conf`.
+    pub likes_playlist: bool,
+    /// SensMe ▸ Music Center's data folder, when chosen by hand. Kept in `gui.conf`.
+    pub music_center: Option<PathBuf>,
+    /// On the player ▸ the backup chosen, and whether Restore has asked once already.
+    pub restore_pick: Option<usize>,
+    pub restore_armed: bool,
     /// What "Read the player" found.
     pub player: PlayerFacts,
     /// Settings ▸ Last.fm.
@@ -1040,6 +1089,7 @@ impl Model {
             Field::PaletteName => &self.draft.name,
             Field::Colour(i) => self.draft.hex.get(i as usize).map_or("", String::as_str),
             Field::ShopSearch => &self.shop.search,
+            Field::Budget(i) => &self.budget[(i as usize).min(1)],
         }
     }
 
@@ -1051,6 +1101,7 @@ impl Model {
             Field::PaletteName => &mut self.draft.name,
             Field::Colour(i) => &mut self.draft.hex[(i as usize).min(17)],
             Field::ShopSearch => &mut self.shop.search,
+            Field::Budget(i) => &mut self.budget[(i as usize).min(1)],
         }
     }
 
@@ -1064,6 +1115,7 @@ impl Model {
                 self.draft.edited = true;
                 self.draft.confirm_start = None;
             }
+            Field::Budget(_) => self.invalidate_plan(),
             _ => {}
         }
     }
@@ -1078,8 +1130,8 @@ impl Model {
     pub fn check_rows(&self) -> Vec<&CheckRow> {
         let needle = self.check_filter.trim().to_lowercase();
         let verdict = self.check_verdict.and_then(|i| pages::VERDICTS.get(i)).map(|v| v.0);
-        self.findings
-            .iter()
+        let from = if self.check_verdict == Some(pages::VERDICTS.len()) { &self.clean } else { &self.findings };
+        from.iter()
             .filter(|r| verdict.is_none_or(|v| r.verdict == v))
             .filter(|r| {
                 needle.is_empty()
@@ -1512,7 +1564,8 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
             text: if i == 0 { "Player".into() } else { "Memory card".into() },
         });
         // The path, between the name and the buttons.
-        let trailing = CHOOSE_W + if chosen { CLEAR_W + 8 } else { 0 } + 14;
+        const BUDGET_W: i32 = 200;
+        let trailing = CHOOSE_W + if chosen { CLEAR_W + 8 + BUDGET_W } else { 0 } + 14;
         let path_x = PAD + CARD_PAD + 120;
         let path_w = (w - PAD - CARD_PAD - trailing - path_x).max(80);
         let (t, ph) = path_text(
@@ -1526,6 +1579,32 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
             text: t,
         });
         if chosen {
+            // A budget instead of the free space (`flint sync --gb`): room kept for other things.
+            let f = Field::Budget(i as u8);
+            let bx = w - PAD - CARD_PAD - CHOOSE_W - CLEAR_W - 8 - BUDGET_W;
+            out.push(Widget {
+                id: Id::None,
+                rect: Rect::new(bx, y + 14, 80, 18),
+                kind: Kind::Detail,
+                text: "Use at most".into(),
+            });
+            out.push(Widget {
+                id: Id::Field(f),
+                rect: Rect::new(bx + 86, y + 8, 80, BTN_H),
+                kind: Kind::Field {
+                    focused: m.focus == Some(f),
+                    masked: false,
+                    enabled: on(Id::Field(f)),
+                    placeholder: f.placeholder(),
+                },
+                text: m.budget[i].clone(),
+            });
+            out.push(Widget {
+                id: Id::None,
+                rect: Rect::new(bx + 172, y + 14, 24, 18),
+                kind: Kind::Detail,
+                text: "GB".into(),
+            });
             out.push(Widget {
                 id: Id::ClearVolume(i),
                 rect: Rect::new(w - PAD - CARD_PAD - CHOOSE_W - CLEAR_W - 8, y + 8, CLEAR_W, BTN_H),
@@ -1892,6 +1971,9 @@ pub fn job_of(id: Id) -> Option<Job> {
         Id::Apply => Job::Apply,
         Id::Scan => Job::Scan,
         Id::Import => Job::Import,
+        Id::Lyrics => Job::Lyrics,
+        Id::SeedStats => Job::SeedStats,
+        Id::Restore => Job::Restore,
         Id::Check => Job::Check,
         Id::ReadPlayer => Job::ReadPlayer,
         Id::PullPlaylists => Job::PullPlaylists,
@@ -1917,9 +1999,10 @@ fn ready(m: &Model, job: Job) -> bool {
     match job {
         Job::Plan => m.library.is_some() && volume,
         Job::Apply => m.library.is_some() && volume && m.planned,
-        Job::Scan | Job::Check => m.library.is_some(),
+        Job::Scan | Job::Check | Job::Lyrics => m.library.is_some(),
         Job::Import => true,
-        Job::ReadPlayer => volume,
+        Job::ReadPlayer | Job::SeedStats => volume,
+        Job::Restore => m.volumes[0].is_some() && m.restore_pick.is_some_and(|i| i < m.player.backups.len()),
         // Somewhere to put them, and something to take: a read that found a changed playlist.
         Job::PullPlaylists => {
             m.volumes[0].is_some() && m.playlists.is_some() && m.player.playlists.iter().any(|p| p.edited)
@@ -1965,7 +2048,13 @@ pub fn live(m: &Model, id: Id) -> bool {
         | Id::ToggleForeign(_)
         | Id::TogglePair(_)
         | Id::SwapPair(_) => !m.sync_running(),
-        Id::LikesWay(_) | Id::ToggleAddOnly | Id::ToggleLikeRemoval(_) => !m.held(Hold::Lastfm),
+        Id::LikesWay(_) | Id::ToggleAddOnly | Id::ToggleLikeRemoval(_) | Id::ToggleLikesPlaylist => {
+            !m.held(Hold::Lastfm)
+        }
+        Id::PickMusicCenter => !m.held(Hold::Cache),
+        Id::PickBackup(_) => !m.held(Hold::Player),
+        Id::Restore => ready(m, Job::Restore) && m.can_start(Job::Restore),
+        Id::Field(Field::Budget(_)) => !m.sync_running(),
         Id::PickPalettes => !m.held(Hold::Palettes),
         Id::Field(Field::CheckFilter) | Id::BrowsePalettes => true,
         Id::NewPalette => !m.draft.open,
@@ -2141,6 +2230,20 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
             m.draft.edited = true;
         }
         Id::ClosePalette => m.draft.open = false,
+        Id::ToggleLikesPlaylist => m.likes_playlist = !m.likes_playlist,
+        Id::PickBackup(i) => {
+            m.restore_pick = Some(i);
+            m.restore_armed = false;
+        }
+        // Restore replaces files on the player: the first click says what it would do.
+        Id::Restore => {
+            if !m.restore_armed {
+                m.restore_armed = true;
+                return None;
+            }
+            m.restore_armed = false;
+            return Some(Job::Restore);
+        }
         other => return job_of(other),
     }
     None
@@ -2223,14 +2326,21 @@ pub fn started(m: &mut Model, job: Job) {
         // A sync's log is the plan it shows; a new one replaces it. Other jobs that log to the
         // Sync pane append, because that pane may be showing a plan someone is reading.
         Job::Plan | Job::Apply => m.log.clear(),
-        Job::Scan | Job::Import => m.sensme_log.clear(),
+        Job::Scan | Job::Import | Job::Lyrics => m.sensme_log.clear(),
         Job::Scrobble | Job::CompareLikes | Job::SyncLikes => m.lastfm_log.clear(),
         _ => {}
     }
     // A cleared log starts at its newest line again.
     if matches!(
         job,
-        Job::Plan | Job::Apply | Job::Scan | Job::Import | Job::Scrobble | Job::CompareLikes | Job::SyncLikes
+        Job::Plan
+            | Job::Apply
+            | Job::Scan
+            | Job::Import
+            | Job::Lyrics
+            | Job::Scrobble
+            | Job::CompareLikes
+            | Job::SyncLikes
     ) {
         m.scroll[Model::pane_tab(job.pane()).index()][Area::Log as usize] = 0;
     }
@@ -2246,6 +2356,7 @@ pub fn started(m: &mut Model, job: Job) {
     }
     if job == Job::Check {
         m.findings.clear();
+        m.clean.clear();
     }
     if matches!(job, Job::CompareLikes | Job::SyncLikes) {
         m.likes_plan = None;
@@ -2293,10 +2404,13 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
             }
         }
         Update::Finding(row) => m.findings.push(row),
+        Update::Clean(row) => m.clean.push(row),
         Update::Checked(n) => m.checked = Some(n),
         // A table filled afresh starts at its top.
         Update::Player(facts) => {
             m.player = *facts;
+            m.restore_pick = None;
+            m.restore_armed = false;
             m.scroll[Tab::Player.index()][Area::Table as usize] = 0;
             m.scroll[Tab::Likes.index()][Area::Table as usize] = 0;
         }
@@ -2382,6 +2496,10 @@ pub fn set_path(m: &mut Model, id: Id, path: PathBuf) {
             m.likes_plan = None;
         }
         Id::PickPlaylists => m.playlists = Some(path),
+        Id::PickMusicCenter => {
+            m.music_center = Some(path);
+            return;
+        }
         Id::PickPalettes => {
             // A new folder is a new comparison; the old rows describe the old one.
             m.palette_dir = Some(path);
@@ -3088,6 +3206,7 @@ mod tests {
             ],
             health: vec!["Cinder from installer 0.3.20-rc1 (stable)".into(), "Last start: Cinder started".into()],
             report: "Player health (Flint)\n".into(),
+            backups: (0..20).map(|i| format!("2026-10-{:02} 1830{i:02}", i + 1)).collect(),
         };
         m.log = (0..60).map(|i| format!("line {i}")).collect();
         m
@@ -3149,6 +3268,7 @@ mod tests {
             (Tab::Sync, Id::ClearPlaylists),
             (Tab::SensMe, Id::Scan),
             (Tab::SensMe, Id::Import),
+            (Tab::SensMe, Id::Lyrics),
             (Tab::Check, Id::Check),
             (Tab::Player, Id::ReadPlayer),
         ] {

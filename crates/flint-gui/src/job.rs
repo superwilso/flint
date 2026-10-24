@@ -65,6 +65,10 @@ pub struct Settings {
     /// Settings ▸ Last.fm ▸ what was typed, for Save.
     pub api_key: String,
     pub api_secret: String,
+    /// Sync likes also writes `Liked Songs.m3u8` (`flint likes --playlist`).
+    pub likes_playlist: bool,
+    /// The backup Restore puts back, by its folder name.
+    pub restore_name: Option<String>,
 }
 
 impl Settings {
@@ -91,6 +95,8 @@ impl Settings {
             shop_install: None,
             api_key: String::new(),
             api_secret: String::new(),
+            likes_playlist: false,
+            restore_name: None,
         }
     }
 }
@@ -119,6 +125,8 @@ pub enum Update {
     Volume(usize, crate::VolumeFacts),
     /// A file the check flagged, for the Check page's table.
     Finding(crate::CheckRow),
+    /// A file the check found nothing wrong with, for the OK count's list (`flint check --all`).
+    Clean(crate::CheckRow),
     /// How many FLACs a finished check looked at. Sent once, after the findings, so the page can
     /// clear the previous run's rows when a new one starts.
     Checked(usize),
@@ -154,6 +162,9 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::Apply => sync_job(s, true, cancel, emit),
         Job::Scan => scan_job(s, cancel, emit),
         Job::Import => import_job(s, emit),
+        Job::Lyrics => lyrics_job(s, cancel, emit),
+        Job::Restore => restore_job(s, emit),
+        Job::SeedStats => seed_stats_job(s, emit),
         Job::Check => check_job(s, cancel, emit),
         Job::ReadPlayer => read_player_job(s, emit),
         Job::PullPlaylists => pull_playlists_job(s, emit),
@@ -287,7 +298,7 @@ fn likes_job(s: &Settings, apply: bool, cancel: &AtomicBool, emit: &mut dyn FnMu
         // A comparison lists every removal, so an unticked one can be ticked again.
         &|_, side, t| apply && s.likes_leave.contains(&(side, t.key())),
         apply,
-        false,
+        apply && s.likes_playlist,
         &|| stopped(cancel),
         &mut |l| emit(Update::Log(l)),
     )?;
@@ -711,6 +722,9 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
     if !plan.shared.is_empty() {
         emit(Update::Log(format!("{} songs stored once, listed under a second album", plan.shared.len())));
     }
+    if !plan.kept.is_empty() {
+        emit(Update::Log(format!("{} files already on the player, kept instead of copied again", plan.kept.len())));
+    }
 
     // With things Flint did not put there, the preview still ends in a plan: ticking one of them
     // is a Copy to make.
@@ -899,6 +913,91 @@ fn import_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, Stri
     Ok(word)
 }
 
+/// `flint lyrics --apply`: LRCLIB's synced lyrics as a `.lrc` beside each track that has none.
+/// A track LRCLIB had nothing for is remembered and not asked about again.
+fn lyrics_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::lyrics::{self, Answer};
+    emit(Update::Progress(None));
+    emit(Update::Say("reading the tags…".into()));
+    let source = sync::scan_library(&s.library).map_err(|e| format!("{}: {e}", s.library.display()))?;
+    let todo = lyrics::wanted(&s.library, &source, &lyrics::nothing_for(&s.cache, &s.library));
+    if todo.is_empty() {
+        return Ok("Every track already has lyrics to show as they are sung.".into());
+    }
+    emit(Update::Log(format!("{} track(s) without synced lyrics; asking LRCLIB (lrclib.net)", todo.len())));
+    let (mut written, mut nothing, mut halt, mut asked) = (0, Vec::new(), None, 0);
+    for t in &todo {
+        if stopped(cancel) {
+            break;
+        }
+        emit(Update::Say(format!("[{}/{}] {}", asked + 1, todo.len(), short(Path::new(&t.rel)))));
+        emit(Update::Progress(Some(asked as f32 / todo.len() as f32)));
+        match lyrics::ask(t) {
+            Answer::Lyrics(text) => {
+                if lyrics::write(&s.library, &t.rel, &text).map_err(|e| format!("{}: {e}", t.rel))? {
+                    written += 1;
+                    emit(Update::Log(lyrics::lrc_rel(&t.rel)));
+                }
+            }
+            Answer::Nothing => nothing.push(t.rel.clone()),
+            Answer::Busy(why) | Answer::Stop(why) => {
+                halt = Some(why);
+                break;
+            }
+        }
+        asked += 1;
+    }
+    lyrics::remember_nothing(&s.cache, &s.library, &nothing).map_err(|e| format!("{}: {e}", s.cache.display()))?;
+    let word = format!("{written} .lrc written; LRCLIB had nothing for {} (not asked again).", nothing.len());
+    if let Some(why) = halt {
+        return Err(format!("{word} Stopped after {asked} of {}: {why}. Fetch again later to carry on.", todo.len()));
+    }
+    emit(Update::Progress(Some(1.0)));
+    let left = todo.len() - asked;
+    Ok(if left > 0 {
+        format!("{word} Stopped with {left} left to ask — Fetch lyrics picks up from here.")
+    } else {
+        format!("{word} The next copy takes them to the player.")
+    })
+}
+
+/// `flint restore <volume> <name> --apply`: put a backup of the player's own files back. The
+/// player as it is now is copied first, so this can be undone the same way.
+fn restore_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::backup::{self, Taken};
+    let (Some(root), Some(name)) = (s.volumes.first(), s.restore_name.as_deref()) else {
+        return Err("choose the player and a backup first".into());
+    };
+    emit(Update::Progress(None));
+    let drive = flint_core::stats::drive_root(root);
+    let (before, n) = backup::restore(&s.cache, name, &drive, &backup::stamp_now()).map_err(|e| e.to_string())?;
+    match before {
+        Taken::New { name, .. } => emit(Update::Log(format!("The player as it was is kept as {name}."))),
+        Taken::Unchanged(name) => emit(Update::Log(format!("The player as it was is the same as {name}."))),
+        Taken::Nothing => {}
+    }
+    emit(Update::Progress(Some(1.0)));
+    Ok(format!("Put back {n} file(s) from {name}. Restart the player to read them."))
+}
+
+/// `flint stats <volume> --apply`: histories follow albums that moved between the drives, and
+/// tracks the player has never counted take their plays from `.scrobbler.log`. Counts and
+/// ratings the player already has are left alone.
+fn seed_stats_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use flint_core::stats;
+    emit(Update::Progress(None));
+    let drives: Vec<PathBuf> = s.volumes.iter().map(|root| stats::drive_root(root)).collect();
+    let mut log = |l: &str| emit(Update::Log(l.to_string()));
+    let followed = stats::follow_player(&drives, true, &mut log)?;
+    let report = stats::seed_player(&drives, true, &mut log)?;
+    emit(Update::Progress(Some(1.0)));
+    Ok(format!(
+        "{} track(s) given their plays from the log; the history of {} moved with its files.",
+        crate::thousands(report.seeded.tracks),
+        crate::thousands(followed.moved)
+    ))
+}
+
 fn check_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
     let mut store = lossless::Store::open(&s.cache).map_err(|e| format!("{}: {e}", s.cache.display()))?;
     emit(Update::Progress(None));
@@ -944,6 +1043,14 @@ fn check_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) ->
     for c in &checked {
         let findings = lossless::findings(&c.measurement);
         if findings.is_empty() {
+            let m = &c.measurement;
+            let file = c.path.strip_prefix(&s.library).unwrap_or(&c.path).display().to_string();
+            let wall = match m.cutoff_hz {
+                Some(hz) => format!("wall at {:.1} kHz", f64::from(hz) / 1000.0),
+                None => "no lowpass wall".into(),
+            };
+            let why = format!("{} Hz, {}-bit (uses {}), {wall}", m.rate, m.bits, m.effective_bits);
+            emit(Update::Clean(crate::CheckRow { verdict: "OK".into(), file, why }));
             continue;
         }
         flagged += 1;
@@ -1010,6 +1117,7 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
             Err(e) => emit(Update::Log(format!("Could not copy the player's own files: {e}"))),
         }
     }
+    facts.backups = flint_core::backup::list(&s.cache);
     facts.palettes.sort_by_key(|p| p.name.to_lowercase());
     remembered_by_the_player(s, &mut facts, emit);
     let summary = format!(
@@ -1418,6 +1526,45 @@ mod tests {
         run(Job::Apply, &s, &cancel, &mut |_| {}).unwrap();
         assert!(volume.join("Best Of/11 Song.flac").is_file(), "copied again");
         assert!(!volume.join(flint_core::shared::LIST_NAME).exists(), "the list goes with the last entry");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An album taken out of the library takes its side of a stored-once pair with it: the next
+    /// sync copies the other album's file in full, and the list on the player goes.
+    #[test]
+    fn removing_an_album_ends_its_stored_once_entry() {
+        let root = tmp("pairs-gone");
+        let library = root.join("music");
+        let volume = root.join("player");
+        fs::create_dir_all(&volume).unwrap();
+        write_flac(&library.join("Album/03 Song.flac"), 777);
+        write_flac(&library.join("Best Of/11 Song.flac"), 777);
+        write_flac(&library.join("Best Of/12 Other.flac"), 778);
+        let mut s = settings(library.clone(), volume.clone(), root.join("cache"));
+        let cancel = AtomicBool::new(false);
+        let sync = |s: &mut Settings| {
+            let mut key = None;
+            run(Job::Plan, s, &cancel, &mut |u| {
+                if let Update::Planned(k) = u {
+                    key = Some(k)
+                }
+            })
+            .unwrap();
+            s.expect_plan = key;
+            run(Job::Apply, s, &cancel, &mut |_| {}).unwrap();
+        };
+        let pair = flint_core::shared::Pair { keep: "Album/03 Song.flac".into(), also: "Best Of/11 Song.flac".into() };
+        s.pair_answers = vec![(pair, true)];
+        sync(&mut s);
+        assert!(!volume.join("Best Of/11 Song.flac").exists(), "stored once");
+        assert!(volume.join(flint_core::shared::LIST_NAME).is_file());
+
+        fs::remove_dir_all(library.join("Album")).unwrap();
+        s.pair_answers.clear();
+        sync(&mut s);
+        assert!(!volume.join("Album/03 Song.flac").exists(), "the removed album left the player");
+        assert!(volume.join("Best Of/11 Song.flac").is_file(), "the other album has its own copy again");
+        assert!(!volume.join(flint_core::shared::LIST_NAME).exists(), "no entry points at a removed file");
         fs::remove_dir_all(&root).unwrap();
     }
 

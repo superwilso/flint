@@ -153,7 +153,7 @@ pub fn paths_by_id(data_dir: &Path) -> io::Result<HashMap<String, PathBuf>> {
 }
 
 /// The value of `"<key>": "..."` in one line of JSON, unescaped enough for paths (`\\` and `\"`).
-fn json_string(line: &str, key: &str) -> Option<String> {
+pub(crate) fn json_string(line: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\":");
     let mut at = 0;
     while let Some(i) = line[at..].find(&needle) {

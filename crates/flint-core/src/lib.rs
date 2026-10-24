@@ -15,6 +15,7 @@ pub mod likes;
 pub mod lint;
 pub mod localtime;
 pub mod lossless;
+pub mod lyrics;
 pub mod md5;
 pub mod musiccenter;
 pub mod palette;

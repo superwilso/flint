@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 — 2026-10-24
 
 ### The window does everything the command line does
 
@@ -68,11 +68,6 @@
 - **Choose which copy of a shared song is copied.** For a song stored once for two albums, Flint
   copied the file whose path sorts first, and that is the one Sony's player shows. **Swap** on its
   row in the window, or `flint shared <library> --keep-other N`, copies the other one instead.
-
-## 0.2.3 — 2026-10-23
-
-### Copying
-
 - **A sync removes only what Flint put on the player.** It used to remove anything the plan did
   not place, so a first sync onto a player filled by Music Center or by hand planned to delete
   all of it. Flint now removes only files and playlists its manifest says it wrote, and copies of

@@ -4,7 +4,7 @@ PC companion for the Sony NW-A50-series Walkman and [Cinder](https://github.com/
 Copies your library to the player, adds Sony's **SensMe** mood and tempo data to the copies, and
 syncs scrobbles and liked songs with Last.fm. It never modifies the files on your PC.
 
-**Status:** usable, still young. Latest release: [v0.2.1](https://github.com/superwilso/flint/releases/latest)
+**Status:** usable, still young. Latest release: [v0.2.3](https://github.com/superwilso/flint/releases/latest)
 (Windows and Linux, SHA-256 sums and build attestations on the release page). `main` may be ahead;
 see *Unreleased* in [`CHANGELOG.md`](CHANGELOG.md). Replaces the Python `Sony-sync` tool.
 

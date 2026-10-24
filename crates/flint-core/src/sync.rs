@@ -232,6 +232,11 @@ pub struct Plan {
     /// Each volume's [`crate::shared::LIST_NAME`] that has to change: the new body, or `None` to
     /// remove it. Written after the copies.
     pub shared_lists: Vec<(usize, Option<String>)>,
+    /// Files already where the plan would copy them, the same as the library's
+    /// ([`crate::cache::same_file`]) but missing from the manifest: Sony-sync's copies, or a Flint
+    /// whose manifest was lost. The apply writes them into the manifest instead of copying them
+    /// again ([`prepare`]).
+    pub kept: Vec<(usize, String, Record)>,
 }
 
 impl Plan {
@@ -767,6 +772,7 @@ impl Prepared {
             && self.plan.stale_files.is_empty()
             && self.plan.stale_playlists.is_empty()
             && self.plan.shared_lists.is_empty()
+            && self.plan.kept.is_empty()
             && self.pending_playlists == 0
     }
 }
@@ -807,7 +813,7 @@ pub fn prepare(
     }
     // Songs stored once: the `also` file is not copied. A pair counts while both files are still in
     // the library, each `also` once, and never a file another pair keeps.
-    let pairs: Vec<crate::shared::Pair> = {
+    let mut pairs: Vec<crate::shared::Pair> = {
         let have: HashSet<&str> = source.iter().map(|f| f.rel.as_str()).collect();
         let kept: HashSet<&str> = req.shared.iter().map(|p| p.keep.as_str()).collect();
         let mut seen = HashSet::new();
@@ -818,10 +824,13 @@ pub fn prepare(
             .cloned()
             .collect()
     };
-    let also_of: HashMap<String, String> = pairs.iter().map(|p| (p.also.clone(), p.keep.clone())).collect();
+    let also_of = |pairs: &[crate::shared::Pair]| -> HashMap<String, String> {
+        pairs.iter().map(|p| (p.also.clone(), p.keep.clone())).collect()
+    };
     // A copy of an `also` already on the player is the library's own, so Flint's to remove.
     let in_library_before: HashSet<String> = source.iter().map(|f| f.rel.clone()).collect();
-    source.retain(|f| !also_of.contains_key(&f.rel));
+    let (mut alsos, kept): (Vec<_>, Vec<_>) = source.into_iter().partition(|f| also_of(&pairs).contains_key(&f.rel));
+    let mut source = kept;
     note(Note::Library { files: source.len(), bytes: source.iter().map(|f| f.size).sum() });
     let full = |f: &SourceFile| lib.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
 
@@ -878,18 +887,24 @@ pub fn prepare(
         on_device.push(held);
     }
 
-    let mut playlists = match req.playlists {
+    let as_read = match req.playlists {
         Some(dir) => read_playlists(dir, lib).map_err(|e| format!("{}: {e}", dir.display()))?,
         None => BTreeMap::new(),
     };
     // A playlist naming an `also` names the file that is there; Sony's player reads it too.
-    for tracks in playlists.values_mut() {
-        for t in tracks.iter_mut() {
-            if let Some(keep) = also_of.get(t.as_str()) {
-                t.clone_from(keep);
+    let named = |pairs: &[crate::shared::Pair]| {
+        let also_of = also_of(pairs);
+        let mut playlists = as_read.clone();
+        for tracks in playlists.values_mut() {
+            for t in tracks.iter_mut() {
+                if let Some(keep) = also_of.get(t.as_str()) {
+                    t.clone_from(keep);
+                }
             }
         }
-    }
+        playlists
+    };
+    let playlists = named(&pairs);
     if !playlists.is_empty() {
         note(Note::Playlists(playlists.len()));
     }
@@ -903,6 +918,36 @@ pub fn prepare(
         }
     };
     let mut plan = plan(&source, &volumes, &scans, &manifests, &playlists, tag_for);
+    // A kept file whose album fits on no volume cannot stand in for the other album's copy: those
+    // pairs end here, and the plan is made again with the other copies back in.
+    let unplaced: HashSet<String> =
+        pairs.iter().filter(|p| !plan.assignments.contains_key(album_of(&p.keep))).map(|p| p.also.clone()).collect();
+    if !unplaced.is_empty() {
+        pairs.retain(|p| !unplaced.contains(&p.also));
+        source.extend(alsos.drain(..).filter(|f| unplaced.contains(&f.rel)));
+        plan = self::plan(&source, &volumes, &scans, &manifests, &named(&pairs), tag_for);
+    }
+    // Already there: kept rather than copied again. Only a copy that carries no analysis, since
+    // adding one rewrites the file anyway.
+    // ponytail: same path only; a file the library has under another path (Music Center's layout)
+    // is still copied, and moving it into place instead is the next step.
+    for c in std::mem::take(&mut plan.copies) {
+        let on_device = scans[c.volume].files.get(&c.rel).map(|&(size, _)| size);
+        let src = lib.join(c.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let dev = volumes[c.volume].root.join(c.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let keep = c.tag.is_empty()
+            && on_device.is_some()
+            && !manifests[c.volume].records.contains_key(&c.rel)
+            && crate::cache::same_file(&src, &dev).unwrap_or(false);
+        match on_device.filter(|_| keep) {
+            Some(copy_size) => plan.kept.push((
+                c.volume,
+                c.rel,
+                Record { source_size: c.source_size, source_mtime: c.source_mtime, copy_size, tag: String::new() },
+            )),
+            None => plan.copies.push(c),
+        }
+    }
     let (theirs, ours): (Vec<_>, Vec<_>) =
         std::mem::take(&mut plan.foreign_files).into_iter().partition(|(_, rel)| !in_library_before.contains(rel));
     plan.foreign_files = theirs;
@@ -1375,5 +1420,94 @@ mod tests {
         // The stale sweep still removes the orphan track, and still leaves the art alone.
         let stale: Vec<&str> = plan.stale_files.iter().map(|(_, r)| r.as_str()).collect();
         assert_eq!(stale, vec!["Stale/gone.flac"]);
+    }
+    /// A song stored once whose kept album fits on no volume: the other album gets its own copy,
+    /// rather than an entry pointing at a file that is not going on the player.
+    #[test]
+    fn a_kept_album_that_does_not_fit_gives_the_song_back() {
+        let d = std::env::temp_dir().join(format!("flint-sync-unplaced-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (lib, player) = (d.join("lib"), d.join("player"));
+        let flac = |md5: u8, pad: usize| {
+            let mut info = vec![0u8; 34];
+            info[18..34].copy_from_slice(&[md5; 16]);
+            let mut f = crate::flac::encode_metadata(&[], &[crate::flac::Block { kind: 0, data: info }]).unwrap();
+            f.extend(std::iter::repeat_n(0xffu8, pad));
+            f
+        };
+        for dir in [lib.join("Big"), lib.join("Best Of"), player.clone()] {
+            fs::create_dir_all(&dir).unwrap();
+        }
+        fs::write(lib.join("Big/01.flac"), flac(7, 10)).unwrap();
+        fs::write(lib.join("Big/02.flac"), flac(8, 4000)).unwrap();
+        fs::write(lib.join("Best Of/09.flac"), flac(7, 10)).unwrap();
+        let mut cache = crate::cache::Cache::open(&d.join("cache")).unwrap();
+        let volumes = [player.clone()];
+        let shared = [crate::shared::Pair { keep: "Big/01.flac".into(), also: "Best Of/09.flac".into() }];
+        let req = Request {
+            library: &lib,
+            volumes: &volumes,
+            budget_gb: &[Some(1000.0 / (1024.0 * 1024.0 * 1024.0))],
+            playlists: None,
+            sensme: false,
+            extras: false,
+            shared: &shared,
+        };
+        let p = prepare(&req, &mut cache, &mut |_| {}).unwrap();
+        assert!(!p.plan.assignments.contains_key("Big"), "the test needs Big not to fit");
+        let copies: Vec<&str> = p.plan.copies.iter().map(|c| c.rel.as_str()).collect();
+        assert_eq!(copies, ["Best Of/09.flac"]);
+        assert!(p.plan.shared.is_empty() && p.plan.shared_lists.is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A player that already holds the library's files where Flint would put them, with no
+    /// manifest (Sony-sync's copies): the identical one is kept and claimed, the rest copied.
+    #[test]
+    fn a_file_already_on_the_player_is_kept_not_copied_again() {
+        let d = std::env::temp_dir().join(format!("flint-sync-kept-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (lib, player) = (d.join("lib"), d.join("player"));
+        let flac = |artist: &[u8]| {
+            let mut info = vec![0u8; 34];
+            info[18..34].copy_from_slice(&[7; 16]);
+            let blocks =
+                [crate::flac::Block { kind: 0, data: info }, crate::flac::Block { kind: 4, data: artist.to_vec() }];
+            let mut f = crate::flac::encode_metadata(&[], &blocks).unwrap();
+            f.extend_from_slice(b"\xff\xf8frames");
+            f
+        };
+        for dir in [lib.join("A - Album"), player.join("MUSIC").join("A - Album")] {
+            fs::create_dir_all(&dir).unwrap();
+        }
+        for n in ["01", "02", "03"] {
+            fs::write(lib.join("A - Album").join(format!("{n}.flac")), flac(b"artist=A")).unwrap();
+        }
+        let on_player = player.join("MUSIC").join("A - Album");
+        fs::write(on_player.join("01.flac"), flac(b"artist=A")).unwrap();
+        fs::write(on_player.join("03.flac"), flac(b"artist=B")).unwrap(); // retagged since
+        let mut cache = crate::cache::Cache::open(&d.join("cache")).unwrap();
+        let volumes = [player.clone()];
+        let req = Request {
+            library: &lib,
+            volumes: &volumes,
+            budget_gb: &[Some(1.0)],
+            playlists: None,
+            sensme: false,
+            extras: false,
+            shared: &[],
+        };
+        let p = prepare(&req, &mut cache, &mut |_| {}).unwrap();
+        let kept: Vec<&str> = p.plan.kept.iter().map(|(_, rel, _)| rel.as_str()).collect();
+        let copies: Vec<&str> = p.plan.copies.iter().map(|c| c.rel.as_str()).collect();
+        assert_eq!(kept, ["A - Album/01.flac"]);
+        assert_eq!(copies, ["A - Album/02.flac", "A - Album/03.flac"]);
+        assert!(p.plan.stale_files.is_empty() && p.plan.foreign_files.is_empty());
+
+        let Prepared { plan, volumes, mut manifests, .. } = p;
+        crate::apply::apply(&plan, &lib, &volumes, &mut manifests, |_| None, false, || false, |_| {}).unwrap();
+        let again = prepare(&req, &mut cache, &mut |_| {}).unwrap();
+        assert!(again.is_empty(), "kept {:?}, copies {:?}", again.plan.kept, again.plan.copies);
+        let _ = fs::remove_dir_all(&d);
     }
 }

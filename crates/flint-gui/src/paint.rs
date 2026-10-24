@@ -890,8 +890,10 @@ mod tests {
         edited.player = crate::PlayerFacts {
             read: true,
             playlists: vec![crate::PlaylistRow { name: "Late Night".into(), tracks: 3, edited: true }],
+            backups: vec!["2026-10-23 183005".into()],
             ..Default::default()
         };
+        edited.restore_pick = Some(0);
         let mut ids = ids;
         for model in [&signed_in, &no_session, &typing, &editing, &shopping, &edited] {
             for t in crate::Tab::ALL {
@@ -908,6 +910,10 @@ mod tests {
                 .find(|model| crate::live(model, id))
                 .unwrap_or_else(|| panic!("{job:?}'s button is never live"))
                 .clone();
+            // Put back asks first: the second click starts it.
+            if job == Job::Restore {
+                assert_eq!(crate::click(&mut m2, id), None);
+            }
             assert_eq!(crate::click(&mut m2, id), Some(job));
         }
     }

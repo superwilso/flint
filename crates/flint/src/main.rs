@@ -13,6 +13,7 @@
 //! flint sync <library> --to <volume> [--to <volume>] [--apply]   copy the library to the player
 //! flint shared <library> [--yes N|all] [--no N|all] [--keep-other N|all]  a song on two albums, stored once
 //! flint lint <library>                                           tags that would look wrong on the player
+//! flint lyrics <library> [--apply]                                synced lyrics from LRCLIB, as .lrc beside each track
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
 //! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
 //! flint lastfm key|login|status                                   the Last.fm account, once
@@ -50,6 +51,7 @@ usage:
   flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras] [--also-remove <folder|playlist|*>]...
   flint shared <library folder> [--yes N|all]... [--no N|all]... [--keep-other N|all]... [--cache dir]
   flint lint <library folder>
+  flint lyrics <library folder> [--apply] [--cache dir]
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
   flint lastfm key <api-key> <api-secret> | login <username> | status
@@ -80,6 +82,7 @@ fn main() -> ExitCode {
         Some("sync") => sync_cmd(&args[1..]),
         Some("shared") => shared_cmd(&args[1..]),
         Some("lint") => lint_cmd(&args[1..]),
+        Some("lyrics") => lyrics_cmd(&args[1..]),
         Some("analyse" | "analyze") => analyse(&args[1..]),
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
@@ -666,6 +669,48 @@ fn lint_cmd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn lyrics_cmd(args: &[String]) -> Result<(), String> {
+    use flint_core::lyrics::{self, Answer};
+    let o = opts(args)?;
+    let [library] = o.pos.as_slice() else { return Err(USAGE.into()) };
+    let library = Path::new(library);
+    let cache_dir = o.cache.clone().unwrap_or_else(cache::default_dir);
+    let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
+    let todo = lyrics::wanted(library, &source, &lyrics::nothing_for(&cache_dir, library));
+    if !o.apply || todo.is_empty() {
+        println!("{} track(s) have no lyrics to show as they are sung.", todo.len());
+        if !todo.is_empty() {
+            println!("Run again with --apply to ask LRCLIB (lrclib.net) and write a .lrc beside each one it has.");
+        }
+        return Ok(());
+    }
+    let (mut written, mut nothing, mut stopped) = (0, Vec::new(), None);
+    for (i, t) in todo.iter().enumerate() {
+        match lyrics::ask(t) {
+            Answer::Lyrics(text) => {
+                if lyrics::write(library, &t.rel, &text).map_err(|e| format!("{}: {e}", t.rel))? {
+                    written += 1;
+                    println!("  {}", lyrics::lrc_rel(&t.rel));
+                }
+            }
+            Answer::Nothing => nothing.push(t.rel.clone()),
+            Answer::Busy(why) | Answer::Stop(why) => {
+                stopped = Some((i, why));
+                break;
+            }
+        }
+        if (i + 1) % 100 == 0 {
+            println!("{} of {} asked", i + 1, todo.len());
+        }
+    }
+    lyrics::remember_nothing(&cache_dir, library, &nothing).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
+    println!("{written} .lrc written; LRCLIB had nothing for {} (not asked again).", nothing.len());
+    match stopped {
+        Some((i, why)) => Err(format!("stopped after {i} of {}: {why}. Run it again later to carry on.", todo.len())),
+        None => Ok(()),
+    }
+}
+
 fn sync_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let [library] = o.pos.as_slice() else { return Err(USAGE.into()) };
@@ -746,6 +791,9 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     }
     if !plan.shared.is_empty() {
         println!("  {} songs stored once, listed under a second album", plan.shared.len());
+    }
+    if !plan.kept.is_empty() {
+        println!("  {} files already on the player, kept instead of copied again", plan.kept.len());
     }
     if nothing {
         println!("nothing to do.");
@@ -1004,6 +1052,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                     "System space free: 212 MB".into(),
                 ],
                 report: "Player health (Flint)\n".into(),
+                backups: vec!["2026-10-21 091204".into(), "2026-10-22 184511".into(), "2026-10-23 183005".into()],
             };
             m.status = "8 albums on the player, 7 plays in the log, 14 songs liked".into();
             m.tab = match state {
@@ -1583,4 +1632,129 @@ fn echo_off() -> bool {
 #[cfg(not(windows))]
 fn echo_on() {
     let _ = std::process::Command::new("stty").arg("echo").stdin(std::process::Stdio::inherit()).status();
+}
+
+/// The window and the command line are one program: every command and option in [`USAGE`] has
+/// its control in the window, or a reason here why it has none. A new command or option fails
+/// this test until it is given one or the other.
+#[cfg(test)]
+mod window_parity {
+    use flint_gui::{Field, Id, Job};
+
+    enum Where {
+        /// The job that does it.
+        #[allow(dead_code)]
+        Job(Job),
+        /// The control that sets it.
+        #[allow(dead_code)]
+        Control(Id),
+        /// Why the window has no control for it.
+        #[allow(dead_code)]
+        CliOnly(&'static str),
+    }
+    use Where::*;
+
+    const DEV: &str = "a tool for working on Flint itself";
+    const CACHE: &str = "the window always uses the default data folder";
+    const JOBS: &str = "the window uses every core";
+
+    fn table() -> Vec<(&'static str, Where)> {
+        vec![
+            ("scan", Job(Job::Scan)),
+            ("scan --jobs", CliOnly(JOBS)),
+            ("scan --cache", CliOnly(CACHE)),
+            ("check", Job(Job::Check)),
+            ("check --jobs", CliOnly(JOBS)),
+            ("check --cache", CliOnly(CACHE)),
+            ("check --all", Control(Id::Verdict(flint_gui::pages::VERDICTS.len()))),
+            ("check --verbose", CliOnly("the spectrum dump is a diagnostic for one file")),
+            ("analyse", CliOnly(DEV)),
+            ("analyse --out", CliOnly(DEV)),
+            ("analyse --param", CliOnly(DEV)),
+            ("tag-copy", CliOnly(DEV)),
+            ("tag-copy --smfmf", CliOnly(DEV)),
+            ("tag-copy --param", CliOnly(DEV)),
+            ("sync", Job(Job::Plan)),
+            ("sync --to", Control(Id::PickVolume(0))),
+            ("sync --gb", Control(Id::Field(Field::Budget(0)))),
+            ("sync --playlists", Control(Id::PickPlaylists)),
+            ("sync --apply", Job(Job::Apply)),
+            ("sync --no-sensme", Control(Id::ToggleSensMe)),
+            ("sync --no-extras", Control(Id::ToggleExtras)),
+            ("sync --also-remove", Control(Id::ToggleForeign(0))),
+            ("shared", Control(Id::TogglePair(0))),
+            ("shared --yes", Control(Id::TogglePair(0))),
+            ("shared --no", Control(Id::TogglePair(0))),
+            ("shared --keep-other", Control(Id::SwapPair(0))),
+            ("shared --cache", CliOnly(CACHE)),
+            ("lint", Job(Job::Check)),
+            ("lyrics", Job(Job::Lyrics)),
+            ("lyrics --apply", Job(Job::Lyrics)),
+            ("lyrics --cache", CliOnly(CACHE)),
+            ("inspect", CliOnly(DEV)),
+            ("import", Job(Job::Import)),
+            ("import --from", Control(Id::PickMusicCenter)),
+            ("import --cache", CliOnly(CACHE)),
+            ("lastfm", Job(Job::LastfmSignIn)),
+            ("scrobble", Job(Job::Scrobble)),
+            ("scrobble --apply", Job(Job::Scrobble)),
+            ("likes", Job(Job::CompareLikes)),
+            ("likes --apply", Job(Job::SyncLikes)),
+            ("likes --way", Control(Id::LikesWay(flint_core::likes::Direction::Both))),
+            ("likes --add-only", Control(Id::ToggleAddOnly)),
+            ("likes --leave", Control(Id::ToggleLikeRemoval(0))),
+            ("likes --playlist", Control(Id::ToggleLikesPlaylist)),
+            ("stats", Job(Job::SeedStats)),
+            ("stats --to", Control(Id::PickVolume(1))),
+            ("stats --apply", Job(Job::SeedStats)),
+            ("playlists", Job(Job::ReadPlayer)),
+            ("playlists --to", Control(Id::PickPlaylists)),
+            ("playlists --library", Control(Id::PickLibrary)),
+            ("playlists --apply", Job(Job::PullPlaylists)),
+            ("backup", Job(Job::ReadPlayer)),
+            ("backup --cache", CliOnly(CACHE)),
+            ("restore", Job(Job::Restore)),
+            ("restore --apply", Job(Job::Restore)),
+            ("restore --cache", CliOnly(CACHE)),
+            ("gui", CliOnly("opens the window")),
+            ("gui --dark", Control(Id::Theme(flint_gui::ThemePref::Dark))),
+            ("gui --light", Control(Id::Theme(flint_gui::ThemePref::Light))),
+            ("gui-preview", CliOnly(DEV)),
+            ("gui-preview --state", CliOnly(DEV)),
+            ("gui-preview --dark", CliOnly(DEV)),
+        ]
+    }
+
+    /// "sync", "sync --gb", … : every command in USAGE and every option on its line.
+    fn usage_keys() -> Vec<String> {
+        let mut keys = Vec::new();
+        for line in super::USAGE.lines().map(str::trim).filter(|l| l.starts_with("flint ")) {
+            let mut words = line.split_whitespace().skip(1);
+            let Some(cmd) = words.next() else { continue };
+            keys.push(cmd.to_string());
+            for w in words {
+                let w = w.trim_start_matches(['[', '(']);
+                if let Some(opt) = w.strip_prefix("--") {
+                    let opt: String = opt.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                    let key = format!("{cmd} --{opt}");
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn every_command_and_option_has_its_place_in_the_window() {
+        let table = table();
+        let known: Vec<&str> = table.iter().map(|(k, _)| *k).collect();
+        let usage = usage_keys();
+        let missing: Vec<&String> = usage.iter().filter(|k| !known.contains(&k.as_str())).collect();
+        assert!(missing.is_empty(), "in USAGE but not in the window, and no reason given: {missing:?}");
+        let stale: Vec<&&str> = known.iter().filter(|k| !usage.iter().any(|u| u == *k)).collect();
+        assert!(stale.is_empty(), "no longer in USAGE: {stale:?}");
+        // That each of those jobs has a live button is `flint_gui`'s every_job_has_a_button.
+    }
 }

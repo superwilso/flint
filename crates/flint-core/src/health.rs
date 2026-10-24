@@ -12,9 +12,9 @@
 //! [`report`] is what *Copy a report* puts on the clipboard: the card, then the tails of both logs.
 //! It replaces several rounds of "send me the log".
 //!
-//! The log lines are Cinder's `clog_`/`eprintln!` format strings (main.cpp, cinder-ffi). The two in
-//! the tests marked "real" were copied from a device log; the others are the format strings filled
-//! in, until a real boot's lines replace them.
+//! The log lines are Cinder's `clog_`/`eprintln!` lines (main.cpp, cinder-ffi). The tests use lines
+//! copied from the owner's player (2026-09-23 and 10-24); the two no boot there has logged yet (a
+//! FLAC wider than 24 bits, and `/data` free, new in 0.3.20) are the format strings filled in.
 
 use std::fs;
 use std::path::Path;
@@ -47,7 +47,7 @@ pub struct Health {
     /// FLACs wider than 24 bits, which the player cannot decode.
     pub undecodable: Option<u64>,
     pub data_free_kb: Option<u64>,
-    /// The last line of the install log.
+    /// How the last install or uninstall in the log ended, with its date.
     pub install: Option<String>,
 }
 
@@ -71,18 +71,44 @@ pub fn read(drive: &Path) -> Health {
         h.installer = get("# installer:");
         h.channel = get("# channel:");
     }
-    h.install =
-        text(INSTALL_LOG).and_then(|t| t.lines().rev().map(str::trim).find(|l| !l.is_empty()).map(String::from));
+    h.install = text(INSTALL_LOG).and_then(|t| last_run(&t));
     if let Some(log) = text(HOME_LOG) {
         read_home_log(&log, &mut h);
     }
     h
 }
 
+/// The last run in the install log: each starts with `== cinder-home installer <date>` (or
+/// `UNINSTALL`) and ends with `== done.`, `== install ABORTED`, or an `ERROR:` line when it stopped
+/// before changing anything. A log with no run header gives its last line.
+fn last_run(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let Some(at) = lines.iter().rposition(|l| l.starts_with("== cinder-home ")) else {
+        return lines.last().map(|l| l.to_string());
+    };
+    let head = &lines[at]["== cinder-home ".len()..];
+    let (kind, date) = match head.split_once(' ') {
+        Some((k, d)) => (if k == "UNINSTALL" { "Uninstall" } else { "Install" }, d.trim()),
+        None => ("Install", ""),
+    };
+    let run = &lines[at + 1..];
+    let end = if run.iter().any(|l| l.starts_with("== done")) {
+        "finished".to_string()
+    } else if run.iter().any(|l| l.starts_with("== install ABORTED")) {
+        "stopped and put Sony's player back".to_string()
+    } else if let Some(e) = run.iter().rev().find(|l| l.starts_with("ERROR:")) {
+        format!("stopped: {}", e.trim_start_matches("ERROR:").trim())
+    } else {
+        "no end line, so it was cut short".to_string()
+    };
+    Some(if date.is_empty() { format!("{kind}: {end}") } else { format!("{kind} {date}: {end}") })
+}
+
 /// Each fact is the last one logged: a boot that never got as far as logging one leaves the
 /// previous boot's.
 fn read_home_log(log: &str, h: &mut Health) {
-    // The Clear Bass line is logged on every firmware, after the Walkman One line when there is one.
+    // The Clear Bass line is logged on every firmware, in the same millisecond as the Walkman One
+    // line when there is one and before it, so either order has to come out the same.
     let mut w1_this_boot = false;
     for line in log.lines() {
         if line.contains("main: start") {
@@ -137,7 +163,10 @@ pub fn lines(h: &Health) -> Vec<String> {
         out.push(format!("System space free: {} MB{warn}", kb / 1024));
     }
     if let Some(l) = &h.install {
-        out.push(format!("Last install log line: {l}"));
+        // "Install …" / "Uninstall …" reads on as "Last install …".
+        let mut c = l.chars();
+        let first = c.next().map(|f| f.to_lowercase().to_string()).unwrap_or_default();
+        out.push(format!("Last {first}{}", c.as_str()));
     }
     out
 }
@@ -165,31 +194,31 @@ pub fn report(drive: &Path, h: &Health) -> String {
 mod tests {
     use super::*;
 
-    /// Real, from an NW-A55 log (2026-09-23; Cinder's installer tests carry the same two).
+    /// Real, from the owner's NW-A55: START and CABLE 2026-09-23 (Cinder's installer tests carry the
+    /// same two), the rest from a Walkman One boot on 2026-10-24.
     const START: &str = "[cinder-home]    0.000 main: start";
     const CABLE: &str = "cinderhome-launch: a USB cable was connected at boot (rung 0; /data/cinder/cable_escape_off opts out) -> stock";
-    /// Cinder's format strings, filled in.
+    const BASS: &str = "[cinder-home]    5.014 sound: Clear Bass available (six-band EQ is in the chain)";
     const W1: &str =
-        "[cinder-home]    2.310 sound: Walkman One sound library (no VPT, Clear Phase or DSEE AI in its chain)";
-    const BASS: &str = "[cinder-home]    2.311 sound: Clear Bass not available on this sound library";
-    const BASS_STOCK: &str = "[cinder-home]    2.311 sound: Clear Bass available (six-band EQ is in the chain)";
-    const LIB: &str = "cinder-ffi: library by storage — internal 3463, SD 1130, unresolved 0";
+        "[cinder-home]    5.014 sound: Walkman One sound library (no VPT, Clear Phase or DSEE AI in its chain)";
+    const LIB: &str = "cinder-ffi: library by storage — internal 141, SD 4505, unresolved 0";
+    /// Cinder's format strings, filled in: no boot on that player has logged these yet.
     const WIDE: &str = "cinder-ffi: 2 FLAC(s) wider than 24 bits will be skipped (the player's decoder stops at 24): [\"/contents/MUSIC/a.flac\"]";
     const FREE: &str = "[cinder-home]  612.004 status: /data free 4096 KB";
 
     #[test]
     fn the_last_boot_and_its_facts_come_from_the_log() {
         let mut h = Health::default();
-        read_home_log(&[START, W1, BASS, LIB, WIDE, FREE].join("\n"), &mut h);
+        read_home_log(&[START, BASS, W1, LIB, WIDE, FREE].join("\n"), &mut h);
         assert_eq!(h.last_boot, LastBoot::Started);
-        assert_eq!(h.walkman_one, Some(true));
-        assert_eq!(h.tracks, Some((3463, 1130)));
+        assert_eq!(h.walkman_one, Some(true), "Clear Bass first, then Walkman One, as logged");
+        assert_eq!(h.tracks, Some((141, 4505)));
         assert_eq!(h.undecodable, Some(2));
         assert_eq!(h.data_free_kb, Some(4096));
         assert!(lines(&h).contains(&"System space free: 4 MB, low".to_string()));
 
         let mut h = Health::default();
-        read_home_log(&[START, W1, BASS, START, BASS_STOCK, CABLE].join("\n"), &mut h);
+        read_home_log(&[START, W1, BASS, START, BASS, CABLE].join("\n"), &mut h);
         assert_eq!(
             h.last_boot,
             LastBoot::ToStock(
@@ -206,15 +235,28 @@ mod tests {
         fs::create_dir_all(&d).unwrap();
         assert_eq!(lines(&read(&d))[0], "No Cinder install found on this drive");
         fs::write(d.join(CONF), "# channel: stable\n# installer: 0.3.20-rc1\npower=1\n").unwrap();
-        fs::write(d.join(INSTALL_LOG), "staging\ninstall: done\n\n").unwrap();
+        // Real lines (owner's player, 2026-09-22), a run cut short after them.
+        let install = "== cinder-home installer  Tue Sep 22 20:33:54 UTC 2026\n\
+            == done. reboot to normal; appmgr launches cinder-home as the Home app. ==\n\
+            \x20  logs: /contents/cinderhome.log (falls back to /data/cinder/cinderhome.log).\n\n";
+        fs::write(d.join(INSTALL_LOG), install).unwrap();
         let log: String = (0..200).map(|i| format!("line {i}\n")).collect::<String>() + START + "\n";
         fs::write(d.join(HOME_LOG), log).unwrap();
         let h = read(&d);
         assert_eq!(lines(&h)[..2], ["Cinder from installer 0.3.20-rc1 (stable)", "Last start: Cinder started"]);
-        assert_eq!(h.install.as_deref(), Some("install: done"));
+        assert_eq!(h.install.as_deref(), Some("Install Tue Sep 22 20:33:54 UTC 2026: finished"));
+        assert!(lines(&h).contains(&"Last install Tue Sep 22 20:33:54 UTC 2026: finished".to_string()));
+        assert_eq!(
+            last_run("== cinder-home installer  Fri\nERROR: /contents/cinder-home not found — copy it. ABORT (no changes).\n").as_deref(),
+            Some("Install Fri: stopped: /contents/cinder-home not found — copy it. ABORT (no changes).")
+        );
+        assert_eq!(
+            last_run("== cinder-home UNINSTALL  Sat\nrestored\n").as_deref(),
+            Some("Uninstall Sat: no end line, so it was cut short")
+        );
         let r = report(&d, &h);
         fs::remove_dir_all(&d).unwrap();
         assert!(r.contains("--- cinderhome.log, last 80 of 201 lines ---\nline 121\n"), "{r}");
-        assert!(r.ends_with("--- cinder_home_install.log, last 3 of 3 lines ---\nstaging\ninstall: done\n\n"));
+        assert!(r.contains("--- cinder_home_install.log, last 4 of 4 lines ---\n== cinder-home installer"), "{r}");
     }
 }

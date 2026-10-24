@@ -155,6 +155,13 @@ pub fn apply(
         on_event(&Event::Removed { volume: *v, rel: name.clone() });
     }
 
+    // Files that were already there, claimed as Flint's like a copy it made.
+    if !dry_run {
+        for (v, rel, record) in &plan.kept {
+            manifests.get_mut(*v).map(|m| m.records.insert(rel.clone(), record.clone()));
+        }
+    }
+
     let total = plan.copies.len();
     // Copies since the manifests were last saved. Counted separately from `out.copied`, which
     // stays put while copies fail: `copied % SAVE_EVERY` read 0 on every failure before the first

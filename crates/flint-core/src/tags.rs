@@ -7,7 +7,8 @@
 //! Two containers: FLAC's VORBIS_COMMENT and MP3's ID3v2. Artist and title for the likes; album,
 //! album artist, track number and year as well for a song stored once under two albums
 //! (`shared.rs`), whose second entry carries its own album's tags. A file with no artist or title
-//! simply does not match, which costs one playlist row.
+//! simply does not match, which costs one playlist row. And whether the file carries lyrics
+//! already, so `lyrics.rs` does not fetch over the owner's own.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -27,6 +28,38 @@ pub struct Tags {
     /// As written: "3" or "3/12".
     pub track: String,
     pub year: String,
+    /// Lyrics in the tags, the ones Cinder reads: FLAC `LYRICS`/`UNSYNCEDLYRICS`, MP3 `USLT`.
+    pub lyrics: Lyrics,
+}
+
+/// What lyrics a file already carries. Synced wins when a file has both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Lyrics {
+    #[default]
+    None,
+    Plain,
+    Synced,
+}
+
+impl Lyrics {
+    /// Plain text, or LRC: a line that starts with a `[mm:ss` time stamp (`[ar:…]` and the other
+    /// header tags are not one).
+    pub fn of(text: &str) -> Lyrics {
+        let stamped = |l: &str| {
+            let Some(rest) = l.trim_start().strip_prefix('[') else { return false };
+            let Some((min, sec)) = rest.split_once(':') else { return false };
+            !min.is_empty()
+                && min.bytes().all(|b| b.is_ascii_digit())
+                && sec.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        };
+        if text.lines().any(stamped) {
+            Lyrics::Synced
+        } else if text.trim().is_empty() {
+            Lyrics::None
+        } else {
+            Lyrics::Plain
+        }
+    }
 }
 
 impl Tags {
@@ -84,6 +117,7 @@ pub fn parse_vorbis_comment(data: &[u8]) -> Tags {
             "ALBUMARTIST" | "ALBUM ARTIST" if tags.album_artist.is_empty() => tags.album_artist = value,
             "TRACKNUMBER" if tags.track.is_empty() => tags.track = value,
             "DATE" | "YEAR" if tags.year.is_empty() => tags.year = value,
+            "LYRICS" | "UNSYNCEDLYRICS" => tags.lyrics = tags.lyrics.max(Lyrics::of(&value)),
             _ => {}
         }
     }
@@ -102,10 +136,26 @@ fn read_mp3(path: &Path) -> Option<Tags> {
             b"TPE2" if tags.album_artist.is_empty() => tags.album_artist = decode_text(&frame.body),
             b"TRCK" if tags.track.is_empty() => tags.track = decode_text(&frame.body),
             b"TDRC" | b"TYER" if tags.year.is_empty() => tags.year = decode_text(&frame.body),
+            b"USLT" => tags.lyrics = tags.lyrics.max(Lyrics::of(&uslt_text(&frame.body))),
             _ => {}
         }
     }
     Some(tags)
+}
+
+/// `USLT`: an encoding byte, a three-letter language, a description ending in a NUL (two in
+/// UTF-16), then the lyrics.
+fn uslt_text(body: &[u8]) -> String {
+    let Some((&encoding, rest)) = body.split_first() else { return String::new() };
+    let rest = rest.get(3..).unwrap_or_default();
+    let end = if matches!(encoding, 1 | 2) {
+        rest.chunks(2).position(|pair| pair == [0, 0]).map(|i| i * 2 + 2)
+    } else {
+        rest.iter().position(|&b| b == 0).map(|i| i + 1)
+    };
+    let mut text = vec![encoding];
+    text.extend_from_slice(rest.get(end.unwrap_or(rest.len())..).unwrap_or_default());
+    decode_text(&text)
 }
 
 /// An ID3v2 text frame: one encoding byte, then the text. Latin-1, UTF-16 with a BOM, UTF-16BE and
@@ -146,7 +196,7 @@ fn decode_utf16(bytes: &[u8], force_big_endian: Option<bool>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_text, parse_vorbis_comment, read, Tags};
+    use super::{decode_text, parse_vorbis_comment, read, uslt_text, Lyrics, Tags};
 
     fn vorbis_block(entries: &[&str]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -201,6 +251,30 @@ mod tests {
         // A NUL-separated multi-value frame yields the first value.
         assert_eq!(decode_text(&[0x00, b'A', 0x00, b'B']), "A");
         assert_eq!(decode_text(&[]), "");
+    }
+
+    /// Lyrics the file already has, so Flint does not fetch over them. LRC counts as synced only
+    /// when a line starts with a time stamp, not with a header tag.
+    #[test]
+    fn embedded_lyrics_are_told_apart() {
+        assert_eq!(Lyrics::of("[ar:Bicep]\n[ti:Atlas]\nWords"), Lyrics::Plain);
+        assert_eq!(Lyrics::of("[ar:Bicep]\n[00:19.16] When"), Lyrics::Synced);
+        assert_eq!(Lyrics::of("  \n"), Lyrics::None);
+        let flac = parse_vorbis_comment(&vorbis_block(&["UNSYNCEDLYRICS=Just words", "LYRICS=[01:02.03]Timed"]));
+        assert_eq!(flac.lyrics, Lyrics::Synced, "synced wins over plain");
+        // USLT in UTF-16 with a description, the way Windows taggers write it.
+        let mut uslt = vec![0x01];
+        uslt.extend_from_slice(b"eng");
+        for part in ["desc", "[00:01.00]Hi"] {
+            uslt.extend_from_slice(&[0xff, 0xfe]);
+            for unit in part.encode_utf16() {
+                uslt.extend_from_slice(&unit.to_le_bytes());
+            }
+            uslt.extend_from_slice(&[0, 0]);
+        }
+        assert_eq!(uslt_text(&uslt), "[00:01.00]Hi");
+        assert_eq!(uslt_text(b"\x00eng\x00Plain words"), "Plain words");
+        assert_eq!(uslt_text(b"\x00en"), "", "a cut-off frame is no lyrics");
     }
 
     #[test]

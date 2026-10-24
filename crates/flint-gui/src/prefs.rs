@@ -34,9 +34,17 @@ pub fn render(m: &Model) -> String {
     put("volume1", &m.volumes[1]);
     put("playlists", &m.playlists);
     put("palette_dir", &m.palette_dir);
+    put("music_center", &m.music_center);
+    for (i, gb) in m.budget.iter().enumerate() {
+        let gb = gb.trim();
+        if !gb.is_empty() && !gb.contains(['\n', '\r']) {
+            out.push_str(&format!("budget{i}={gb}\n"));
+        }
+    }
     out.push_str(&format!("sensme={}\n", u8::from(m.sensme)));
     out.push_str(&format!("extras={}\n", u8::from(m.extras)));
     out.push_str(&format!("likes_add_only={}\n", u8::from(m.likes_add_only)));
+    out.push_str(&format!("likes_playlist={}\n", u8::from(m.likes_playlist)));
     out.push_str(&format!("theme={}\n", m.theme.word()));
     out
 }
@@ -58,6 +66,10 @@ pub fn apply(m: &mut Model, body: &str) {
             "volume1" => m.volumes[1] = path(),
             "playlists" => m.playlists = path(),
             "palette_dir" => m.palette_dir = path(),
+            "music_center" => m.music_center = path(),
+            "budget0" => m.budget[0] = v.to_string(),
+            "budget1" => m.budget[1] = v.to_string(),
+            "likes_playlist" => m.likes_playlist = v != "0",
             "sensme" => m.sensme = v != "0",
             "extras" => m.extras = v != "0",
             "likes_add_only" => m.likes_add_only = v != "0",
@@ -95,6 +107,8 @@ mod tests {
         m.volumes[1] = Some("F:\\".into());
         m.sensme = false;
         m.theme = ThemePref::Dark;
+        m.budget[1] = "28.5".into();
+        m.likes_playlist = true;
         let mut back = Model::new();
         apply(&mut back, &render(&m));
         assert_eq!(back.library, m.library);
@@ -102,6 +116,8 @@ mod tests {
         assert_eq!(back.playlists, None);
         assert!(!back.sensme && back.extras);
         assert_eq!(back.theme, ThemePref::Dark);
+        assert_eq!(back.budget, ["".to_string(), "28.5".to_string()]);
+        assert!(back.likes_playlist);
     }
 
     #[test]

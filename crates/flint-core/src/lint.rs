@@ -22,6 +22,8 @@ pub enum Finding {
     NoTrackNumber { folder: String, files: usize },
     /// A music file whose artist or title could not be read.
     NoTags { file: String },
+    /// A FLAC wider than 24 bits. The player's decoder stalls on one, so Cinder skips it.
+    TooWide { file: String, bits: u8 },
 }
 
 impl Finding {
@@ -40,6 +42,9 @@ impl Finding {
                 format!("{folder}: {files} track(s) with no number, so out of order")
             }
             Finding::NoTags { file } => format!("{file}: no artist or title"),
+            Finding::TooWide { file, bits } => {
+                format!("{file}: {bits}-bit, which the player cannot play; convert it to 24-bit")
+            }
         }
     }
 }
@@ -47,6 +52,13 @@ impl Finding {
 fn is_music(rel: &str) -> bool {
     let l = rel.to_ascii_lowercase();
     l.ends_with(".flac") || l.ends_with(".mp3")
+}
+
+/// A FLAC's bits per sample, from its STREAMINFO.
+fn flac_bits(path: &Path) -> Option<u8> {
+    let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let layout = crate::flac::read_layout(&mut f).ok()?;
+    crate::lossless::stream_info(&layout.blocks.first()?.data).map(|i| i.bits)
 }
 
 /// Read every FLAC and MP3 in `source` and report what will look wrong. Folders in path order.
@@ -62,7 +74,11 @@ pub fn lint(library: &Path, source: &[SourceFile]) -> Vec<Finding> {
         let mut unnumbered = 0;
         let mut no_tags = Vec::new();
         for f in &files {
-            let Some(t) = crate::tags::read(&library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR))) else {
+            let path = library.join(f.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if let Some(bits) = flac_bits(&path).filter(|&b| b > 24) {
+                out.push(Finding::TooWide { file: f.rel.clone(), bits });
+            }
+            let Some(t) = crate::tags::read(&path) else {
                 no_tags.push(f.rel.clone());
                 continue;
             };
@@ -148,6 +164,12 @@ mod tests {
         }
         fs::write(d.join("Album/03.flac"), flac(&[("ALBUM", "Album")])).unwrap();
         source.push(SourceFile { rel: "Album/03.flac".into(), size: 1, mtime: 1 });
+        // 44.1 kHz, two channels, 32 bits: rate in bytes 10-12, then channels-1 and bits-1.
+        let mut wide = flac(&t("Blur", "Blur", "1").iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>());
+        wide[18..22].copy_from_slice(&[0x0a, 0xc4, 0x43, 0xf0]);
+        fs::create_dir_all(d.join("Wide")).unwrap();
+        fs::write(d.join("Wide/01.flac"), wide).unwrap();
+        source.push(SourceFile { rel: "Wide/01.flac".into(), size: 1, mtime: 1 });
         source.push(SourceFile { rel: "Album/cover.jpg".into(), size: 1, mtime: 1 });
         let got = lint(&d, &source);
         fs::remove_dir_all(&d).unwrap();
@@ -160,6 +182,7 @@ mod tests {
                     folder: "Now 99".into(),
                     albums: vec![("Now 99".into(), "Blur".into()), ("Now 99".into(), "Pulp".into())]
                 },
+                Finding::TooWide { file: "Wide/01.flac".into(), bits: 32 },
             ]
         );
         assert_eq!(got[2].line(), "Now 99: shows as 2 albums: \"Now 99\" by Blur, \"Now 99\" by Pulp");

@@ -319,6 +319,16 @@ mod tests {
         assert!(read_player(&dir.0.join("no-such-drive")).unwrap().is_empty(), "no folder is no playlists");
     }
 
+    /// The playlist as Cinder writes it (`contracts/cinder-playlist.m3u8`; Cinder's reader is held
+    /// to the same file).
+    #[test]
+    fn the_shared_playlist_is_the_one_cinder_writes() {
+        let body = include_str!("../../../contracts/cinder-playlist.m3u8");
+        assert_eq!(body, SAMPLE, "SAMPLE is the contract");
+        let list = describe("late.m3u8", body.to_string());
+        assert_eq!((list.name.as_str(), list.edited, list.tracks), ("Late Night On The Bus", Some(1790000000), 2));
+    }
+
     #[test]
     fn taking_the_stamp_off_changes_nothing_else() {
         let clean = without_stamp(SAMPLE).unwrap();

@@ -91,6 +91,8 @@ pub enum Id {
     ToggleForeign(usize),
     /// Tick pair `n` of the same recording on two albums, to store it once.
     TogglePair(usize),
+    /// Copy pair `n`'s other file instead: the one Sony's player will show.
+    SwapPair(usize),
     /// Likes & plays ▸ which way Compare and Sync may move likes.
     LikesWay(flint_core::likes::Direction),
     /// Likes & plays ▸ only add likes, never remove one.
@@ -117,6 +119,8 @@ pub enum Id {
     ReadPlayer,
     /// On the player ▸ take the playlists the player has changed back to the PC.
     PullPlaylists,
+    /// On the player ▸ put the health card and the ends of the player's logs on the clipboard.
+    CopyReport,
     /// Choose the folder of `.palette` files on this PC.
     PickPalettes,
     /// Check the PC's palettes with Cinder's own rules, against what the player holds.
@@ -454,6 +458,10 @@ pub struct PlayerFacts {
     pub views: Vec<(String, String)>,
     /// The playlists made on the player.
     pub playlists: Vec<PlaylistRow>,
+    /// The health card, a line per fact (`flint_core::health`).
+    pub health: Vec<String>,
+    /// The card and the ends of the player's logs, for Copy a report.
+    pub report: String,
 }
 
 /// A job a worker thread runs. The window never runs one itself — see `win32::start`.
@@ -1686,7 +1694,7 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
     if !m.pairs.is_empty() {
         lines.push((
             Id::None,
-            "The same recording on two albums. Ticked: copied once, listed under both in Cinder.".into(),
+            "The same recording on two albums. Ticked: copied once, listed under both in Cinder. Swap copies the other file, the one Sony's player shows.".into(),
             None,
         ));
         for (i, (p, yes)) in m.pairs.iter().enumerate() {
@@ -1701,6 +1709,20 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
         let first = m.scroll[Tab::Sync.index()][Area::Table as usize].min(lines.len() - visible);
         for (k, (id, text, ticked)) in lines.iter().enumerate().skip(first).take(visible) {
             let rect = Rect::new(PAD, y + (k - first) as i32 * ROW, inner - 20, 22);
+            // A pair's row ends in its Swap.
+            let rect = match id {
+                Id::TogglePair(i) => {
+                    let swap = Id::SwapPair(*i);
+                    out.push(Widget {
+                        id: swap,
+                        rect: Rect::new(rect.x + rect.w - CLEAR_W, rect.y, CLEAR_W, 22),
+                        kind: Kind::Button { primary: false, enabled: on(swap) },
+                        text: "Swap".into(),
+                    });
+                    Rect::new(rect.x, rect.y, rect.w - CLEAR_W - 8, rect.h)
+                }
+                _ => rect,
+            };
             out.push(match ticked {
                 Some(on_) => {
                     Widget { id: *id, rect, kind: Kind::Check { on: *on_, enabled: on(*id) }, text: text.clone() }
@@ -1941,7 +1963,8 @@ pub fn live(m: &Model, id: Id) -> bool {
         | Id::ToggleSensMe
         | Id::ToggleExtras
         | Id::ToggleForeign(_)
-        | Id::TogglePair(_) => !m.sync_running(),
+        | Id::TogglePair(_)
+        | Id::SwapPair(_) => !m.sync_running(),
         Id::LikesWay(_) | Id::ToggleAddOnly | Id::ToggleLikeRemoval(_) => !m.held(Hold::Lastfm),
         Id::PickPalettes => !m.held(Hold::Palettes),
         Id::Field(Field::CheckFilter) | Id::BrowsePalettes => true,
@@ -1960,6 +1983,7 @@ pub fn live(m: &Model, id: Id) -> bool {
                 && m.can_start(Job::InstallShared)
         }
         Id::Field(_) | Id::LastfmChangeKey | Id::LastfmKeepKey => !m.held(Hold::Lastfm),
+        Id::CopyReport => !m.player.report.is_empty(),
         other => job_of(other).is_some_and(|job| ready(m, job) && m.can_start(job)),
     }
 }
@@ -1999,6 +2023,18 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
                 *yes = !*yes;
                 let answer = (p.clone(), *yes);
                 m.pair_answers.retain(|(q, _)| *q != answer.0);
+                m.pair_answers.push(answer);
+                m.invalidate_plan();
+            }
+        }
+        // Copying the other file is a yes to storing it once, that way round.
+        Id::SwapPair(i) => {
+            if let Some((p, yes)) = m.pairs.get_mut(i) {
+                *p = p.swapped();
+                *yes = true;
+                let answer = (p.clone(), true);
+                let other = answer.0.swapped();
+                m.pair_answers.retain(|(q, _)| *q != answer.0 && *q != other);
                 m.pair_answers.push(answer);
                 m.invalidate_plan();
             }
@@ -3050,6 +3086,8 @@ mod tests {
                 PlaylistRow { name: "Late Night".into(), tracks: 14, edited: true },
                 PlaylistRow { name: "Walk".into(), tracks: 9, edited: false },
             ],
+            health: vec!["Cinder from installer 0.3.20-rc1 (stable)".into(), "Last start: Cinder started".into()],
+            report: "Player health (Flint)\n".into(),
         };
         m.log = (0..60).map(|i| format!("line {i}")).collect();
         m
@@ -3147,6 +3185,23 @@ mod tests {
         // Choosing a theme is a click like any other, and starts nothing.
         assert_eq!(click(&mut m, Id::Theme(ThemePref::Dark)), None);
         assert_eq!(m.theme, ThemePref::Dark);
+    }
+
+    /// Swap is a yes to the pair the other way round: the other file is copied, and the answer
+    /// replaces any given the first way round.
+    #[test]
+    fn swap_copies_the_other_file_of_a_pair() {
+        use flint_core::shared::Pair;
+        let mut m = full();
+        m.tab = Tab::Sync;
+        let p = Pair { keep: "Album/03 Song.flac".into(), also: "Best Of/11 Song.flac".into() };
+        m.pairs = vec![(p.clone(), false)];
+        click(&mut m, Id::TogglePair(0));
+        let swap = layout(&m, W, H).into_iter().find(|w| w.id == Id::SwapPair(0)).expect("the row has a Swap");
+        assert_eq!(hit(&m, W, H, swap.rect.x + 4, swap.rect.y + 4), Some(Id::SwapPair(0)));
+        click(&mut m, Id::SwapPair(0));
+        assert_eq!(m.pairs, vec![(p.swapped(), true)]);
+        assert_eq!(m.pair_answers, vec![(p.swapped(), true)], "one answer for the two files");
     }
 
     /// An unticked removal is left out of Sync's count; another way or rule needs a new comparison.

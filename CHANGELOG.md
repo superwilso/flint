@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Checking
+
+- **Tags that would look wrong on the player.** *Check the library* (and `flint lint`) now also reads
+  the tags and lists albums that would show split on the player (a compilation with no album
+  artist, files that disagree on the album artist or album), tracks with no number, and files with
+  no artist or title. It needs no FFmpeg and changes nothing.
+
+### The player
+
+- **The player's health, and a report to paste.** *On the player* shows what Cinder's files on the
+  drive say: the installed version and channel, whether the last start reached Cinder or why it
+  handed over to Sony's player, the firmware, the library on each drive, FLACs the player cannot
+  decode, and the system space left. **Copy a report** puts that and the end of both of Cinder's
+  logs on the clipboard, for an issue.
+- **A copy of what was made on the player, kept on the PC.** The playlists made on the player,
+  likes, ratings and play counts, settings, palettes and the play log exist only on the player, so
+  a reset or a format lost them. Each time the window reads the player it copies them into
+  `backups` in Flint's data folder (only when something changed; the newest 20 are kept).
+  `flint restore` lists the copies and puts one back, after copying the player as it is first.
+  `flint backup` takes a copy by hand.
+
+### Copying
+
+- **Choose which copy of a shared song is copied.** For a song stored once for two albums, Flint
+  copied the file whose path sorts first, and that is the one Sony's player shows. **Swap** on its
+  row in the window, or `flint shared <library> --keep-other N`, copies the other one instead.
+
 ## 0.2.3 — 2026-10-23
 
 ### Copying

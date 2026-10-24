@@ -303,6 +303,24 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         };
         y = action(out, m, y, inner, Id::PullPlaylists, "Take playlists back", &note) + 14;
     }
+    // Health: what Cinder's files on the drive say about the last start, for a bug report.
+    if !m.player.health.is_empty() {
+        heading(out, PAD, y, "Health");
+        y += 22;
+        for line in &m.player.health {
+            hint(out, PAD, y, inner, line);
+            y += 18;
+        }
+        y = action(
+            out,
+            m,
+            y + 6,
+            inner,
+            Id::CopyReport,
+            "Copy a report",
+            "Puts this and the end of the player's logs on the clipboard, to paste into an issue.",
+        ) + 14;
+    }
     let rows: Vec<Vec<(String, Tone, bool)>> = m
         .player
         .albums
@@ -379,8 +397,8 @@ fn check(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
         PAD,
         y,
         inner,
-        "Looks inside every FLAC for audio that is not the lossless it claims to be, and says why. \
-         Changes nothing.",
+        "Looks inside every FLAC for audio that is not the lossless it claims to be, and reads the tags \
+         for albums that would show split or out of order on the player. Changes nothing.",
     );
     y += 28;
     let label = if m.checked.is_some() { "Check again" } else { "Check the library" };

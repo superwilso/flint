@@ -11,7 +11,8 @@
 //! flint analyse <track> [--out result.smfmf] [--param id=value]   run Sony's engine, summarise
 //! flint tag-copy <src> <dst> [--smfmf result.smfmf]                 copy with SensMe data (FLAC, MP3)
 //! flint sync <library> --to <volume> [--to <volume>] [--apply]   copy the library to the player
-//! flint shared <library> [--yes N|all] [--no N|all]               a song on two albums, stored once
+//! flint shared <library> [--yes N|all] [--no N|all] [--keep-other N|all]  a song on two albums, stored once
+//! flint lint <library>                                           tags that would look wrong on the player
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
 //! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
 //! flint lastfm key|login|status                                   the Last.fm account, once
@@ -19,6 +20,8 @@
 //! flint likes <volume> [--apply] [--way player|lastfm] [--add-only] [--leave N|all] [--playlist]
 //!                                                                 liked songs: player <-> Last.fm
 //! flint stats <volume> [--to <sd card>] [--apply]                 seed the player's play counts from its scrobble log
+//! flint backup <volume>                                          copy what the player keeps for itself
+//! flint restore <volume> [<backup name>] [--apply]                list the copies, or put one back
 //! flint gui                                                       open the window (Windows)
 //! flint gui-preview <out.svg> [--state name]                      draw the window to an SVG, anywhere
 //! ```
@@ -45,7 +48,8 @@ usage:
   flint analyse <track> [--out result.smfmf] [--param id=value]...
   flint tag-copy <src.flac|src.mp3> <dst> [--smfmf result.smfmf] [--param id=value]...
   flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras] [--also-remove <folder|playlist|*>]...
-  flint shared <library folder> [--yes N|all]... [--no N|all]... [--cache dir]
+  flint shared <library folder> [--yes N|all]... [--no N|all]... [--keep-other N|all]... [--cache dir]
+  flint lint <library folder>
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
   flint lastfm key <api-key> <api-secret> | login <username> | status
@@ -53,6 +57,8 @@ usage:
   flint likes <volume> [<volume>...] [--apply] [--way both|player|lastfm] [--add-only] [--leave N|all]... [--playlist]
   flint stats <volume> [--to <sd card>] [--apply]
   flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]
+  flint backup <volume> [--cache dir]
+  flint restore <volume> [<backup name>] [--apply] [--cache dir]
   flint gui [--dark | --light]
   flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|palette-new|palette-shop|settings|signed-in] [--dark]";
 
@@ -73,6 +79,7 @@ fn main() -> ExitCode {
         Some("check") => check(&args[1..]),
         Some("sync") => sync_cmd(&args[1..]),
         Some("shared") => shared_cmd(&args[1..]),
+        Some("lint") => lint_cmd(&args[1..]),
         Some("analyse" | "analyze") => analyse(&args[1..]),
         Some("tag-copy") => tag_copy(&args[1..]),
         Some("inspect") => inspect(&args[1..]),
@@ -82,6 +89,8 @@ fn main() -> ExitCode {
         Some("likes") => likes_cmd(&args[1..]),
         Some("stats") => stats_cmd(&args[1..]),
         Some("playlists") => playlists_cmd(&args[1..]),
+        Some("backup") => backup_cmd(&args[1..], false),
+        Some("restore") => backup_cmd(&args[1..], true),
         Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
         Some("gui-preview") => gui_preview(&args[1..]),
         // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
@@ -130,9 +139,10 @@ struct Opts {
     library: Option<PathBuf>,
     /// `--also-remove`: folders and playlists on the player that Flint did not write, to sweep too.
     also_remove: Vec<String>,
-    /// `flint shared --yes / --no`: suggestion numbers, or `all`.
+    /// `flint shared --yes / --no / --keep-other`: suggestion numbers, or `all`.
     yes: Vec<String>,
     no: Vec<String>,
+    keep_other: Vec<String>,
     /// `flint likes --way`: which side a run may write.
     way: Option<String>,
     /// `flint likes --add-only`: never remove a like anywhere.
@@ -165,6 +175,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         also_remove: Vec::new(),
         yes: Vec::new(),
         no: Vec::new(),
+        keep_other: Vec::new(),
         way: None,
         add_only: false,
         leave: Vec::new(),
@@ -186,6 +197,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--also-remove" => o.also_remove.push(value("--also-remove")?),
             "--yes" => o.yes.push(value("--yes")?),
             "--no" => o.no.push(value("--no")?),
+            "--keep-other" => o.keep_other.push(value("--keep-other")?),
             "--way" => o.way = Some(value("--way")?),
             "--add-only" => o.add_only = true,
             "--leave" => o.leave.push(value("--leave")?),
@@ -586,9 +598,10 @@ fn print_spectrum(m: &lossless::Measurement) {
     }
 }
 
-/// `flint shared <library> [--yes N|all] [--no N|all]` — the same recording on two albums: list
-/// what Flint found, and answer. A yes stores the song once from the next sync on; a no stops it
-/// being suggested.
+/// `flint shared <library> [--yes N|all] [--no N|all] [--keep-other N|all]` — the same recording
+/// on two albums: list what Flint found, and answer. A yes stores the song once from the next sync
+/// on, copying the first file listed; `--keep-other` is a yes that copies the second (the one
+/// Sony's player then shows); a no stops it being suggested.
 fn shared_cmd(args: &[String]) -> Result<(), String> {
     use flint_core::shared::{suggest, Answers};
     let o = opts(args)?;
@@ -612,23 +625,44 @@ fn shared_cmd(args: &[String]) -> Result<(), String> {
         }
         Ok(out)
     };
-    let (yes, no) = (picked(&o.yes)?, picked(&o.no)?);
+    let (yes, no, other) = (picked(&o.yes)?, picked(&o.no)?, picked(&o.keep_other)?);
     for (list, answer) in [(&yes, true), (&no, false)] {
         for &i in list {
             answers.set(library, open[i].clone(), answer);
         }
     }
-    if !yes.is_empty() || !no.is_empty() {
-        answers.save(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
-        println!("saved: {} stored once, {} not", yes.len(), no.len());
+    for &i in &other {
+        answers.set(library, open[i].swapped(), true);
     }
-    let left: Vec<(usize, &flint_core::shared::Pair)> =
-        open.iter().enumerate().filter(|(i, _)| !yes.contains(i) && !no.contains(i)).collect();
+    if !yes.is_empty() || !no.is_empty() || !other.is_empty() {
+        answers.save(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
+        println!("saved: {} stored once, {} not", yes.len() + other.len(), no.len());
+    }
+    let done = |i: &usize| yes.contains(i) || no.contains(i) || other.contains(i);
+    let left: Vec<(usize, &flint_core::shared::Pair)> = open.iter().enumerate().filter(|(i, _)| !done(i)).collect();
     for (i, p) in &left {
-        println!("  {:>3}  {}\n       same recording as {}", i + 1, p.also, p.keep);
+        println!("  {:>3}  {}\n       same recording as {} (copied unless --keep-other)", i + 1, p.also, p.keep);
     }
     let stored = answers.confirmed(library).len();
-    println!("{} found and not answered; {stored} stored once. Answer with --yes N or --no N (or all).", left.len());
+    println!(
+        "{} found and not answered; {stored} stored once. Answer with --yes N, --keep-other N or --no N (or all).",
+        left.len()
+    );
+    Ok(())
+}
+
+/// `flint lint <library>`: albums that would show split on the player, tracks with no number,
+/// files with no artist or title. Reads the tags; changes nothing.
+fn lint_cmd(args: &[String]) -> Result<(), String> {
+    let o = opts(args)?;
+    let [library] = o.pos.as_slice() else { return Err(USAGE.into()) };
+    let library = Path::new(library);
+    let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
+    let found = flint_core::lint::lint(library, &source);
+    for f in &found {
+        println!("{}", f.line());
+    }
+    println!("{} tag problem(s) that would show on the player.", found.len());
     Ok(())
 }
 
@@ -651,7 +685,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
             confirmed
         } else {
             let source = sync::scan_library(library).map_err(|e| format!("{}: {e}", library.display()))?;
-            flint_core::shared::suggest(library, &source).into_iter().filter(|p| confirmed.contains(p)).collect()
+            flint_core::shared::holding(&flint_core::shared::suggest(library, &source), &confirmed)
         }
     };
     let req = sync::Request {
@@ -962,6 +996,14 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
                     PlaylistRow { name: "Late Night On The Bus".into(), tracks: 14, edited: true },
                     PlaylistRow { name: "Walk".into(), tracks: 9, edited: false },
                 ],
+                health: vec![
+                    "Cinder from installer 0.3.20-rc1 (stable)".into(),
+                    "Last start: Cinder started".into(),
+                    "Firmware: Sony's".into(),
+                    "Library: 3463 tracks on the player, 1130 on the card".into(),
+                    "System space free: 212 MB".into(),
+                ],
+                report: "Player health (Flint)\n".into(),
             };
             m.status = "8 albums on the player, 7 plays in the log, 14 songs liked".into();
             m.tab = match state {
@@ -1320,6 +1362,58 @@ fn stats_cmd(args: &[String]) -> Result<(), String> {
 /// `flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]` — the
 /// playlists made on the player. Alone it lists them. With `--to` it takes the ones the player
 /// has changed back to the PC and takes their EDITED mark off.
+/// `flint backup <volume>` copies what the player keeps for itself into Flint's data folder (the
+/// window does this whenever it reads the player). `flint restore <volume>` lists the copies;
+/// with a name and `--apply` it puts that one back, after copying the player as it is.
+fn backup_cmd(args: &[String], restoring: bool) -> Result<(), String> {
+    use flint_core::backup;
+    let o = opts(args)?;
+    let Some(volume) = o.pos.first().map(PathBuf::from) else {
+        return Err(
+            "give the player's drive: flint backup E:\\ (or flint restore E:\\ [<backup name>] [--apply])".into()
+        );
+    };
+    let drive = flint_core::stats::drive_root(&volume);
+    let data = o.cache.clone().unwrap_or_else(cache::default_dir);
+    let say = |t: &backup::Taken| match t {
+        backup::Taken::Nothing => "the player holds nothing of its own to copy".to_string(),
+        backup::Taken::Unchanged(n) => format!("unchanged since the copy of {n}"),
+        backup::Taken::New { name, files, bytes } => {
+            format!("copied {files} file(s), {} KB, as {name}", bytes.div_ceil(1024))
+        }
+    };
+    if !restoring {
+        let t = backup::take(&drive, &data, &backup::stamp_now()).map_err(|e| e.to_string())?;
+        println!("{}", say(&t));
+        return Ok(());
+    }
+    let Some(name) = o.pos.get(1) else {
+        let all = backup::list(&data);
+        if all.is_empty() {
+            println!("no copies yet in {}", data.join(backup::FOLDER).display());
+        }
+        for n in &all {
+            println!("  {n}");
+        }
+        return Ok(());
+    };
+    if !o.apply {
+        let files = backup::files_on(&data.join(backup::FOLDER).join(name));
+        if files.is_empty() {
+            return Err(format!("no backup called {name}"));
+        }
+        for f in &files {
+            println!("  {f}");
+        }
+        println!("{} file(s) would replace the player's. Add --apply to put them back.", files.len());
+        return Ok(());
+    }
+    let (before, n) = backup::restore(&data, name, &drive, &backup::stamp_now()).map_err(|e| e.to_string())?;
+    println!("the player as it was: {}", say(&before));
+    println!("put back {n} file(s) from {name}. Restart the player to read them.");
+    Ok(())
+}
+
 fn playlists_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let Some(drive) = o.pos.first().map(PathBuf::from) else {

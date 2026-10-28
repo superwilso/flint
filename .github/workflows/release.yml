@@ -11,7 +11,9 @@ name: release
 #                              it is the command line. The 32-bit SensMe helper (32-bit because
 #                              Sony's MMLib11.dll is 32-bit COM) is carried inside it and written
 #                              to Flint's data folder the first time an analysis needs it.
-#   flint-linux-x64            everything but the window and the analysis, which need Windows.
+#   flint-linux-x64            everything but the analysis, which needs Windows. Double-clicked (or
+#   flint-macos                `flint gui`) it opens its page in the browser; given a command it is
+#                              the command line. flint-macos runs on Apple silicon and Intel Macs.
 #
 # Sony's MMLib11.dll is never built, shipped or downloaded by any of this. Flint runs the copy
 # already on the machine, from a Music Center install the user chose to have.
@@ -88,8 +90,32 @@ jobs:
           path: flint-linux-x64
           if-no-files-found: error
 
+  # The same as Linux, built for both kinds of Mac and joined into one file.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Test
+        run: cargo test --workspace
+      - name: Build both and join them
+        run: |
+          cargo build --release -p flint --target aarch64-apple-darwin
+          cargo build --release -p flint --target x86_64-apple-darwin
+          lipo -create -output flint-macos \
+            target/aarch64-apple-darwin/release/flint \
+            target/x86_64-apple-darwin/release/flint
+          lipo -info flint-macos
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: flint-macos
+          if-no-files-found: error
+
   release:
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     # Job-level permissions REPLACE the workflow's, so contents: write is restated. id-token lets

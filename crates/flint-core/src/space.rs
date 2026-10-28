@@ -23,9 +23,20 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
     (ok != 0).then_some(free_to_caller)
 }
 
+/// Linux and macOS: POSIX `df -Pk`, whose output is the same on both, rather than `statvfs`, whose
+/// struct layout is not.
 #[cfg(not(windows))]
-pub fn free_bytes(_path: &Path) -> Option<u64> {
-    None
+pub fn free_bytes(path: &Path) -> Option<u64> {
+    let out = std::process::Command::new("df").arg("-Pk").arg(path).output().ok()?;
+    df_available(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The "Available" column of `df -Pk`, in bytes. A mount point with spaces in its name only adds
+/// words after it, so the column is counted from the left.
+#[cfg_attr(windows, allow(dead_code))]
+fn df_available(out: &str) -> Option<u64> {
+    let kb: u64 = out.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
+    Some(kb * 1024)
 }
 
 /// `bytes` as a short human-readable string, the way Flint prints sizes everywhere.
@@ -49,6 +60,20 @@ pub fn human(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn df_available_reads_the_fourth_column() {
+        let out = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n\
+                   /dev/sdb1         61498368  12345678  49152690      21% /media/me/WALKMAN SD\n";
+        assert_eq!(df_available(out), Some(49152690 * 1024));
+        assert_eq!(df_available("df: /nowhere: No such file or directory\n"), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn free_space_is_read_here() {
+        assert!(free_bytes(Path::new(".")).is_some_and(|b| b > 0));
+    }
 
     #[test]
     fn sizes_read_the_way_people_write_them() {

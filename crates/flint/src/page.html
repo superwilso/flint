@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flint</title>
+<style>
+/* The Windows window's palette: a near-black band, warm greys, one ember for "the next thing to do". */
+:root {
+  --bg: #F2F3F6; --band: #1A1818; --band-text: #F2EFEC; --band-dim: #8E8884;
+  --panel: #FFFFFF; --border: #E3E4EA; --text: #191A1E; --heading: #3A3B44; --dim: #5F6069;
+  --accent: #E0551B; --accent-down: #B8441A; --button: #ECECF1; --button-border: #D3D4DC;
+  --field: #FFFFFF; --log-bg: #1A1818; --log-text: #CFCBC7; --warn: #B32E14; --ok: #2E7D4F;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1B1A19; --band: #0E0D0D; --panel: #232120; --border: #332F2D; --text: #EDE9E5;
+    --heading: #CFC9C3; --dim: #9A938D; --button: #2B2826; --button-border: #3D3936;
+    --field: #1B1A19; --log-bg: #121110; --warn: #E0664A; --ok: #5DBB83;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif; }
+header { background: var(--band); color: var(--band-text); padding: 14px 24px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+#status { color: var(--band-dim); flex: 1; }
+#status.busy { color: var(--band-text); }
+#status.busy::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); margin-right: 8px; vertical-align: 1px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+#stop { background: transparent; color: var(--band-text); border-color: var(--band-dim); }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 40px;
+  display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 880px) { main { grid-template-columns: minmax(0, 1fr); } }
+nav { display: flex; gap: 4px; margin: 20px 0 12px; flex-wrap: wrap; }
+nav button { background: none; border: 0; padding: 8px 12px; border-radius: 6px; color: var(--dim);
+  font: inherit; cursor: pointer; }
+nav button[aria-selected="true"] { color: var(--text); background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+.panel[hidden] { display: none; }
+.panel + .panel { margin-top: 12px; }
+h2 { font-size: 15px; font-weight: 600; color: var(--heading); margin: 0 0 4px; }
+p { margin: 0 0 10px; }
+.dim { color: var(--dim); }
+a { color: var(--accent); }
+.btn { font: inherit; border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  border: 1px solid var(--button-border); background: var(--button); color: var(--text); }
+.btn.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.go:active { background: var(--accent-down); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:focus-visible, nav button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.row .dim { font-size: 13.5px; }
+.grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 12px; align-items: center; margin-top: 10px; }
+.grid label { color: var(--heading); }
+input[type=text], input[type=password], input[type=number], select { font: inherit; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--button-border); background: var(--field); color: var(--text); width: 100%; min-width: 0; }
+input[type=number] { width: 8em; }
+.check { display: block; margin-top: 8px; padding-left: 26px; text-indent: -26px; }
+.check input { width: 18px; margin: 0 8px 0 0; vertical-align: -2px; }
+.folders .grid { grid-template-columns: max-content minmax(0, 1fr) max-content; }
+.folders .hint { grid-column: 2 / -1; font-size: 13.5px; margin-top: -4px; }
+@media (max-width: 560px) {
+  .grid, .folders .grid { grid-template-columns: minmax(0, 1fr); }
+  .folders .hint { grid-column: auto; }
+}
+#log { background: var(--log-bg); color: var(--log-text); border-radius: 8px; padding: 14px 16px; margin: 0;
+  font: 12.5px/1.55 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; white-space: pre-wrap;
+  word-break: break-word; min-height: 360px; max-height: calc(100vh - 120px); overflow: auto; position: sticky; top: 20px; }
+@media (prefers-reduced-motion: reduce) { #status.busy::before { animation: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flint</h1>
+  <span id="status" role="status" aria-live="polite">Ready</span>
+  <button class="btn" id="stop" hidden>Stop</button>
+</header>
+<main>
+  <div>
+    <section class="panel folders">
+      <h2>Your folders</h2>
+      <p class="dim">Every job below uses these, and they are remembered.</p>
+      <div class="grid">
+        <label for="library">Music library</label>
+        <input type="text" id="library" data-keep placeholder="/home/you/Music" spellcheck="false">
+        <span></span>
+        <label for="player">The player</label>
+        <input type="text" id="player" data-keep list="found" placeholder="Where the Walkman is mounted" spellcheck="false">
+        <button class="btn" id="find">Find it</button>
+        <span class="dim hint" id="found-hint"></span>
+        <label for="card">Its SD card</label>
+        <input type="text" id="card" data-keep list="found" placeholder="Optional" spellcheck="false">
+        <span></span>
+        <label for="playlists">Playlists</label>
+        <input type="text" id="playlists" data-keep placeholder="Optional: a folder of .m3u8 or MusicBee playlists" spellcheck="false">
+        <span></span>
+      </div>
+      <datalist id="found"></datalist>
+    </section>
+
+    <nav role="tablist">
+      <button role="tab" aria-selected="true" data-tab="sync">Sync</button>
+      <button role="tab" aria-selected="false" data-tab="player-tab">On the player</button>
+      <button role="tab" aria-selected="false" data-tab="check-tab">Check</button>
+      <button role="tab" aria-selected="false" data-tab="likes-tab">Likes &amp; plays</button>
+      <button role="tab" aria-selected="false" data-tab="settings">Settings</button>
+    </nav>
+
+    <div data-panel="sync">
+      <section class="panel">
+        <h2>Copy the library to the player</h2>
+        <p>Show what would happen first: it lists what would be copied and removed, and changes nothing.
+          Copy then does exactly that. Flint writes into the <code>MUSIC</code> folder of the player and the card.</p>
+        <div class="grid">
+          <label for="gb0">Player limit</label>
+          <span><input type="number" id="gb0" data-keep min="0" step="0.5" placeholder="Free space"> GB</span>
+          <label for="gb1">Card limit</label>
+          <span><input type="number" id="gb1" data-keep min="0" step="0.5" placeholder="Free space"> GB</span>
+          <label for="also">Also remove</label>
+          <input type="text" id="also" data-keep placeholder="Folders or playlists, separated by commas; * for all" spellcheck="false">
+        </div>
+        <label class="check"><input type="checkbox" id="sensme" data-keep checked> Give the copies SensMe channels (from <b>Scan</b>, or Music Center's tags)</label>
+        <label class="check"><input type="checkbox" id="extras" data-keep checked> Copy covers, lyrics and other files beside the music</label>
+        <div class="row" data-cmd="sync">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Copy to the player</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>One song on two albums</h2>
+        <p>The same recording on an album and a best-of, or a single and its album. Stored once, a sync
+          copies one file and Cinder still lists the song under both albums. Look lists the pairs with
+          numbers; fill in your answers and look again to save them.</p>
+        <div class="grid">
+          <label for="yes">Store once</label><input type="text" id="yes" placeholder="Numbers, or all" spellcheck="false">
+          <label for="other">Once, the other file</label><input type="text" id="other" placeholder="Numbers, or all" spellcheck="false">
+          <label for="no">Keep both</label><input type="text" id="no" placeholder="Numbers, or all" spellcheck="false">
+        </div>
+        <div class="row" data-cmd="shared">
+          <button class="btn go" data-do="once">Look, and save what is filled in</button>
+        </div>
+      </section>
+    </div>
+
+    <div data-panel="player-tab" hidden>
+      <section class="panel">
+        <h2>Back up the player's data</h2>
+        <p>The playlists, likes, ratings, play counts, settings, palettes and play log made on the player,
+          into Flint's data folder. Not the music.</p>
+        <div class="row" data-cmd="backup"><button class="btn go" data-do="once">Back up</button></div>
+      </section>
+      <section class="panel">
+        <h2>Put a backup back</h2>
+        <p>Copies the player as it is first, so a restore can be undone too.</p>
+        <div class="grid">
+          <label for="backup-name">Backup</label>
+          <input type="text" id="backup-name" placeholder="Empty: the newest. Show what would happen lists them all" spellcheck="false">
+        </div>
+        <div class="row" data-cmd="restore">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Restore</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Play counts</h2>
+        <p>Tracks the player never counted get their plays from its scrobble log, and counts follow
+          albums that moved between the player and the card. A count the player has is never changed.</p>
+        <div class="row" data-cmd="stats">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Update the counts</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Playlists made on the player</h2>
+        <div class="grid">
+          <label for="pl-to">Save them in</label>
+          <input type="text" id="pl-to" data-keep placeholder="A folder on this computer" spellcheck="false">
+        </div>
+        <label class="check"><input type="checkbox" id="pl-lib" data-keep checked> Point them at the library's files (needs the library folder above)</label>
+        <div class="row" data-cmd="playlists">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Save the playlists</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+    </div>
+
+    <div data-panel="check-tab" hidden>
+      <section class="panel">
+        <h2>Read the library</h2>
+        <p>Reads every track once and remembers it, so the rest is quick. Run it after adding music.</p>
+        <div class="row" data-cmd="scan"><button class="btn go" data-do="once">Scan</button></div>
+      </section>
+      <section class="panel">
+        <h2>Is it really lossless?</h2>
+        <p>Looks for FLAC files made from MP3s or other lossy files, and fake high resolution.</p>
+        <label class="check"><input type="checkbox" id="check-all" data-keep> List every file, not only the doubtful ones</label>
+        <label class="check"><input type="checkbox" id="check-verbose"> Show the measurements</label>
+        <div class="row" data-cmd="check"><button class="btn go" data-do="once">Check the library</button></div>
+      </section>
+      <section class="panel">
+        <h2>Tags</h2>
+        <p>Albums that would show split on the player, tracks with no number, and files with no artist or
+          title. Changes nothing.</p>
+        <div class="row" data-cmd="lint"><button class="btn go" data-do="once">Check the tags</button></div>
+      </section>
+      <section class="panel">
+        <h2>Lyrics</h2>
+        <p>Fetches synced lyrics from LRCLIB for tracks that have none, and saves each as a <code>.lrc</code>
+          beside the track in your library, never replacing one. The next sync takes them to the player.</p>
+        <div class="row" data-cmd="lyrics">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Write the lyrics files</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+    </div>
+
+    <div data-panel="likes-tab" hidden>
+      <section class="panel">
+        <h2>Send plays to Last.fm</h2>
+        <p>Reads the player's scrobble log; what Last.fm accepts is then removed from it. Sign in under Settings first.</p>
+        <div class="row" data-cmd="scrobble">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Send plays</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Likes and loved tracks</h2>
+        <div class="grid">
+          <label for="way">Which way</label>
+          <select id="way" data-keep>
+            <option value="both">Both ways</option>
+            <option value="player">Last.fm to the player</option>
+            <option value="lastfm">The player to Last.fm</option>
+          </select>
+          <label for="leave">Don't remove</label>
+          <input type="text" id="leave" placeholder="Numbers of the removals it lists, or all" spellcheck="false">
+        </div>
+        <label class="check"><input type="checkbox" id="add-only" data-keep> Only add likes, never take one away</label>
+        <label class="check"><input type="checkbox" id="likes-pl" data-keep> Also keep a Liked playlist on the player</label>
+        <div class="row" data-cmd="likes">
+          <button class="btn" data-do="look">Show what would happen</button>
+          <button class="btn go" data-do="apply">Update the likes</button>
+          <span class="dim" data-why></span>
+        </div>
+      </section>
+    </div>
+
+    <div data-panel="settings" hidden>
+      <section class="panel">
+        <h2>Last.fm</h2>
+        <p>Needs an API key of your own: <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener">create one at Last.fm</a>.
+          The password is sent to Last.fm once and never stored.</p>
+        <div class="grid" data-cmd="lastfm">
+          <label for="api-key">API key</label><input type="text" id="api-key" spellcheck="false" autocomplete="off">
+          <label for="api-secret">Shared secret</label><input type="password" id="api-secret" autocomplete="off">
+          <span></span><span><button class="btn" data-do="key">Save the key</button></span>
+          <label for="lf-user">Username</label><input type="text" id="lf-user" data-keep spellcheck="false" autocomplete="username">
+          <label for="lf-pass">Password</label><input type="password" id="lf-pass" autocomplete="current-password">
+          <span></span><span><button class="btn go" data-do="login">Sign in</button>
+            <button class="btn" data-do="status">Show what is saved</button></span>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Music Center</h2>
+        <p>Reads the SensMe analysis Music Center already did (it changes nothing there), so Flint does
+          not need to run it again.</p>
+        <div class="grid">
+          <label for="mc">Its data folder</label>
+          <input type="text" id="mc" data-keep placeholder="Empty: where Music Center keeps it" spellcheck="false">
+        </div>
+        <div class="row" data-cmd="import"><button class="btn go" data-do="once">Import</button></div>
+      </section>
+    </div>
+  </div>
+
+  <pre id="log" aria-label="What Flint is doing"></pre>
+</main>
+<script>
+const T = new URLSearchParams(location.search).get('t');
+const $ = id => document.getElementById(id);
+const v = id => $(id).value.trim();
+const list = s => s.split(/[\s,]+/).filter(Boolean);
+let busy = false, last = '', ran = '';   // ran: the arguments of the last run, to match an Apply to its Preview
+
+class Ask extends Error { constructor(msg, id) { super(msg); this.id = id; } }
+const need = (id, what) => { const x = v(id); if (!x) throw new Ask(what, id); return x; };
+const lib = () => need('library', 'Choose the music library folder first.');
+const player = () => need('player', 'Say where the player is mounted first (Find it looks).');
+const drives = () => [player(), ...(v('card') ? [v('card')] : [])];
+const music = d => d.replace(/\/+$/, '') + (/\/music$/i.test(d.replace(/\/+$/, '')) ? '' : '/MUSIC');
+
+// What each job runs: the command line's own arguments, without --apply (the job's go button adds it).
+// The `// cmd` markers are read by the page_parity test, which holds this to flint's usage.
+const BUILD = {
+  // cmd sync
+  sync: () => {
+    const a = ['sync', lib()], gb = [v('gb0'), v('gb1')];
+    drives().forEach((d, i) => a.push('--to', music(d)));
+    if (gb.some(Boolean)) drives().forEach((d, i) => a.push('--gb', gb[i] || 'auto'));
+    if (v('playlists')) a.push('--playlists', v('playlists'));
+    if (!$('sensme').checked) a.push('--no-sensme');
+    if (!$('extras').checked) a.push('--no-extras');
+    for (const x of v('also').split(',').map(s => s.trim()).filter(Boolean)) a.push('--also-remove', x);
+    return a;
+  },
+  // cmd shared
+  shared: () => {
+    const a = ['shared', lib()];
+    for (const n of list(v('yes'))) a.push('--yes', n);
+    for (const n of list(v('no'))) a.push('--no', n);
+    for (const n of list(v('other'))) a.push('--keep-other', n);
+    return a;
+  },
+  // cmd backup
+  backup: () => ['backup', player()],
+  // cmd restore
+  restore: () => ['restore', player(), ...(v('backup-name') ? [v('backup-name')] : [])],
+  // cmd stats
+  stats: () => ['stats', player(), ...(v('card') ? ['--to', v('card')] : [])],
+  // cmd playlists
+  playlists: () => ['playlists', player(), '--to', need('pl-to', 'Choose a folder to save the playlists in.'),
+    ...($('pl-lib').checked && v('library') ? ['--library', v('library')] : [])],
+  // cmd scan
+  scan: () => ['scan', lib()],
+  // cmd check
+  check: () => ['check', lib(), ...($('check-all').checked ? ['--all'] : []), ...($('check-verbose').checked ? ['--verbose'] : [])],
+  // cmd lint
+  lint: () => ['lint', lib()],
+  // cmd lyrics
+  lyrics: () => ['lyrics', lib()],
+  // cmd scrobble
+  scrobble: () => ['scrobble', ...drives()],
+  // cmd likes
+  likes: () => {
+    const a = ['likes', ...drives(), '--way', $('way').value];
+    if ($('add-only').checked) a.push('--add-only');
+    for (const n of list(v('leave'))) a.push('--leave', n);
+    if ($('likes-pl').checked) a.push('--playlist');
+    return a;
+  },
+  // cmd lastfm
+  lastfm: what => what === 'key' ? ['lastfm', 'key', need('api-key', 'Paste the API key.'), need('api-secret', 'Paste the shared secret.')]
+    : what === 'login' ? ['lastfm', 'login', need('lf-user', 'Type your Last.fm username.')]
+    : ['lastfm', 'status'],
+  // cmd import
+  import: () => ['import', ...(v('mc') ? ['--from', v('mc')] : [])],
+};
+
+async function run(args, input) {
+  ran = JSON.stringify(args.filter(a => a !== '--apply'));
+  const r = await fetch('/run?t=' + T, { method: 'POST', body: args.join('\n') + (input ? '\0' + input : '') });
+  if (!r.ok) alert(await r.text());
+  save();
+  poll();
+}
+
+document.querySelectorAll('[data-cmd]').forEach(row => row.querySelectorAll('[data-do]').forEach(b => b.onclick = () => {
+  const cmd = row.dataset.cmd, what = b.dataset.do;
+  try {
+    const args = BUILD[cmd](what);
+    if (what === 'apply') return run([...args, '--apply']);
+    if (what === 'login') {
+      const pass = $('lf-pass').value;
+      if (!pass) throw new Ask('Type your Last.fm password.', 'lf-pass');
+      $('lf-pass').value = '';
+      return run(args, pass);
+    }
+    if (what === 'key') { $('api-secret').value = ''; }
+    run(args);
+  } catch (e) { if (!(e instanceof Ask)) throw e; alert(e.message); $(e.id)?.focus(); }
+}));
+$('stop').onclick = () => fetch('/cancel?t=' + T, { method: 'POST' });
+
+// An Apply runs only what was just previewed, unchanged, and previewed without an error.
+function previewed(cmd) {
+  try { return !busy && last === 'ok' && ran === JSON.stringify(BUILD[cmd]()); } catch { return false; }
+}
+function draw() {
+  document.querySelectorAll('[data-do]').forEach(b => {
+    const cmd = b.closest('[data-cmd]').dataset.cmd;
+    const ok = b.dataset.do !== 'apply' || previewed(cmd);
+    b.disabled = busy || !ok;
+    const why = b.closest('[data-cmd]').querySelector('[data-why]');
+    if (why && b.dataset.do === 'apply') why.textContent = busy || ok ? '' : 'Show what would happen first.';
+  });
+  $('stop').hidden = !busy;
+}
+
+// What the page remembers between runs, in Flint's own data folder.
+async function load() {
+  let s = {};
+  try { s = await (await fetch('/saved?t=' + T)).json(); } catch {}
+  for (const el of document.querySelectorAll('[data-keep]')) {
+    if (!(el.id in s)) continue;
+    if (el.type === 'checkbox') el.checked = !!s[el.id]; else el.value = s[el.id];
+  }
+}
+function save() {
+  const s = {};
+  for (const el of document.querySelectorAll('[data-keep]')) s[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  fetch('/saved?t=' + T, { method: 'POST', body: JSON.stringify(s) });
+}
+document.querySelectorAll('[data-keep]').forEach(el => el.addEventListener('change', () => { save(); draw(); }));
+document.querySelectorAll('input, select').forEach(el => el.addEventListener('input', draw));
+
+function tab(name) {
+  document.querySelectorAll('nav button').forEach(x => x.setAttribute('aria-selected', x.dataset.tab === name));
+  document.querySelectorAll('[data-panel]').forEach(s => s.hidden = s.dataset.panel !== name);
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => tab(b.dataset.tab));
+if (document.querySelector(`[data-panel="${location.hash.slice(1)}"]`)) tab(location.hash.slice(1));
+
+let players = [];
+function showPlayers(fill, asked) {
+  $('found').innerHTML = '';
+  for (const p of players) $('found').add(new Option(p));
+  $('found-hint').textContent = players.length ? 'Found: ' + players.join(', ')
+    : asked ? 'No player found. Plug it in and choose USB storage on it, then Find it again.' : '';
+  if (fill && players.length && !v('player')) { $('player').value = players[0]; save(); }
+}
+$('find').onclick = async () => { await poll(); showPlayers(true, true); draw(); };
+
+async function poll() {
+  let s;
+  try { s = await (await fetch('/state?t=' + T)).json(); }
+  catch { $('status').textContent = 'Flint has closed. Start it again to carry on.'; $('status').className = ''; busy = true; draw(); return; }
+  busy = s.busy; last = s.last; players = s.players;
+  if (!$('library').placeholder.startsWith(s.home) && s.home) $('library').placeholder = s.home + '/Music';
+  // The log: a "\r" rewrites its line, as in a terminal.
+  const lines = s.log.split('\n').map(l => l.split('\r').filter(Boolean).pop() || '');
+  const atEnd = $('log').scrollHeight - $('log').scrollTop - $('log').clientHeight < 40;
+  $('log').textContent = lines.join('\n').trim() || 'Nothing yet. What Flint does shows here.';
+  if (atEnd) $('log').scrollTop = $('log').scrollHeight;
+  $('status').className = busy ? 'busy' : '';
+  $('status').textContent = busy ? 'Working' : last === 'ok' ? 'Done' : last === 'failed'
+    ? 'Stopped with an error: see the last lines on the right' : last === 'stopped' ? 'Stopped' : 'Ready';
+  draw();
+}
+load().then(() => poll()).then(() => showPlayers(true));
+setInterval(poll, 700);
+</script>
+</body>
+</html>

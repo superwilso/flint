@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### A window on Linux and macOS
+
+- **Flint opens a page in your browser** when it is double-clicked or run with no command (or as
+  `flint gui`) on Linux and macOS. It has the window's pages (Sync, On the player, Check, Likes &
+  plays, Settings) and runs Flint's own commands, showing what they print. It is served to this
+  computer alone, at an address with a random key in it. Folders and switches are remembered in
+  `page.json` beside Flint's other data. A test keeps every command and option on the page.
+- **Copying waits for "Show what would happen"**: each go button runs only what was just shown,
+  unchanged, and only if that ended without an error.
+- **A macOS download**, `flint-macos`, for Apple silicon and Intel Macs.
+
+### Fixed
+
+- **`flint sync` on Linux and macOS without `--gb`** stopped with "could not read the free space":
+  Flint only knew how to ask Windows. It now reads `df`.
+- **`--gb auto`** gives one drive its free space while another has a limit (`--to E:\MUSIC --to
+  F:\MUSIC --gb auto --gb 100`); until now the first `--gb` always went to the first drive.
+
 ## 0.2.3 — 2026-10-24
 
 ### The window does everything the command line does

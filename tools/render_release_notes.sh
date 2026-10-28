@@ -31,7 +31,7 @@ if [ "${1:-}" = "--preview" ]; then
     [ -n "${2:-}" ] && TAG="$2"
     SUMS="$(mktemp)"
     SUMS_TMP="$SUMS"   # removed by the EXIT trap below
-    for f in flint-windows-x64.exe flint-linux-x64; do
+    for f in flint-windows-x64.exe flint-linux-x64 flint-macos; do
         printf '%s  %s  (placeholder — nothing built yet)\n' \
             "0000000000000000000000000000000000000000000000000000000000000000" "$f" >> "$SUMS"
     done

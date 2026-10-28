@@ -32,6 +32,9 @@
 // and so does a script or a pipe).
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(not(windows))]
+mod web;
+
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -48,7 +51,7 @@ usage:
   flint check <library folder | file.flac> [--jobs N] [--cache dir] [--all] [--verbose]
   flint analyse <track> [--out result.smfmf] [--param id=value]...
   flint tag-copy <src.flac|src.mp3> <dst> [--smfmf result.smfmf] [--param id=value]...
-  flint sync <library folder> --to <volume> [--to <volume>] [--gb N]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras] [--also-remove <folder|playlist|*>]...
+  flint sync <library folder> --to <volume> [--to <volume>] [--gb N|auto]... [--playlists <folder>] [--apply] [--no-sensme] [--no-extras] [--also-remove <folder|playlist|*>]...
   flint shared <library folder> [--yes N|all]... [--no N|all]... [--keep-other N|all]... [--cache dir]
   flint lint <library folder>
   flint lyrics <library folder> [--apply] [--cache dir]
@@ -96,10 +99,9 @@ fn main() -> ExitCode {
         Some("restore") => backup_cmd(&args[1..], true),
         Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
         Some("gui-preview") => gui_preview(&args[1..]),
-        // Double-clicked on Windows, where there is no terminal to read the usage in: a window is
-        // the only thing that can be shown, so show it. Anywhere else, with no arguments, the
-        // usage is exactly what is wanted.
-        None if cfg!(windows) => gui(None),
+        // Double-clicked, where there is no terminal to read the usage in: a window is the only
+        // thing that can be shown, so show it (on Linux and macOS, the page). `flint help` is the usage.
+        None => gui(None),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -126,7 +128,8 @@ struct Opts {
     all: bool,
     verbose: bool,
     to: Vec<PathBuf>,
-    gb: Vec<f64>,
+    /// One per `--to`, in order; `auto` (None) = whatever is free, as with no `--gb` at all.
+    gb: Vec<Option<f64>>,
     playlists: Option<PathBuf>,
     apply: bool,
     no_sensme: bool,
@@ -193,7 +196,10 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--cache" => o.cache = Some(value("--cache")?.into()),
             "--all" => o.all = true,
             "--to" => o.to.push(value("--to")?.into()),
-            "--gb" => o.gb.push(value("--gb")?.parse().map_err(|_| "--gb needs a number".to_string())?),
+            "--gb" => o.gb.push(match value("--gb")?.as_str() {
+                "auto" => None,
+                n => Some(n.parse().map_err(|_| "--gb needs a number of GB, or auto".to_string())?),
+            }),
             "--playlists" => o.playlists = Some(value("--playlists")?.into()),
             "--from" => o.from = Some(value("--from")?.into()),
             "--library" => o.library = Some(value("--library")?.into()),
@@ -722,7 +728,6 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     let mut analysis = cache::Cache::open(&cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
 
     println!("reading {}", library.display());
-    let budget_gb: Vec<Option<f64>> = o.gb.iter().copied().map(Some).collect();
     // A yes holds only while the two files still hold the same audio (`flint shared`).
     let shared: Vec<_> = {
         let confirmed = flint_core::shared::Answers::load(&cache_dir).confirmed(library);
@@ -736,7 +741,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
     let req = sync::Request {
         library,
         volumes: &o.to,
-        budget_gb: &budget_gb,
+        budget_gb: &o.gb,
         playlists: o.playlists.as_deref(),
         sensme: !o.no_sensme,
         extras: !o.no_extras,
@@ -868,11 +873,10 @@ fn gui(dark: Option<bool>) -> Result<(), String> {
     flint_gui::win32::run_with(dark)
 }
 
+/// Linux and macOS: the window is a page in the browser, which follows the system's dark mode.
 #[cfg(not(windows))]
 fn gui(_dark: Option<bool>) -> Result<(), String> {
-    Err("the window is Windows-only. Every command works here; \
-         `flint gui-preview out.svg` draws a picture of the window."
-        .into())
+    web::serve()
 }
 
 /// The states worth drawing. Named rather than free-form so the same five pictures come out of

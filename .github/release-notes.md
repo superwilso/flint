@@ -20,7 +20,8 @@ Put a music library on a Sony NW-A50-series Walkman — with SensMe, without the
 | File | For |
 |---|---|
 | **`flint-windows-x64.exe`** | Windows. The only file you need: double-click it for the window, or give it a command (`scan`, `check`, `sync`, `scrobble`…) in a terminal. The SensMe helper is inside it. |
-| `flint-linux-x64` | Linux. The scan, the plan, the copy, the tag writing and `flint check` all work. The window and the analysis engine are Windows-only. |
+| `flint-linux-x64` | Linux. Run with no command, it opens Flint's pages in your browser; everything but the SensMe analysis engine (Windows-only) works. |
+| `flint-macos` | macOS, Apple silicon and Intel. The same as Linux. Not signed: the first time, right-click it and choose Open. |
 
 Nothing here contains, downloads or installs any Sony code. Analysis runs the `MMLib11.dll` that
 is already on the machine, from a Music Center for PC install you chose to have. If you do not
@@ -32,6 +33,9 @@ carries a SensMe tag is read as it stands.
 Run `flint-windows-x64.exe`. Choose the music folder and the player, press **Show what would
 happen**, then **Copy to the player**. The window follows Windows' own light/dark setting and
 changes with it while it is open.
+
+On Linux or a Mac, make the file runnable (`chmod +x`) and run it with no command: the same pages
+open in your browser. Give the player as the folder it is mounted at.
 
 From a terminal, the same file takes commands:
 

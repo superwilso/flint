@@ -5,7 +5,7 @@ Copies your library to the player, adds Sony's **SensMe** mood and tempo data to
 syncs scrobbles and liked songs with Last.fm. It never modifies the files on your PC.
 
 **Status:** usable, still young. Latest release: [v0.2.3](https://github.com/superwilso/flint/releases/latest)
-(Windows and Linux, SHA-256 sums and build attestations on the release page). `main` may be ahead;
+(Windows, Linux and macOS, SHA-256 sums and build attestations on the release page). `main` may be ahead;
 see *Unreleased* in [`CHANGELOG.md`](CHANGELOG.md). Replaces the Python `Sony-sync` tool.
 
 ## Getting started
@@ -17,8 +17,15 @@ see *Unreleased* in [`CHANGELOG.md`](CHANGELOG.md). Replaces the Python `Sony-sy
 4. Press **Show what would happen**. Nothing is written yet.
 5. Press **Copy to the player**.
 
+**Linux and macOS:** download `flint-linux-x64` or `flint-macos`, make it runnable (`chmod +x`), and
+run it with no command. It opens the same pages in your browser, served to this computer only; keep
+its terminal open while you use them. Give the player as the folder it is mounted at (*Find it*
+looks under `/media`, `/run/media`, `/mnt` and `/Volumes`); Flint copies into its `MUSIC` folder.
+On a Mac, the first run needs a right-click ▸ Open, because the download is not signed. SensMe
+analysis needs Windows; SensMe tags already in your files (Music Center's) are still copied.
+
 Everything the window does is also a command, and every command has its place in the window (a
-test keeps the two in step): run the same file from a terminal with a command after it (Linux: `flint-linux-x64`). At a `cmd` prompt, `start /wait flint-windows-x64.exe ...`
+test keeps the two in step): run the same file from a terminal with a command after it (Linux: `flint-linux-x64`, macOS: `flint-macos`). At a `cmd` prompt, `start /wait flint-windows-x64.exe ...`
 makes the prompt wait for it.
 
 ## SensMe

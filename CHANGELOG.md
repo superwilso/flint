@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.4 — 2026-10-28
+
 ### A window on Linux and macOS
 
 - **Flint opens a page in your browser** when it is double-clicked or run with no command (or as

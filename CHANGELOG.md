@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Sync
+
+- **32-bit FLACs are copied as 24-bit.** The player's decoder stops on a 32-bit frame (the track
+  opens, then playback hangs), and `flint check` already listed such files. Now, when FFmpeg is
+  installed, Sync re-encodes them at 24 bits on the way, with their tags and cover; the file in your
+  library is not touched, and the next sync does not redo it. Without FFmpeg the file is copied as
+  it is, as before, and Check still lists it. *Tested with FFmpeg 8.0.1 (a real 32-bit file becomes a
+  24-bit copy with its tags); not yet played on a player.*
+
 ## 0.2.4 — 2026-10-28
 
 ### A window on Linux and macOS

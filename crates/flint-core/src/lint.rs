@@ -43,7 +43,7 @@ impl Finding {
             }
             Finding::NoTags { file } => format!("{file}: no artist or title"),
             Finding::TooWide { file, bits } => {
-                format!("{file}: {bits}-bit, which the player cannot play; convert it to 24-bit")
+                format!("{file}: {bits}-bit, which the player cannot play; Flint copies it as 24-bit when FFmpeg is installed")
             }
         }
     }
@@ -55,7 +55,7 @@ fn is_music(rel: &str) -> bool {
 }
 
 /// A FLAC's bits per sample, from its STREAMINFO.
-fn flac_bits(path: &Path) -> Option<u8> {
+pub(crate) fn flac_bits(path: &Path) -> Option<u8> {
     let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
     let layout = crate::flac::read_layout(&mut f).ok()?;
     crate::lossless::stream_info(&layout.blocks.first()?.data).map(|i| i.bits)

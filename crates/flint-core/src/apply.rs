@@ -70,8 +70,55 @@ fn copy_plain(src: &Path, dst: &Path) -> io::Result<u64> {
     Ok(bytes)
 }
 
-/// Copy one file to its volume, tagging it on the way when there is a tag for it.
+/// The widest FLAC the player decodes. Sony's PlayerService carries libFLAC 1.3.2, which cannot
+/// parse a 32-bit frame: the track opens, then playback hangs (Cinder's analysis/RE_32bit_flac.md).
+const PLAYER_MAX_BITS: u8 = 24;
+
+/// A FLAC too wide for the player, re-encoded at 24 bits into a temporary file, tags and cover kept.
+/// `None` when it needs no conversion, or when FFmpeg is missing or fails: then the original is
+/// copied as it is and `flint check` has already said the player cannot play it.
+///
+/// ponytail: the low 8 bits are dropped, not dithered. At 24 bits that is noise 144 dB down.
+fn narrowed(src: &Path, ffmpeg: Option<&Path>) -> Option<PathBuf> {
+    if crate::lint::flac_bits(src)? <= PLAYER_MAX_BITS {
+        return None;
+    }
+    let ffmpeg = ffmpeg.map(Path::to_path_buf).or_else(|| crate::engine::locate_ffmpeg().ok())?;
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out = std::env::temp_dir().join(format!("flint-24bit-{}-{n}.flac", std::process::id()));
+    let ok = crate::engine::quiet(&mut std::process::Command::new(ffmpeg))
+        .args(["-nostdin", "-v", "error", "-y", "-i"])
+        .arg(src)
+        .args(["-map", "0", "-map_metadata", "0", "-c:v", "copy"])
+        .args(["-c:a", "flac", "-sample_fmt", "s32", "-bits_per_raw_sample", "24", "-f", "flac"])
+        .arg(&out)
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok && crate::lint::flac_bits(&out) == Some(PLAYER_MAX_BITS) {
+        Some(out)
+    } else {
+        let _ = fs::remove_file(&out);
+        None
+    }
+}
+
+/// Copy one file to its volume, tagging it on the way when there is a tag for it, and narrowing a
+/// FLAC the player cannot decode to 24 bits.
 fn copy_one(src: &Path, dst: &Path, payload: Option<&[u8]>) -> io::Result<(u64, bool)> {
+    let narrow = if has_flac_ext(dst) { narrowed(src, None) } else { None };
+    let r = copy_from(narrow.as_deref().unwrap_or(src), dst, payload);
+    if let Some(tmp) = narrow {
+        let _ = fs::remove_file(tmp);
+    }
+    r
+}
+
+fn has_flac_ext(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("flac"))
+}
+
+fn copy_from(src: &Path, dst: &Path, payload: Option<&[u8]>) -> io::Result<(u64, bool)> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -312,6 +359,58 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A FLAC the player cannot decode is narrowed to 24 bits; one it can is copied as it is, and
+    /// so is a wide one when FFmpeg fails (here: a path that is not FFmpeg). The real conversion
+    /// runs when FFmpeg is found (FLINT_FFMPEG or PATH), and is skipped, saying so, when it is not.
+    #[test]
+    fn a_32_bit_flac_is_narrowed_to_24_and_anything_else_is_left_alone() {
+        let d = tmpdir("narrow");
+        // STREAMINFO bytes 10-13: 44.1 kHz, two channels, then bits-1 (15 = 16-bit, 31 = 32-bit).
+        let with_bits = |nibbles: [u8; 4]| {
+            let mut info = vec![0u8; 34];
+            info[10..14].copy_from_slice(&nibbles);
+            let mut out = flac::encode_metadata(&[], &[flac::Block { kind: 0, data: info }]).unwrap();
+            out.extend_from_slice(b"audio");
+            out
+        };
+        let narrow = d.join("16.flac");
+        fs::write(&narrow, with_bits([0x0a, 0xc4, 0x42, 0xf0])).unwrap();
+        let wide = d.join("32.flac");
+        fs::write(&wide, with_bits([0x0a, 0xc4, 0x43, 0xf0])).unwrap();
+        assert_eq!(crate::lint::flac_bits(&narrow), Some(16));
+        assert_eq!(crate::lint::flac_bits(&wide), Some(32));
+        assert_eq!(narrowed(&narrow, Some(Path::new("/no/ffmpeg"))), None, "16-bit needs nothing");
+        assert_eq!(narrowed(&wide, Some(&d.join("not-ffmpeg"))), None, "no FFmpeg: copied as it is");
+
+        match crate::engine::locate_ffmpeg() {
+            Err(_) => eprintln!("FFmpeg not found: the real 32 → 24-bit conversion was not run"),
+            Ok(ff) => {
+                let real = d.join("real32.flac");
+                let made = std::process::Command::new(&ff)
+                    .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1", "-ac", "2"])
+                    .args(["-metadata", "TITLE=Wide", "-c:a", "flac", "-sample_fmt", "s32"])
+                    .args(["-bits_per_raw_sample", "32", "-strict", "experimental"])
+                    .arg(&real)
+                    .status()
+                    .unwrap();
+                assert!(made.success());
+                assert_eq!(crate::lint::flac_bits(&real), Some(32));
+                let dst = d.join("on-player/real32.flac");
+                let (len, tagged) = copy_one(&real, &dst, None).unwrap();
+                assert!(!tagged);
+                assert_eq!(crate::lint::flac_bits(&dst), Some(24), "the copy is 24-bit");
+                assert_eq!(fs::metadata(&dst).unwrap().len(), len);
+                let mut f = std::io::BufReader::new(fs::File::open(&dst).unwrap());
+                let layout = flac::read_layout(&mut f).unwrap();
+                let comments: Vec<u8> =
+                    layout.blocks.iter().filter(|b| b.kind == 4).flat_map(|b| b.data.clone()).collect();
+                assert!(String::from_utf8_lossy(&comments).contains("TITLE=Wide"), "tags kept");
+                assert_eq!(crate::lint::flac_bits(&real), Some(32), "the library's own file is untouched");
+            }
+        }
+        fs::remove_dir_all(&d).unwrap();
     }
 
     /// A minimal FLAC: signature, a last-block STREAMINFO, then "audio".

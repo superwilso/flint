@@ -227,6 +227,7 @@ input[type=number] { width: 8em; }
       <section class="panel">
         <h2>Send plays to Last.fm</h2>
         <p>Reads the player's scrobble log; what Last.fm accepts is then removed from it. Sign in under Settings first.</p>
+        <label class="check"><input type="checkbox" id="player-sends" data-keep> Let a Cinder player send its plays over Wi-Fi (puts the Last.fm session on the player)</label>
         <div class="row" data-cmd="scrobble">
           <button class="btn" data-do="look">Show what would happen</button>
           <button class="btn go" data-do="apply">Send plays</button>
@@ -339,7 +340,11 @@ const BUILD = {
   // cmd lyrics
   lyrics: () => ['lyrics', lib()],
   // cmd scrobble
-  scrobble: () => ['scrobble', ...drives()],
+  scrobble: () => {
+    const a = ['scrobble', ...drives()];
+    if ($('player-sends').checked) a.push('--player-sends');
+    return a;
+  },
   // cmd likes
   likes: () => {
     const a = ['likes', ...drives(), '--way', $('way').value];

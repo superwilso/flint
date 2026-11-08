@@ -460,6 +460,7 @@ impl State {
             .map(|i| self.model.budget[i].trim().replace(',', ".").parse::<f64>().ok().filter(|gb| *gb > 0.0))
             .collect();
         s.likes_playlist = self.model.likes_playlist;
+        s.player_sends = self.model.player_sends;
         s.music_center = self.model.music_center.clone();
         s.restore_name = self.model.restore_pick.and_then(|i| self.model.player.backups.get(i).cloned());
         s.likes = flint_core::likes::Options {

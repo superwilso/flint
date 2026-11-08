@@ -45,6 +45,7 @@ pub fn render(m: &Model) -> String {
     out.push_str(&format!("extras={}\n", u8::from(m.extras)));
     out.push_str(&format!("likes_add_only={}\n", u8::from(m.likes_add_only)));
     out.push_str(&format!("likes_playlist={}\n", u8::from(m.likes_playlist)));
+    out.push_str(&format!("player_sends={}\n", u8::from(m.player_sends)));
     out.push_str(&format!("theme={}\n", m.theme.word()));
     out
 }
@@ -70,6 +71,7 @@ pub fn apply(m: &mut Model, body: &str) {
             "budget0" => m.budget[0] = v.to_string(),
             "budget1" => m.budget[1] = v.to_string(),
             "likes_playlist" => m.likes_playlist = v != "0",
+            "player_sends" => m.player_sends = v != "0",
             "sensme" => m.sensme = v != "0",
             "extras" => m.extras = v != "0",
             "likes_add_only" => m.likes_add_only = v != "0",

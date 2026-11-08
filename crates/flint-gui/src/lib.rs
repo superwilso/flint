@@ -97,6 +97,8 @@ pub enum Id {
     LikesWay(flint_core::likes::Direction),
     /// Likes & plays ▸ only add likes, never remove one.
     ToggleAddOnly,
+    /// The Last.fm session goes to the player on Send plays, so a Cinder player sends its own.
+    TogglePlayerSends,
     /// Likes & plays ▸ untick removal `n` of the comparison, to leave that like where it is.
     ToggleLikeRemoval(usize),
     /// Work out what would be copied, and show it. Writes nothing.
@@ -954,6 +956,8 @@ pub struct Model {
     pub likes_way: flint_core::likes::Direction,
     /// Likes & plays ▸ only add, never remove. Kept in `gui.conf`.
     pub likes_add_only: bool,
+    /// `flint scrobble --player-sends`, remembered.
+    pub player_sends: bool,
     /// The removals of `likes_plan` unticked, as `(side, key)`: those likes stay where they are.
     pub likes_leave: std::collections::BTreeSet<(flint_core::likes::Side, String)>,
     /// Where the analysis cache lives, for Settings.
@@ -2048,9 +2052,11 @@ pub fn live(m: &Model, id: Id) -> bool {
         | Id::ToggleForeign(_)
         | Id::TogglePair(_)
         | Id::SwapPair(_) => !m.sync_running(),
-        Id::LikesWay(_) | Id::ToggleAddOnly | Id::ToggleLikeRemoval(_) | Id::ToggleLikesPlaylist => {
-            !m.held(Hold::Lastfm)
-        }
+        Id::LikesWay(_)
+        | Id::ToggleAddOnly
+        | Id::TogglePlayerSends
+        | Id::ToggleLikeRemoval(_)
+        | Id::ToggleLikesPlaylist => !m.held(Hold::Lastfm),
         Id::PickMusicCenter => !m.held(Hold::Cache),
         Id::PickBackup(_) => !m.held(Hold::Player),
         Id::Restore => ready(m, Job::Restore) && m.can_start(Job::Restore),
@@ -2231,6 +2237,7 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
         }
         Id::ClosePalette => m.draft.open = false,
         Id::ToggleLikesPlaylist => m.likes_playlist = !m.likes_playlist,
+        Id::TogglePlayerSends => m.player_sends = !m.player_sends,
         Id::PickBackup(i) => {
             m.restore_pick = Some(i);
             m.restore_armed = false;

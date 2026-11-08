@@ -11,6 +11,16 @@
   it is, as before, and Check still lists it. *Tested with FFmpeg 8.0.1 (a real 32-bit file becomes a
   24-bit copy with its tags); not yet played on a player.*
 
+### Last.fm
+
+- **A Cinder player can send its own plays.** `flint scrobble E:\ --player-sends` (and *Let a
+  Cinder player send its plays over Wi-Fi* in the window) puts the Last.fm session on the player as
+  `cinder_lastfm.txt`, so a Cinder player with Wi-Fi scrobbles without waiting for the PC. Off
+  unless you tick it: anyone who can read the player's drive can then scrobble as you, as with
+  Flint's own file, and deleting the file or revoking the session on last.fm stops it. Plays the
+  player has sent itself (up to the time in `.scrobbler.log.lastfm`) are not sent twice: Send
+  plays leaves them out and takes them out of the log. *Not yet run against a player.*
+
 ## 0.2.4 — 2026-10-28
 
 ### A window on Linux and macOS

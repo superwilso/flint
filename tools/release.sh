@@ -88,11 +88,48 @@ fi
 # ── 2. roll the changelog's Unreleased section into this version ────────────────────────────
 # The release page's "What's new" IS this section (tools/render_release_notes.sh), so a tag whose
 # notes are still filed under Unreleased would publish with nothing there — the renderer refuses.
-# Rolled once: on the second run the `## X.Y.Z` heading exists and this is a no-op.
+# Rolled once per version. On a later rc the `## X.Y.Z` heading already exists (rc1 made it), and
+# whatever has gone under Unreleased since is MERGED into it, subsection by subsection, newest
+# first. Before 2026-11-08 that run was a no-op, so v0.2.4-rc2's notes had to be moved by hand.
 CL=CHANGELOG.md
 TODAY="$(date +%F)"
-if grep -q "^## $VER\\b" "$CL"; then
+# fold_into VER FILE: move Unreleased's entries into the existing `## VER` section, on stdout.
+# Same logic as Cinder's tools/release.sh, for Flint's headings (no brackets).
+fold_into() {
+    awk -v ver="$1" '
+        function trim(s) { sub(/^\n+/, "", s); sub(/\n+$/, "\n", s); return s }
+        function rest(   i, h) {
+            for (i = 1; i <= n; i++) { h = order[i]; if (!(h in used)) { print h; print ""; printf "%s", trim(body[h]); print ""; used[h] = 1 } }
+        }
+        NR == FNR {
+            if ($0 ~ /^## Unreleased/) { inU = 1; next }
+            if (inU && $0 ~ /^## /) inU = 0
+            if (inU && $0 ~ /^### /) { h = $0; order[++n] = h; next }
+            if (inU) body[h] = body[h] $0 "\n"
+            next
+        }
+        /^## Unreleased/ { print; print ""; skipU = 1; next }
+        skipU && /^## / { skipU = 0 }
+        skipU { next }
+        $0 == "## " ver || index($0, "## " ver " ") == 1 {
+            print; inV = 1
+            if (trim(body[""]) != "") { print ""; printf "%s", trim(body[""]) }
+            used[""] = 1; next
+        }
+        inV && /^## / { rest(); inV = 0 }
+        inV && /^### / && ($0 in body) { print; pend = $0; used[$0] = 1; next }
+        pend != "" && /^$/ { print; printf "%s", trim(body[pend]); pend = ""; next }
+        { print }
+        END { if (inV) rest() }
+    ' "$2" "$2"
+}
+UNREL="$(awk '/^## Unreleased/{f=1;next} /^## /{f=0} f' "$CL" | tr -d '[:space:]')"
+if grep -q "^## $VER\\b" "$CL" && [ -z "$UNREL" ]; then
     ok "changelog already has a $VER section"
+elif grep -q "^## $VER\\b" "$CL"; then
+    [ -n "$DRY" ] || { fold_into "$VER" "$CL" > "$CL.tmp" && mv "$CL.tmp" "$CL"; }
+    act "changelog: Unreleased merged into the existing $VER section${DRY:+  [would]}"
+    CHANGED+=("changelog")
 elif ! grep -q '^## Unreleased' "$CL"; then
     die "CHANGELOG.md has neither a '## $VER' nor an '## Unreleased' section — write the entry for $TAG first"
 else

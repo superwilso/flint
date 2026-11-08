@@ -729,7 +729,13 @@ fn likes(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) 
         Kind::Check { on: m.likes_playlist, enabled: live(m, Id::ToggleLikesPlaylist) },
         "Also write a Liked Songs playlist",
     ));
-    y += 66;
+    out.push(w(
+        Id::TogglePlayerSends,
+        Rect::new(PAD + 384, y + 56, 360, 22),
+        Kind::Check { on: m.player_sends, enabled: live(m, Id::TogglePlayerSends) },
+        "Let a Cinder player send its plays over Wi-Fi",
+    ));
+    y += 92;
 
     // One line under the buttons: what is missing, what is in the way, or what Compare found.
     let busy_with =

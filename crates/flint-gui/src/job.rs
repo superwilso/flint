@@ -67,6 +67,8 @@ pub struct Settings {
     pub api_secret: String,
     /// Sync likes also writes `Liked Songs.m3u8` (`flint likes --playlist`).
     pub likes_playlist: bool,
+    /// Hand the player the Last.fm session before sending (`--player-sends`).
+    pub player_sends: bool,
     /// The backup Restore puts back, by its folder name.
     pub restore_name: Option<String>,
 }
@@ -96,6 +98,7 @@ impl Settings {
             api_key: String::new(),
             api_secret: String::new(),
             likes_playlist: false,
+            player_sends: false,
             restore_name: None,
         }
     }
@@ -265,6 +268,9 @@ fn lastfm_sign_out_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<Str
 fn scrobble_job(s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
     use flint_core::{lastfm::Credentials, lastfm_sync};
     emit(Update::Progress(None));
+    if s.player_sends {
+        lastfm_sync::give_player(&s.volumes, &Credentials::load_in(&s.cache), &mut |l| emit(Update::Log(l)))?;
+    }
     let report =
         lastfm_sync::scrobble(&s.volumes, Credentials::load_in(&s.cache), true, &|| stopped(cancel), &mut |l| {
             emit(Update::Log(l))

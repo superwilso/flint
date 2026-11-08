@@ -24,6 +24,9 @@ pub struct ScrobbleReport {
     pub refused: usize,
     /// Rows taken out of the logs because Last.fm has them now.
     pub removed: usize,
+    /// Plays the player sent to Last.fm itself, over Wi-Fi (see [`PLAYER_MARK`]): left out of the
+    /// send, and taken out of the log with the rest.
+    pub by_player: usize,
     /// Why the run stopped early, when it did. What was accepted before that is still removed.
     pub stopped: Option<String>,
 }
@@ -39,6 +42,7 @@ pub fn scrobble(
 ) -> Result<ScrobbleReport, String> {
     let mut report = ScrobbleReport::default();
     let mut found = Vec::new();
+    let mut by_player_total = 0;
     for root in roots {
         let path = root.join(".scrobbler.log");
         if !path.is_file() {
@@ -47,7 +51,13 @@ pub fn scrobble(
         }
         let body = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let log = scrobblelog::parse(&body);
-        let plays = log.plays_to_send();
+        let mark = player_mark(root);
+        let (by_player, plays): (Vec<_>, Vec<_>) =
+            log.plays_to_send().into_iter().partition(|e| mark.is_some_and(|m| e.timestamp <= m));
+        if !by_player.is_empty() {
+            say(format!("    {} play(s) the player already sent to Last.fm: left out", thousands(by_player.len())));
+        }
+        by_player_total += by_player.len();
         say(format!(
             "{}: {} play(s) to send{}{}",
             path.display(),
@@ -76,20 +86,21 @@ pub fn scrobble(
             say(format!("    …and {} more", thousands(plays.len() - 3)));
         }
         report.found += plays.len();
-        found.push((path, log, plays));
+        found.push((path, log, plays, by_player));
     }
 
     if report.found == 0 {
         say("nothing to send.".into());
-        return Ok(report);
     }
-    if !apply {
+    if !apply || report.found + by_player_total == 0 {
         return Ok(report);
     }
 
-    let mut client = lastfm::Client::new(creds).map_err(|e| e.to_string())?;
-    'volumes: for (path, log, plays) in &found {
-        let mut accepted_rows: Vec<scrobblelog::Entry> = Vec::new();
+    let mut client = if report.found > 0 { Some(lastfm::Client::new(creds).map_err(|e| e.to_string())?) } else { None };
+    'volumes: for (path, log, plays, by_player) in &found {
+        report.by_player += by_player.len();
+        // Last.fm has these already, from the player: they leave the log like any accepted play.
+        let mut accepted_rows: Vec<scrobblelog::Entry> = by_player.clone();
         let mut refused_rows: Vec<(scrobblelog::Entry, String)> = Vec::new();
         let (mut accepted, mut ignored) = (0usize, 0usize);
         for batch in plays.chunks(lastfm::BATCH) {
@@ -102,6 +113,7 @@ pub fn scrobble(
             // the row as it was written. The two differ only in the timestamp, so a refusal is
             // matched against the converted copy and the original row stays in the log.
             let wire = to_send(log, batch);
+            let Some(client) = client.as_mut() else { break };
             match client.scrobble(&wire) {
                 Ok(result) => {
                     accepted += result.accepted;
@@ -154,6 +166,33 @@ fn to_send(log: &scrobblelog::Log, batch: &[scrobblelog::Entry]) -> Vec<scrobble
         .iter()
         .map(|e| scrobblelog::Entry { timestamp: crate::localtime::local_to_utc(e.timestamp), ..e.clone() })
         .collect()
+}
+
+/// Cinder's own Last.fm sender (Wi-Fi) keeps the newest log timestamp it has sent here, beside the
+/// log: every play at or before it is on Last.fm already.
+pub const PLAYER_MARK: &str = ".scrobbler.log.lastfm";
+
+/// Where the player reads the session [`give_player`] hands it.
+pub const PLAYER_CREDENTIALS: &str = "cinder_lastfm.txt";
+
+fn player_mark(root: &Path) -> Option<i64> {
+    std::fs::read_to_string(root.join(PLAYER_MARK)).ok()?.trim().parse().ok()
+}
+
+/// Put the Last.fm session on the player's drive, so a Cinder player with Wi-Fi sends its plays
+/// itself (opt-in: `flint scrobble --player-sends`, and the window's checkbox). Anyone who can
+/// read the drive can then scrobble as the account, as with Flint's own file; deleting the file
+/// from the drive, or revoking the session on last.fm, stops it.
+pub fn give_player(roots: &[PathBuf], creds: &lastfm::Credentials, say: &mut dyn FnMut(String)) -> Result<(), String> {
+    if !creds.is_ready() {
+        return Err("sign in to Last.fm first: the player needs the session".into());
+    }
+    for root in roots {
+        let path = root.join(PLAYER_CREDENTIALS);
+        write_atomic(&path, &creds.render()).map_err(|e| format!("{}: {e}", path.display()))?;
+        say(format!("{}: the player can send plays to Last.fm itself now", path.display()));
+    }
+    Ok(())
 }
 
 /// Last.fm's ignored-message code for a timestamp more than 14 days old: it will never be taken.
@@ -525,6 +564,51 @@ mod tests {
         let utc = scrobblelog::parse(&LOG.replace("#TZ/UNKNOWN", "#TZ/UTC"));
         assert!(!utc.local_time());
         assert_eq!(to_send(&utc, &utc.plays_to_send())[0].timestamp, 1_700_000_000);
+    }
+
+    /// A play the player sent over Wi-Fi (at or before its mark) is not sent again, and leaves
+    /// the log — with no account needed, since nothing goes to Last.fm.
+    #[test]
+    fn plays_the_player_sent_are_not_sent_again() {
+        let vol = tmp("bp");
+        let body = format!("{LOG}A\tAl\tThird\t3\t200\tL\t1700000900\t\n");
+        std::fs::write(vol.join(".scrobbler.log"), &body).unwrap();
+        std::fs::write(vol.join(PLAYER_MARK), "1700000900\n").unwrap();
+        let mut lines = Vec::new();
+        let report = scrobble(std::slice::from_ref(&vol), lastfm::Credentials::default(), true, &|| false, &mut |l| {
+            lines.push(l)
+        })
+        .unwrap();
+        assert_eq!((report.found, report.by_player, report.removed), (0, 2, 2), "{lines:#?}");
+        let left = std::fs::read_to_string(vol.join(".scrobbler.log")).unwrap();
+        assert!(!left.contains("\tFirst\t") && !left.contains("\tThird\t"), "{left}");
+        assert!(left.contains("\tSecond\t"), "the skip stays");
+        // A mark before the newer play: that one is still Flint's to send (and needs the key).
+        std::fs::write(vol.join(".scrobbler.log"), &body).unwrap();
+        std::fs::write(vol.join(PLAYER_MARK), "1700000000\n").unwrap();
+        let report =
+            scrobble(std::slice::from_ref(&vol), lastfm::Credentials::default(), false, &|| false, &mut |_| {})
+                .unwrap();
+        assert_eq!((report.found, report.by_player), (1, 0), "a dry run counts, removes nothing");
+        let _ = std::fs::remove_dir_all(&vol);
+    }
+
+    /// The session goes to the player only when there is one, in the file the player reads.
+    #[test]
+    fn the_player_gets_the_session() {
+        let vol = tmp("give");
+        let none = give_player(std::slice::from_ref(&vol), &lastfm::Credentials::default(), &mut |_| {});
+        assert!(none.is_err() && !vol.join(PLAYER_CREDENTIALS).exists());
+        let creds = lastfm::Credentials {
+            api_key: "k".into(),
+            api_secret: "s".into(),
+            session_key: "sk".into(),
+            username: "you".into(),
+        };
+        give_player(std::slice::from_ref(&vol), &creds, &mut |_| {}).unwrap();
+        let back = lastfm::Credentials::read(&vol.join(PLAYER_CREDENTIALS)).unwrap();
+        assert_eq!(back, creds);
+        let _ = std::fs::remove_dir_all(&vol);
     }
 
     /// Sending with no key says so before touching the network or the log.

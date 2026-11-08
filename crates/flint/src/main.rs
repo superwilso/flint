@@ -17,7 +17,7 @@
 //! flint inspect <file.flac | file.mp3 | result.smfmf>             show blocks / frames / chunks
 //! flint import [--from <Music Center data dir>]                   take analysis Music Center has already done
 //! flint lastfm key|login|status                                   the Last.fm account, once
-//! flint scrobble <volume> [--apply]                               send the plays in .scrobbler.log
+//! flint scrobble <volume> [--apply] [--player-sends]              send the plays in .scrobbler.log
 //! flint likes <volume> [--apply] [--way player|lastfm] [--add-only] [--leave N|all] [--playlist]
 //!                                                                 liked songs: player <-> Last.fm
 //! flint stats <volume> [--to <sd card>] [--apply]                 seed the player's play counts from its scrobble log
@@ -58,7 +58,7 @@ usage:
   flint inspect <file.flac | file.mp3 | result.smfmf>
   flint import [--from <Music Center data folder>] [--cache dir]
   flint lastfm key <api-key> <api-secret> | login <username> | status
-  flint scrobble <volume> [<volume>...] [--apply]
+  flint scrobble <volume> [<volume>...] [--apply] [--player-sends]
   flint likes <volume> [<volume>...] [--apply] [--way both|player|lastfm] [--add-only] [--leave N|all]... [--playlist]
   flint stats <volume> [--to <sd card>] [--apply]
   flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]
@@ -153,6 +153,9 @@ struct Opts {
     way: Option<String>,
     /// `flint likes --add-only`: never remove a like anywhere.
     add_only: bool,
+    /// `flint scrobble --player-sends`: put the Last.fm session on the player, so a Cinder player
+    /// with Wi-Fi sends its own plays.
+    player_sends: bool,
     /// `flint likes --leave`: removal numbers to leave alone, or `all`.
     leave: Vec<String>,
 }
@@ -184,6 +187,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         keep_other: Vec::new(),
         way: None,
         add_only: false,
+        player_sends: false,
         leave: Vec::new(),
     };
     let mut it = args.iter();
@@ -209,6 +213,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--keep-other" => o.keep_other.push(value("--keep-other")?),
             "--way" => o.way = Some(value("--way")?),
             "--add-only" => o.add_only = true,
+            "--player-sends" => o.player_sends = true,
             "--leave" => o.leave.push(value("--leave")?),
             "--state" => o.state = Some(value("--state")?),
             "--playlist" => o.playlist = true,
@@ -1328,6 +1333,9 @@ fn scrobble_cmd(args: &[String]) -> Result<(), String> {
     if roots.is_empty() {
         return Err("give the player's drive: flint scrobble E:\\ [--apply]".into());
     }
+    if o.player_sends {
+        lastfm_sync::give_player(&roots, &lastfm::Credentials::load(), &mut |l| println!("{l}"))?;
+    }
     let report =
         lastfm_sync::scrobble(&roots, lastfm::Credentials::load(), o.apply, &|| false, &mut |l| println!("{l}"))?;
     if !o.apply && report.found > 0 {
@@ -1702,6 +1710,7 @@ mod window_parity {
             ("lastfm", Job(Job::LastfmSignIn)),
             ("scrobble", Job(Job::Scrobble)),
             ("scrobble --apply", Job(Job::Scrobble)),
+            ("scrobble --player-sends", Control(Id::TogglePlayerSends)),
             ("likes", Job(Job::CompareLikes)),
             ("likes --apply", Job(Job::SyncLikes)),
             ("likes --way", Control(Id::LikesWay(flint_core::likes::Direction::Both))),

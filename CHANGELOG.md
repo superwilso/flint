@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.4 — 2026-10-28
+
 ### Sync
 
 - **32-bit FLACs are copied as 24-bit.** The player's decoder stops on a 32-bit frame (the track
@@ -20,8 +22,6 @@
   Flint's own file, and deleting the file or revoking the session on last.fm stops it. Plays the
   player has sent itself (up to the time in `.scrobbler.log.lastfm`) are not sent twice: Send
   plays leaves them out and takes them out of the log. *Not yet run against a player.*
-
-## 0.2.4 — 2026-10-28
 
 ### A window on Linux and macOS
 

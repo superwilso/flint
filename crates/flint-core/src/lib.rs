@@ -19,6 +19,7 @@ pub mod lyrics;
 pub mod md5;
 pub mod musiccenter;
 pub mod palette;
+pub mod player_net;
 pub mod playlists;
 pub mod scrobblelog;
 pub mod shared;

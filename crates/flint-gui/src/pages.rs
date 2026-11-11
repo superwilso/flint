@@ -233,8 +233,20 @@ fn drive(m: &Model, i: usize) -> String {
 // ── On the player ──────────────────────────────────────────────────────────────────────────────
 
 fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>) {
-    heading(out, PAD, y, "On the player");
-    y += 22;
+    // Two views of the player: what is on it, and what a Cinder player with Wi-Fi reads from it.
+    for (i, (net, label)) in [(false, "Albums and plays"), (true, "Wi-Fi and radio")].into_iter().enumerate() {
+        out.push(w(
+            Id::PlayerView(net),
+            Rect::new(PAD + i as i32 * 150, y, 150, 30),
+            Kind::Segment { on: m.player_net_view == net },
+            label,
+        ));
+    }
+    y += 42;
+    if m.player_net_view {
+        wifi_radio(out, m, y, inner, bottom);
+        return;
+    }
     hint(
         out,
         PAD,
@@ -409,6 +421,76 @@ fn player(m: &Model, inner: i32, mut y: i32, bottom: i32, out: &mut Vec<Widget>)
         &rows,
         m.scrolled(Area::Table),
     );
+}
+
+/// Wi-Fi and radio: the files a Cinder player with Wi-Fi reads from its internal memory
+/// (`flint_core::player_net`). The stations take what is left down to `bottom`; the rest are
+/// counted, and `flint player` lists them all.
+fn wifi_radio(out: &mut Vec<Widget>, m: &Model, mut y: i32, inner: i32, bottom: i32) {
+    hint(
+        out,
+        PAD,
+        y,
+        inner,
+        "What a Cinder player with Wi-Fi reads from its internal memory: networks to join, internet radio, ListenBrainz.",
+    );
+    y += 28;
+    if m.volumes[0].is_none() {
+        hint(
+            out,
+            PAD,
+            y,
+            inner,
+            "Choose the player's internal memory on the Sync page: Cinder reads these from there.",
+        );
+        return;
+    }
+    let net = &m.player.net;
+    let after = |out: &mut Vec<Widget>, x: i32, y: i32, text: &str| hint(out, x + 4, y + 6, PAD + inner - x - 4, text);
+
+    field(out, m, Field::WifiName, Rect::new(PAD, y, 190, 30));
+    field(out, m, Field::WifiPassword, Rect::new(PAD + 200, y, 190, 30));
+    let x = tools(out, m, PAD + 400, y, &[(Id::AddWifi, "Add network".into())]);
+    let waiting = if net.wifi_waiting.is_empty() {
+        "The player takes it in when Wi-Fi next turns on.".to_string()
+    } else {
+        format!("Waiting for the player: {}", net.wifi_waiting.join(", "))
+    };
+    after(out, x, y, &waiting);
+    y += 40;
+
+    field(out, m, Field::ListenBrainz, Rect::new(PAD, y, 390, 30));
+    let label = if m.lb_token.trim().is_empty() && net.listenbrainz { "Take the token off" } else { "Save token" };
+    let x = tools(out, m, PAD + 400, y, &[(Id::SaveListenBrainz, label.into())]);
+    let state = if net.listenbrainz {
+        "On the player. Wi-Fi ▸ Send plays uses it."
+    } else {
+        "No ListenBrainz token on the player."
+    };
+    after(out, x, y, state);
+    y += 40;
+
+    let add = tool_w("Add station");
+    field(out, m, Field::StationName, Rect::new(PAD, y, 190, 30));
+    let url_w = (inner - 200 - 10 - add).max(160);
+    field(out, m, Field::StationUrl, Rect::new(PAD + 200, y, url_w, 30));
+    tools(out, m, PAD + 210 + url_w, y, &[(Id::AddStation, "Add station".into())]);
+    y += 40;
+    if net.stations.is_empty() {
+        hint(out, PAD, y, inner, "No radio stations on the player yet.");
+        return;
+    }
+    // Room for the rows, keeping a line for the count when they do not all fit.
+    let fits = ((bottom - y) / 34).max(0) as usize;
+    let shown = if net.stations.len() <= fits { fits } else { ((bottom - y - 22) / 34).max(0) as usize };
+    for (i, st) in net.stations.iter().enumerate().take(shown) {
+        let x = tools(out, m, PAD, y, &[(Id::RemoveStation(i), "Remove".into())]);
+        after(out, x, y, &format!("{}   {}", st.name, st.url));
+        y += 34;
+    }
+    if let Some(more) = net.stations.len().checked_sub(shown).filter(|n| *n > 0) {
+        hint(out, PAD, y, inner, &format!("{more} more on the player: flint player lists and removes them all."));
+    }
 }
 
 /// An album's rating as stars, the way the player draws it. Nothing for an album with no rated

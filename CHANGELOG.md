@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### On the player
+
+- **Wi-Fi and radio for a Cinder player.** On the player ▸ Wi-Fi and radio (and `flint player`)
+  writes what a Cinder player with Wi-Fi reads from its internal memory: a network for it to join
+  (taken in the next time Wi-Fi turns on), internet radio stations to add or remove, and the
+  ListenBrainz token. It opens with what is already there. The page on Linux and macOS has it on
+  its player tab, and shows the password and token as dots in its log. *A station added by
+  `flint player` was read by Cinder 0.4.1 on a player; adding a network was tested on a folder only.*
+
 ## 0.2.4 — 2026-10-28
 
 ### Sync

@@ -213,6 +213,26 @@ mark off. The window puts them in `From the player` inside your playlists folder
 send that folder back, so the player does not end up with two copies. A file of the same name
 already on the PC that differs is kept beside the new one as `.bak`.
 
+## Wi-Fi and radio for a Cinder player
+
+A Cinder player with Wi-Fi reads three files from its internal memory, and Flint writes them:
+networks to join (`cinder_wifi.txt`, taken in the next time Wi-Fi turns on, then deleted), internet
+radio stations (`cinder_radio.txt`) and the ListenBrainz token (`cinder_listenbrainz.txt`).
+
+**In the window:** On the player ▸ Wi-Fi and radio.
+
+**From a terminal:**
+
+```
+flint player E:\                                      list what is there
+flint player E:\ --wifi "Home|password"               a network for the player to join
+flint player E:\ --radio "Groove Salad|https://ice.somafm.com/groovesalad"
+flint player E:\ --remove-radio 3                     by the number the list shows
+flint player E:\ --listenbrainz <token>               from listenbrainz.org/settings ("" removes it)
+```
+
+The password and the token sit on the player's drive as plain text, as Cinder needs them.
+
 ## Checking for fake FLACs
 
 `flint check` flags FLACs that aren't the lossless audio they claim to be. Needs FFmpeg only.

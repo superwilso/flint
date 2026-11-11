@@ -71,6 +71,7 @@ pub struct Settings {
     pub player_sends: bool,
     /// The backup Restore puts back, by its folder name.
     pub restore_name: Option<String>,
+    pub net_edit: Option<crate::NetEdit>,
 }
 
 impl Settings {
@@ -100,6 +101,7 @@ impl Settings {
             likes_playlist: false,
             player_sends: false,
             restore_name: None,
+            net_edit: None,
         }
     }
 }
@@ -153,6 +155,8 @@ pub enum Update {
     Plays { plays: Vec<crate::PlayRow>, unreadable: usize },
     /// What Compare likes found; `None` once it has been carried out.
     Likes(Option<crate::LikesPlan>),
+    /// On the player ▸ Wi-Fi and radio, after a change.
+    PlayerNet(flint_core::player_net::Facts),
 }
 
 /// Run `job`. Returns the last word for the status line, or the reason it stopped.
@@ -170,6 +174,7 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::SeedStats => seed_stats_job(s, emit),
         Job::Check => check_job(s, cancel, emit),
         Job::ReadPlayer => read_player_job(s, emit),
+        Job::PlayerNet => player_net_job(s, emit),
         Job::PullPlaylists => pull_playlists_job(s, emit),
         Job::CheckPalettes => palettes_job(s, false, emit),
         Job::SendPalettes => palettes_job(s, true, emit),
@@ -184,6 +189,37 @@ pub fn run(job: Job, s: &Settings, cancel: &AtomicBool, emit: &mut dyn FnMut(Upd
         Job::CompareLikes => likes_job(s, false, cancel, emit),
         Job::SyncLikes => likes_job(s, true, cancel, emit),
     }
+}
+
+// ── On the player ▸ Wi-Fi and radio ──────────────────────────────────────────────────────────
+
+fn player_net_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String, String> {
+    use crate::NetEdit;
+    use flint_core::player_net as pn;
+    let root = s.internal.as_deref().ok_or("choose the player's internal memory on the Sync page")?;
+    let said = match s.net_edit.clone().ok_or("nothing to change")? {
+        NetEdit::Read => "Read the player's Wi-Fi and radio".into(),
+        NetEdit::Wifi(name, pass) => {
+            pn::add_wifi(root, &name, &pass)?;
+            format!("{} is waiting: the player takes it in when Wi-Fi next turns on", name.trim())
+        }
+        NetEdit::Station(name, url) => {
+            pn::add_station(root, &name, &url)?;
+            format!("Added {}", if name.trim().is_empty() { url.trim() } else { name.trim() })
+        }
+        NetEdit::Remove(i) => format!("Removed {}", pn::remove_station(root, i)?),
+        NetEdit::ListenBrainz(t) => {
+            pn::set_listenbrainz(root, &t)?;
+            if t.trim().is_empty() {
+                "The ListenBrainz token is off the player"
+            } else {
+                "The player has the ListenBrainz token"
+            }
+            .into()
+        }
+    };
+    emit(Update::PlayerNet(pn::read(root)));
+    Ok(said)
 }
 
 // ── Last.fm ────────────────────────────────────────────────────────────────────────────────────
@@ -1103,6 +1139,9 @@ fn read_player_job(s: &Settings, emit: &mut dyn FnMut(Update)) -> Result<String,
         }
     }
     (facts.plays, facts.unreadable) = plays_on(&s.volumes);
+    if let Some(root) = &s.internal {
+        facts.net = flint_core::player_net::read(root);
+    }
     // A copy of what the player keeps for itself, whenever it is read (flint_core::backup), and
     // its health, from the files Cinder leaves on the drive (flint_core::health).
     if let Some(root) = s.volumes.first() {

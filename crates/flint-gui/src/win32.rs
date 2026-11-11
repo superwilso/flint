@@ -463,6 +463,7 @@ impl State {
         s.player_sends = self.model.player_sends;
         s.music_center = self.model.music_center.clone();
         s.restore_name = self.model.restore_pick.and_then(|i| self.model.player.backups.get(i).cloned());
+        s.net_edit = self.model.net_edit.clone();
         s.likes = flint_core::likes::Options {
             direction: self.model.likes_way,
             add_only: self.model.likes_add_only,

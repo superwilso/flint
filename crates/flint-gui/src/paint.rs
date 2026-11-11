@@ -894,8 +894,12 @@ mod tests {
             ..Default::default()
         };
         edited.restore_pick = Some(0);
+        // On the player ▸ Wi-Fi and radio, with a network typed in.
+        let mut radio = m.clone();
+        radio.player_net_view = true;
+        radio.wifi_name = "Home".into();
         let mut ids = ids;
-        for model in [&signed_in, &no_session, &typing, &editing, &shopping, &edited] {
+        for model in [&signed_in, &no_session, &typing, &editing, &shopping, &edited, &radio] {
             for t in crate::Tab::ALL {
                 let mut on = model.clone();
                 on.tab = t;
@@ -905,7 +909,7 @@ mod tests {
         for job in Job::ALL {
             let id = ids.iter().copied().find(|id| crate::job_of(*id) == Some(job));
             let id = id.unwrap_or_else(|| panic!("{job:?} has no button"));
-            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing, &shopping, &edited]
+            let mut m2 = [&m, &signed_in, &no_session, &typing, &editing, &shopping, &edited, &radio]
                 .into_iter()
                 .find(|model| crate::live(model, id))
                 .unwrap_or_else(|| panic!("{job:?}'s button is never live"))

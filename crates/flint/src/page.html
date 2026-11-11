@@ -168,6 +168,27 @@ input[type=number] { width: 8em; }
         </div>
       </section>
       <section class="panel">
+        <h2>Wi-Fi and radio</h2>
+        <p>What a Cinder player with Wi-Fi reads from its internal memory. The player takes a network in
+          the next time Wi-Fi turns on; stations and the token are used straight away.</p>
+        <div class="grid">
+          <label for="wifi-name">Network</label>
+          <input type="text" id="wifi-name" placeholder="Network name" spellcheck="false">
+          <label for="wifi-pass">Password</label>
+          <input type="password" id="wifi-pass" placeholder="None if the network is open">
+          <label for="radio-add">Add a station</label>
+          <input type="text" id="radio-add" placeholder="Name | https://stream address" spellcheck="false">
+          <label for="radio-remove">Remove stations</label>
+          <input type="text" id="radio-remove" placeholder="Their numbers, as Show lists them" spellcheck="false">
+          <label for="lb-token">ListenBrainz token</label>
+          <input type="password" id="lb-token" placeholder="From listenbrainz.org/settings">
+        </div>
+        <div class="row" data-cmd="player">
+          <button class="btn" data-do="look">Show what is there</button>
+          <button class="btn go" data-do="save">Save to the player</button>
+        </div>
+      </section>
+      <section class="panel">
         <h2>Play counts</h2>
         <p>Tracks the player never counted get their plays from its scrobble log, and counts follow
           albums that moved between the player and the card. A count the player has is never changed.</p>
@@ -331,6 +352,18 @@ const BUILD = {
   // cmd playlists
   playlists: () => ['playlists', player(), '--to', need('pl-to', 'Choose a folder to save the playlists in.'),
     ...($('pl-lib').checked && v('library') ? ['--library', v('library')] : [])],
+  // cmd player
+  player: what => {
+    const a = ['player', player()];
+    if (what !== 'save') return a;
+    if (v('wifi-name')) a.push('--wifi', v('wifi-name') + '|' + $('wifi-pass').value);
+    if (v('radio-add')) a.push('--radio', v('radio-add'));
+    for (const n of list(v('radio-remove'))) a.push('--remove-radio', n);
+    if (v('lb-token')) a.push('--listenbrainz', v('lb-token'));
+    if (a.length === 2) throw new Ask('Type a network, a station, a station to remove or a token first.', 'wifi-name');
+    for (const id of ['wifi-name', 'wifi-pass', 'radio-add', 'radio-remove', 'lb-token']) $(id).value = '';
+    return a;
+  },
   // cmd scan
   scan: () => ['scan', lib()],
   // cmd check

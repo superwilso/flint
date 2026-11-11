@@ -21,6 +21,8 @@
 //! flint likes <volume> [--apply] [--way player|lastfm] [--add-only] [--leave N|all] [--playlist]
 //!                                                                 liked songs: player <-> Last.fm
 //! flint stats <volume> [--to <sd card>] [--apply]                 seed the player's play counts from its scrobble log
+//! flint player <volume> [--wifi N|P] [--radio N|URL] [--remove-radio N] [--listenbrainz T]
+//!                                                                 Wi-Fi networks, radio stations, ListenBrainz
 //! flint backup <volume>                                          copy what the player keeps for itself
 //! flint restore <volume> [<backup name>] [--apply]                list the copies, or put one back
 //! flint gui                                                       open the window (Windows)
@@ -62,10 +64,11 @@ usage:
   flint likes <volume> [<volume>...] [--apply] [--way both|player|lastfm] [--add-only] [--leave N|all]... [--playlist]
   flint stats <volume> [--to <sd card>] [--apply]
   flint playlists <volume> [--to <PC folder>] [--library <library folder>] [--apply]
+  flint player <volume> [--wifi \"Name|password\"]... [--radio \"Name|URL\"]... [--remove-radio N]... [--listenbrainz TOKEN]
   flint backup <volume> [--cache dir]
   flint restore <volume> [<backup name>] [--apply] [--cache dir]
   flint gui [--dark | --light]
-  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|check|filtered|sensme|likes|palettes|palette-new|palette-shop|settings|signed-in] [--dark]";
+  flint gui-preview <out.svg> [--state fresh|ready|planned|working|done|scanning|player|radio|check|filtered|sensme|likes|palettes|palette-new|palette-shop|settings|signed-in] [--dark]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -95,6 +98,7 @@ fn main() -> ExitCode {
         Some("likes") => likes_cmd(&args[1..]),
         Some("stats") => stats_cmd(&args[1..]),
         Some("playlists") => playlists_cmd(&args[1..]),
+        Some("player") => player_cmd(&args[1..]),
         Some("backup") => backup_cmd(&args[1..], false),
         Some("restore") => backup_cmd(&args[1..], true),
         Some("gui") | Some("--gui") => opts(&args[1..]).and_then(|o| gui(o.dark)),
@@ -158,6 +162,12 @@ struct Opts {
     player_sends: bool,
     /// `flint likes --leave`: removal numbers to leave alone, or `all`.
     leave: Vec<String>,
+    /// `flint player`: networks (`Name|password`) and stations (`Name|URL`) to add, station
+    /// numbers to remove, and the ListenBrainz token (empty takes it off).
+    wifi: Vec<String>,
+    radio: Vec<String>,
+    remove_radio: Vec<usize>,
+    listenbrainz: Option<String>,
 }
 
 fn opts(args: &[String]) -> Result<Opts, String> {
@@ -189,6 +199,10 @@ fn opts(args: &[String]) -> Result<Opts, String> {
         add_only: false,
         player_sends: false,
         leave: Vec::new(),
+        wifi: Vec::new(),
+        radio: Vec::new(),
+        remove_radio: Vec::new(),
+        listenbrainz: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -215,6 +229,12 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--add-only" => o.add_only = true,
             "--player-sends" => o.player_sends = true,
             "--leave" => o.leave.push(value("--leave")?),
+            "--wifi" => o.wifi.push(value("--wifi")?),
+            "--radio" => o.radio.push(value("--radio")?),
+            "--remove-radio" => o.remove_radio.push(
+                value("--remove-radio")?.parse().map_err(|_| "--remove-radio needs a station's number".to_string())?,
+            ),
+            "--listenbrainz" => o.listenbrainz = Some(value("--listenbrainz")?),
             "--state" => o.state = Some(value("--state")?),
             "--playlist" => o.playlist = true,
             "--dark" => o.dark = Some(true),
@@ -990,7 +1010,7 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
         }
         // The pages behind the other tabs, with the kind of data a real read produces. Titles and
         // counts are placeholders, like every number in these previews.
-        "player" | "likes" | "palettes" | "palette-new" | "palette-shop" => {
+        "player" | "radio" | "likes" | "palettes" | "palette-new" | "palette-shop" => {
             use flint_gui::{AlbumRow, PaletteFile, PlayRow, PlayerFacts, PlaylistRow, Tab};
             ready(&mut m);
             let album = |folder: &str, volume: usize, files: usize, gb10: u64, format: &str, by_flint: bool| AlbumRow {
@@ -1017,6 +1037,13 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
             };
             m.player = PlayerFacts {
                 read: true,
+                net: flint_core::player_net::Facts {
+                    wifi_waiting: vec!["Home".into()],
+                    stations: flint_core::player_net::parse_stations(
+                        "Groove Salad | https://ice.somafm.com/groovesalad\nRadio Paradise | https://stream.radioparadise.com/mp3-192",
+                    ),
+                    listenbrainz: true,
+                },
                 albums: vec![
                     album("Aphex Twin/Selected Ambient Works 85-92", 1, 13, 6, "FLAC", true),
                     album("Benjamin Francis Leftwich/After the Rain", 0, 10, 9, "FLAC", true),
@@ -1065,10 +1092,11 @@ fn preview_model(state: &str) -> Result<flint_gui::Model, String> {
             };
             m.status = "8 albums on the player, 7 plays in the log, 14 songs liked".into();
             m.tab = match state {
-                "player" => Tab::Player,
+                "player" | "radio" => Tab::Player,
                 "likes" => Tab::Likes,
                 _ => Tab::Palettes,
             };
+            m.player_net_view = state == "radio";
             if state == "likes" {
                 m.lastfm = flint_gui::Lastfm { has_key: true, user: Some("you".into()), editing: false };
                 m.likes_plan = Some(flint_gui::LikesPlan {
@@ -1386,6 +1414,52 @@ fn likes_cmd(args: &[String]) -> Result<(), String> {
 /// Ratings and play counts whose album has moved between internal memory and the card follow it;
 /// tracks the player has never counted get their plays from the scrobble log (counts and ratings
 /// the player already has are left alone); and the saved views are listed.
+/// `flint player`: what a Cinder player with Wi-Fi reads from its internal memory. Removals use
+/// the numbers as listed before this run; then networks, stations and the token are written.
+fn player_cmd(args: &[String]) -> Result<(), String> {
+    use flint_core::player_net as pn;
+    let o = opts(args)?;
+    let root = PathBuf::from(o.pos.first().ok_or(
+        "give the player's internal memory: flint player E:\\ [--wifi \"Name|password\"] [--radio \"Name|URL\"] [--remove-radio N] [--listenbrainz TOKEN]",
+    )?);
+    let mut gone = o.remove_radio.clone();
+    gone.sort_unstable();
+    gone.dedup();
+    for n in gone.into_iter().rev() {
+        let name = pn::remove_station(&root, n.checked_sub(1).ok_or("stations are numbered from 1")?)?;
+        println!("radio: removed {name}");
+    }
+    for w in &o.wifi {
+        let (name, pass) = w.split_once('|').map_or((w.as_str(), ""), |(n, p)| (n, p.trim()));
+        pn::add_wifi(&root, name, pass)?;
+        println!("Wi-Fi: {} is waiting for the player, which takes it in when Wi-Fi next turns on", name.trim());
+    }
+    for r in &o.radio {
+        let (name, url) = r.rsplit_once('|').unwrap_or(("", r));
+        pn::add_station(&root, name, url)?;
+        println!("radio: added {}", url.trim());
+    }
+    if let Some(t) = &o.listenbrainz {
+        pn::set_listenbrainz(&root, t)?;
+        println!("ListenBrainz: {}", if t.trim().is_empty() { "token taken off the player" } else { "token saved" });
+    }
+    let f = pn::read(&root);
+    println!(
+        "\nWi-Fi waiting: {}",
+        if f.wifi_waiting.is_empty() {
+            "none (networks the player has taken in stay on it)".into()
+        } else {
+            f.wifi_waiting.join(", ")
+        }
+    );
+    println!("radio stations: {}", f.stations.len());
+    for (i, st) in f.stations.iter().enumerate() {
+        println!("  {:>3}  {}  {}", i + 1, st.name, st.url);
+    }
+    println!("ListenBrainz: {}", if f.listenbrainz { "token saved" } else { "no token" });
+    Ok(())
+}
+
 fn stats_cmd(args: &[String]) -> Result<(), String> {
     let o = opts(args)?;
     let mut roots: Vec<PathBuf> = o.pos.iter().map(PathBuf::from).collect();
@@ -1724,6 +1798,11 @@ mod window_parity {
             ("playlists --to", Control(Id::PickPlaylists)),
             ("playlists --library", Control(Id::PickLibrary)),
             ("playlists --apply", Job(Job::PullPlaylists)),
+            ("player", Control(Id::PlayerView(true))),
+            ("player --wifi", Control(Id::AddWifi)),
+            ("player --radio", Control(Id::AddStation)),
+            ("player --remove-radio", Control(Id::RemoveStation(0))),
+            ("player --listenbrainz", Control(Id::SaveListenBrainz)),
             ("backup", Job(Job::ReadPlayer)),
             ("backup --cache", CliOnly(CACHE)),
             ("restore", Job(Job::Restore)),

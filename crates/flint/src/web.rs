@@ -150,6 +150,7 @@ fn handle(s: TcpStream, port: u16, token: &str) -> Result<(), String> {
 /// The commands the page may run: the command line's own, less the developer tools and the
 /// window itself.
 const COMMANDS: &[&str] = &[
+    "player",
     "scan",
     "check",
     "sync",
@@ -166,10 +167,26 @@ const COMMANDS: &[&str] = &[
     "restore",
 ];
 
+/// `args` as the log shows them: `flint player`'s secrets as dots.
+fn shown(args: &[String]) -> String {
+    let mut prev = "";
+    let mut out = Vec::new();
+    for a in args {
+        out.push(match prev {
+            "--listenbrainz" => "•••".to_string(),
+            "--wifi" => quote(&a.split_once('|').map_or(a.clone(), |(n, _)| format!("{n}|•••"))),
+            _ => quote(a),
+        });
+        prev = a;
+    }
+    out.join(" ")
+}
+
 /// Run `flint <args>` and copy what it prints into the log. Returns how it ended.
 fn run(args: &[String], input: &str) -> &'static str {
-    // What the page shows as the command: the password is never in `args`, so this is safe to show.
-    log(&format!("\n> flint {}\n", args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")));
+    // What the page shows as the command. The Last.fm password is never in `args`; a Wi-Fi password
+    // and the ListenBrainz token are, so they are shown as dots.
+    log(&format!("\n> flint {}\n", shown(args)));
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => {
@@ -340,6 +357,14 @@ mod tests {
     /// run has a builder on the page (`// cmd <name>`), and every option of it appears in that
     /// builder. Left out on purpose: the developer tools, the window, and `--jobs`/`--cache` (the
     /// page uses every core and the default data folder, as the Windows window does).
+    #[test]
+    fn secrets_stay_out_of_the_log() {
+        let a: Vec<String> =
+            ["player", "/m", "--wifi", "Home|hunter22", "--listenbrainz", "tok"].map(String::from).to_vec();
+        let s = super::shown(&a);
+        assert!(!s.contains("hunter22") && !s.contains("tok") && s.contains("Home|"), "{s}");
+    }
+
     #[test]
     fn page_parity() {
         const LEFT_OUT: &[&str] = &["--jobs", "--cache", "--param", "--out", "--smfmf", "--dark", "--light", "--state"];

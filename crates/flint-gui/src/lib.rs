@@ -193,6 +193,28 @@ pub enum Id {
     /// Palettes ▸ the shared palettes ▸ put this one (an index into `Shop::items`) in the folder,
     /// and on the player when its internal memory is chosen.
     InstallShared(usize),
+    /// On the player ▸ Wi-Fi and radio ▸ leave the network typed in for the player to take in.
+    AddWifi,
+    /// …add the station typed in.
+    AddStation,
+    /// …take station `n` off.
+    RemoveStation(usize),
+    /// …save the ListenBrainz token typed in, or take it off the player when the field is empty.
+    SaveListenBrainz,
+    /// On the player ▸ the albums and plays (`false`), or Wi-Fi and radio (`true`), which reads
+    /// the player's files for it as it opens.
+    PlayerView(bool),
+}
+
+/// A change On the player ▸ Wi-Fi and radio asks `flint_core::player_net` for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum NetEdit {
+    /// No change: read what is there.
+    Read,
+    Wifi(String, String),
+    Station(String, String),
+    Remove(usize),
+    ListenBrainz(String),
 }
 
 /// The lines of text the window takes typing into.
@@ -210,13 +232,19 @@ pub enum Field {
     ShopSearch,
     /// Sync ▸ the most a volume may hold, in GB, instead of its free space. Empty is no limit.
     Budget(u8),
+    /// On the player ▸ Wi-Fi and radio.
+    WifiName,
+    WifiPassword,
+    StationName,
+    StationUrl,
+    ListenBrainz,
 }
 
 impl Field {
     /// Shown as dots. The secret is a password in all but name: anyone holding it and the key can
     /// act as this application.
     pub fn masked(self) -> bool {
-        self == Field::ApiSecret
+        matches!(self, Field::ApiSecret | Field::WifiPassword | Field::ListenBrainz)
     }
 
     /// What an empty field says it is for.
@@ -229,6 +257,11 @@ impl Field {
             Field::Colour(_) => "#rrggbb",
             Field::ShopSearch => "Search by name, light, dark or accent",
             Field::Budget(_) => "No limit",
+            Field::WifiName => "Network name",
+            Field::WifiPassword => "Password (none if open)",
+            Field::StationName => "Station name",
+            Field::StationUrl => "Stream address, https://…",
+            Field::ListenBrainz => "Token from listenbrainz.org/settings",
         }
     }
 
@@ -238,6 +271,9 @@ impl Field {
             Field::Colour(_) => 7,
             Field::Budget(_) => 6,
             Field::PaletteName => flint_core::palette::MAX_NAME,
+            Field::WifiName => 32,
+            Field::WifiPassword => 63,
+            Field::StationUrl => 512,
             _ => Field::MAX,
         }
     }
@@ -254,6 +290,11 @@ impl Field {
             Field::PaletteName => Field::Colour(0),
             Field::Colour(i) if (i as usize) + 1 < colours => Field::Colour(i + 1),
             Field::Colour(_) => Field::PaletteName,
+            Field::WifiName => Field::WifiPassword,
+            Field::WifiPassword => Field::WifiName,
+            Field::StationName => Field::StationUrl,
+            Field::StationUrl => Field::StationName,
+            Field::ListenBrainz => Field::ListenBrainz,
         }
     }
 
@@ -461,6 +502,8 @@ pub struct PaletteFile {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct PlayerFacts {
     pub read: bool,
+    /// The Wi-Fi networks waiting, the radio stations and the ListenBrainz token on the drive.
+    pub net: flint_core::player_net::Facts,
     pub albums: Vec<AlbumRow>,
     /// Newest first.
     pub plays: Vec<PlayRow>,
@@ -528,6 +571,8 @@ pub enum Job {
     Restore,
     /// Give the tracks the player has never counted their plays from `.scrobbler.log`.
     SeedStats,
+    /// On the player ▸ Wi-Fi and radio: one change, `Model::net_edit`.
+    PlayerNet,
 }
 
 /// Something a job needs to itself while it runs. Two jobs that need the same one cannot run at
@@ -558,7 +603,7 @@ pub enum Hold {
 
 impl Job {
     /// Every job, in the order `code` numbers them.
-    pub const ALL: [Job; 22] = [
+    pub const ALL: [Job; 23] = [
         Job::Plan,
         Job::Apply,
         Job::Scan,
@@ -581,6 +626,7 @@ impl Job {
         Job::Lyrics,
         Job::Restore,
         Job::SeedStats,
+        Job::PlayerNet,
     ];
 
     /// A small number for the platform layer's messages.
@@ -597,7 +643,7 @@ impl Job {
             Job::Plan | Job::Apply => &[Hold::Cache, Hold::Player],
             Job::Scan | Job::Import => &[Hold::Cache],
             Job::Check => &[Hold::Checks],
-            Job::ReadPlayer | Job::PullPlaylists | Job::Restore | Job::SeedStats => &[Hold::Player],
+            Job::ReadPlayer | Job::PullPlaylists | Job::Restore | Job::SeedStats | Job::PlayerNet => &[Hold::Player],
             // The shop's list reads the folder and the player to say what each one is there as.
             Job::CheckPalettes
             | Job::SendPalettes
@@ -626,6 +672,7 @@ impl Job {
                 | Job::PullPlaylists
                 | Job::Restore
                 | Job::SeedStats
+                | Job::PlayerNet
                 | Job::CheckPalettes
                 | Job::SendPalettes
                 | Job::SavePalette
@@ -645,7 +692,7 @@ impl Job {
             Job::Scan | Job::Import | Job::Lyrics => &[Tab::SensMe],
             Job::Check => &[Tab::Check],
             Job::ReadPlayer => &[Tab::Player, Tab::Likes],
-            Job::PullPlaylists | Job::Restore => &[Tab::Player],
+            Job::PullPlaylists | Job::Restore | Job::PlayerNet => &[Tab::Player],
             Job::CheckPalettes
             | Job::SendPalettes
             | Job::SavePalette
@@ -667,6 +714,7 @@ impl Job {
             Job::Lyrics => "fetching lyrics",
             Job::Restore => "putting a backup back",
             Job::SeedStats => "filling in play counts",
+            Job::PlayerNet => "changing the player's Wi-Fi and radio",
             Job::Check => "checking the FLACs",
             Job::ReadPlayer => "reading the player",
             Job::PullPlaylists => "taking playlists back",
@@ -942,6 +990,16 @@ pub struct Model {
     pub player: PlayerFacts,
     /// Settings ▸ Last.fm.
     pub lastfm: Lastfm,
+    /// On the player ▸ Wi-Fi and radio: what is typed, and the change asked for. A field is
+    /// cleared once its change is made.
+    pub wifi_name: String,
+    pub wifi_pass: String,
+    pub station_name: String,
+    pub station_url: String,
+    pub lb_token: String,
+    pub net_edit: Option<NetEdit>,
+    /// On the player is showing Wi-Fi and radio rather than the albums.
+    pub player_net_view: bool,
     /// What is typed into the key fields. Cleared once it is saved.
     pub key_input: String,
     pub secret_input: String,
@@ -1094,6 +1152,11 @@ impl Model {
             Field::Colour(i) => self.draft.hex.get(i as usize).map_or("", String::as_str),
             Field::ShopSearch => &self.shop.search,
             Field::Budget(i) => &self.budget[(i as usize).min(1)],
+            Field::WifiName => &self.wifi_name,
+            Field::WifiPassword => &self.wifi_pass,
+            Field::StationName => &self.station_name,
+            Field::StationUrl => &self.station_url,
+            Field::ListenBrainz => &self.lb_token,
         }
     }
 
@@ -1106,6 +1169,11 @@ impl Model {
             Field::Colour(i) => &mut self.draft.hex[(i as usize).min(17)],
             Field::ShopSearch => &mut self.shop.search,
             Field::Budget(i) => &mut self.budget[(i as usize).min(1)],
+            Field::WifiName => &mut self.wifi_name,
+            Field::WifiPassword => &mut self.wifi_pass,
+            Field::StationName => &mut self.station_name,
+            Field::StationUrl => &mut self.station_url,
+            Field::ListenBrainz => &mut self.lb_token,
         }
     }
 
@@ -1993,6 +2061,7 @@ pub fn job_of(id: Id) -> Option<Job> {
         Id::FetchPalettes => Job::FetchPalettes,
         Id::FetchShop => Job::FetchShop,
         Id::InstallShared(_) => Job::InstallShared,
+        Id::AddWifi | Id::AddStation | Id::RemoveStation(_) | Id::SaveListenBrainz => Job::PlayerNet,
         _ => return None,
     })
 }
@@ -2026,6 +2095,7 @@ fn ready(m: &Model, job: Job) -> bool {
         Job::FetchPalettes => m.palette_dir.is_some(),
         Job::FetchShop => true,
         Job::InstallShared => m.palette_dir.is_some(),
+        Job::PlayerNet => m.volumes[0].is_some(),
     }
 }
 
@@ -2042,7 +2112,8 @@ pub fn live(m: &Model, id: Id) -> bool {
         | Id::ClearFilter
         | Id::LastfmGetKey
         | Id::GetMusicCenter
-        | Id::GetFfmpeg => true,
+        | Id::GetFfmpeg
+        | Id::PlayerView(_) => true,
         Id::PickLibrary => !m.library_locked(),
         Id::PickVolume(_) | Id::ClearVolume(_) => !m.volumes_locked(),
         Id::PickPlaylists
@@ -2076,6 +2147,19 @@ pub fn live(m: &Model, id: Id) -> bool {
                 && m.shop.items.get(i).is_some_and(|p| installable(m, p))
                 && ready(m, Job::InstallShared)
                 && m.can_start(Job::InstallShared)
+        }
+        Id::Field(
+            Field::WifiName | Field::WifiPassword | Field::StationName | Field::StationUrl | Field::ListenBrainz,
+        ) => !m.held(Hold::Player),
+        Id::AddWifi | Id::AddStation | Id::RemoveStation(_) | Id::SaveListenBrainz => {
+            ready(m, Job::PlayerNet)
+                && m.can_start(Job::PlayerNet)
+                && match id {
+                    Id::AddWifi => !m.wifi_name.trim().is_empty(),
+                    Id::AddStation => !m.station_url.trim().is_empty(),
+                    Id::RemoveStation(i) => i < m.player.net.stations.len(),
+                    _ => !m.lb_token.trim().is_empty() || m.player.net.listenbrainz,
+                }
         }
         Id::Field(_) | Id::LastfmChangeKey | Id::LastfmKeepKey => !m.held(Hold::Lastfm),
         Id::CopyReport => !m.player.report.is_empty(),
@@ -2251,7 +2335,21 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
             m.restore_armed = false;
             return Some(Job::Restore);
         }
+        Id::AddWifi => m.net_edit = Some(NetEdit::Wifi(m.wifi_name.clone(), m.wifi_pass.clone())),
+        Id::AddStation => m.net_edit = Some(NetEdit::Station(m.station_name.clone(), m.station_url.clone())),
+        Id::RemoveStation(i) => m.net_edit = Some(NetEdit::Remove(i)),
+        Id::SaveListenBrainz => m.net_edit = Some(NetEdit::ListenBrainz(m.lb_token.clone())),
+        Id::PlayerView(net) => {
+            m.player_net_view = net;
+            if net && ready(m, Job::PlayerNet) && m.can_start(Job::PlayerNet) {
+                m.net_edit = Some(NetEdit::Read);
+                return Some(Job::PlayerNet);
+            }
+        }
         other => return job_of(other),
+    }
+    if m.net_edit.is_some() && job_of(id) == Some(Job::PlayerNet) {
+        return Some(Job::PlayerNet);
     }
     None
 }
@@ -2286,6 +2384,12 @@ pub fn key(m: &mut Model, k: Key) -> Option<Job> {
         Key::Enter => {
             if matches!(f, Field::ApiKey | Field::ApiSecret) {
                 return click(m, Id::LastfmSaveKey);
+            }
+            match f {
+                Field::WifiName | Field::WifiPassword => return click(m, Id::AddWifi),
+                Field::StationName | Field::StationUrl => return click(m, Id::AddStation),
+                Field::ListenBrainz => return click(m, Id::SaveListenBrainz),
+                _ => {}
             }
             m.focus = None;
         }
@@ -2414,6 +2518,15 @@ pub fn update(m: &mut Model, job: Job, u: job::Update) {
         Update::Clean(row) => m.clean.push(row),
         Update::Checked(n) => m.checked = Some(n),
         // A table filled afresh starts at its top.
+        Update::PlayerNet(net) => {
+            match m.net_edit.take() {
+                Some(NetEdit::Wifi(..)) => (m.wifi_name.clear(), m.wifi_pass.clear()),
+                Some(NetEdit::Station(..)) => (m.station_name.clear(), m.station_url.clear()),
+                Some(NetEdit::ListenBrainz(_)) => (m.lb_token.clear(), ()),
+                _ => ((), ()),
+            };
+            m.player.net = net;
+        }
         Update::Player(facts) => {
             m.player = *facts;
             m.restore_pick = None;
@@ -3181,6 +3294,13 @@ mod tests {
             .collect();
         m.player = PlayerFacts {
             read: true,
+            net: flint_core::player_net::Facts {
+                wifi_waiting: vec!["Home".into(), "Cafe".into()],
+                stations: flint_core::player_net::parse_stations(
+                    &(0..30).map(|i| format!("Station {i} | https://radio.example/{i}\n")).collect::<String>(),
+                ),
+                listenbrainz: true,
+            },
             albums: (0..40)
                 .map(|i| AlbumRow {
                     folder: format!("Artist/Album {i}"),
@@ -3223,10 +3343,13 @@ mod tests {
     /// is drawn off the window — at the default size, the smallest and a large one.
     #[test]
     fn every_page_is_hittable_and_on_the_window() {
-        for tab in Tab::ALL {
+        // On the player twice: its albums, then Wi-Fi and radio.
+        let pages = Tab::ALL.into_iter().map(|t| (t, false)).chain([(Tab::Player, true)]);
+        for (tab, net_view) in pages {
             for (w, h) in [(W, H), (MIN_W, MIN_H), (1400, 900)] {
                 let mut m = full();
                 m.tab = tab;
+                m.player_net_view = net_view;
                 let widgets = layout(&m, w, h);
                 for wid in &widgets {
                     assert!(wid.rect.x >= 0 && wid.rect.y >= 0, "{tab:?}: {:?} at {:?}", wid.kind, wid.rect);

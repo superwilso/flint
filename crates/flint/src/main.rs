@@ -73,7 +73,8 @@ usage:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The window has no terminal: what it has to say goes in a message box.
-    let windowed = cfg!(windows) && matches!(args.first().map(String::as_str), None | Some("gui" | "--gui"));
+    #[cfg(windows)]
+    let windowed = matches!(args.first().map(String::as_str), None | Some("gui" | "--gui"));
     #[cfg(windows)]
     if windowed {
         std::panic::set_hook(Box::new(|info| {

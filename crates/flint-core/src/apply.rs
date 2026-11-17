@@ -105,13 +105,24 @@ fn narrowed(src: &Path, ffmpeg: Option<&Path>) -> Option<PathBuf> {
 
 /// Copy one file to its volume, tagging it on the way when there is a tag for it, and narrowing a
 /// FLAC the player cannot decode to 24 bits.
+///
+/// The copy is then looked at where it landed: a network drive can say a file was written when it
+/// was not (Windows' Wi-Fi drive uploads on close and drops that error; 11-17 it left songs empty
+/// on a player), so a copy whose size there is not what was written is a failed copy.
 fn copy_one(src: &Path, dst: &Path, payload: Option<&[u8]>) -> io::Result<(u64, bool)> {
     let narrow = if has_flac_ext(dst) { narrowed(src, None) } else { None };
     let r = copy_from(narrow.as_deref().unwrap_or(src), dst, payload);
     if let Some(tmp) = narrow {
         let _ = fs::remove_file(tmp);
     }
-    r
+    let (len, tagged) = r?;
+    match fs::metadata(dst).map(|m| m.len()) {
+        Ok(there) if there == len => Ok((len, tagged)),
+        Ok(there) => Err(io::Error::other(format!(
+            "the copy arrived as {there} bytes, not {len}: the connection lost it, and the next sync tries again"
+        ))),
+        Err(e) => Err(e),
+    }
 }
 
 fn has_flac_ext(p: &Path) -> bool {

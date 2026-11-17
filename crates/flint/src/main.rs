@@ -214,7 +214,7 @@ fn opts(args: &[String]) -> Result<Opts, String> {
             "--param" => o.params.push(value("--param")?),
             "--cache" => o.cache = Some(value("--cache")?.into()),
             "--all" => o.all = true,
-            "--to" => o.to.push(value("--to")?.into()),
+            "--to" => o.to.extend(sync::player_shares(&value("--to")?)?),
             "--gb" => o.gb.push(match value("--gb")?.as_str() {
                 "auto" => None,
                 n => Some(n.parse().map_err(|_| "--gb needs a number of GB, or auto".to_string())?),

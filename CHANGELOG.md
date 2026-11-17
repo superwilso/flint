@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Sync
+
+- **A folder with very long names no longer stops a sync over Wi-Fi.** Windows reads a player's
+  Wi-Fi drive only up to 260 characters per path, so a folder holding a longer one could not be
+  listed and the whole sync stopped. Now that folder is left as it is (nothing copied into it or
+  removed from it) and Sync names it. Over USB nothing changes. *Tested over Wi-Fi to a Cinder
+  player with a 303-character path.*
+
 ### On the player
 
 - **Wi-Fi and radio for a Cinder player.** On the player ▸ Wi-Fi and radio (and `flint player`)

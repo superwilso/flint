@@ -791,6 +791,7 @@ fn sync_cmd(args: &[String]) -> Result<(), String> {
             space::human(budget)
         ),
         sync::Note::Playlists(n) => println!("  {n} playlists"),
+        sync::Note::Unlisted(d) => println!("  left alone, its names are too long to read here: {d}"),
     })?;
     let mut p = p;
     p.plan.also_remove(|_, name| o.also_remove.iter().any(|a| a == "*" || a == name));

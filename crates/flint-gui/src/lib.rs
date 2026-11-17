@@ -197,6 +197,8 @@ pub enum Id {
     AddWifi,
     /// …add the station typed in.
     AddStation,
+    /// Sync ▸ fill the two cards from a Cinder player's Wi-Fi address (`--to http://…`).
+    UseAddress,
     /// …take station `n` off.
     RemoveStation(usize),
     /// …save the ListenBrainz token typed in, or take it off the player when the field is empty.
@@ -238,6 +240,8 @@ pub enum Field {
     StationName,
     StationUrl,
     ListenBrainz,
+    /// Sync ▸ the address a Cinder player shows under Wi-Fi ▸ Options ▸ Share the drive.
+    PlayerAddress,
 }
 
 impl Field {
@@ -262,6 +266,7 @@ impl Field {
             Field::StationName => "Station name",
             Field::StationUrl => "Stream address, https://…",
             Field::ListenBrainz => "Token from listenbrainz.org/settings",
+            Field::PlayerAddress => "Or over Wi-Fi: the address the player shows, http://…",
         }
     }
 
@@ -295,6 +300,7 @@ impl Field {
             Field::StationName => Field::StationUrl,
             Field::StationUrl => Field::StationName,
             Field::ListenBrainz => Field::ListenBrainz,
+            Field::PlayerAddress => Field::PlayerAddress,
         }
     }
 
@@ -996,6 +1002,7 @@ pub struct Model {
     pub wifi_pass: String,
     pub station_name: String,
     pub station_url: String,
+    pub player_address: String,
     pub lb_token: String,
     pub net_edit: Option<NetEdit>,
     /// On the player is showing Wi-Fi and radio rather than the albums.
@@ -1157,6 +1164,7 @@ impl Model {
             Field::StationName => &self.station_name,
             Field::StationUrl => &self.station_url,
             Field::ListenBrainz => &self.lb_token,
+            Field::PlayerAddress => &self.player_address,
         }
     }
 
@@ -1174,6 +1182,7 @@ impl Model {
             Field::StationName => &mut self.station_name,
             Field::StationUrl => &mut self.station_url,
             Field::ListenBrainz => &mut self.lb_token,
+            Field::PlayerAddress => &mut self.player_address,
         }
     }
 
@@ -1751,6 +1760,26 @@ pub fn layout(m: &Model, w: i32, h: i32) -> Vec<Widget> {
         }
         y += card_h + 10;
     }
+    // Over Wi-Fi, the address a Cinder player shows fills both cards.
+    let f = Field::PlayerAddress;
+    out.push(Widget {
+        id: Id::Field(f),
+        rect: Rect::new(PAD, y, (inner - 130).min(460), BTN_H),
+        kind: Kind::Field {
+            focused: m.focus == Some(f),
+            masked: false,
+            enabled: on(Id::Field(f)),
+            placeholder: f.placeholder(),
+        },
+        text: m.player_address.clone(),
+    });
+    out.push(Widget {
+        id: Id::UseAddress,
+        rect: Rect::new(PAD + (inner - 130).min(460) + 10, y, 110, BTN_H),
+        kind: Kind::Button { primary: false, enabled: on(Id::UseAddress) },
+        text: "Use address".into(),
+    });
+    y += BTN_H + 10;
 
     // ── the two switches ───────────────────────────────────────────────────────────────────
     y += 6;
@@ -2132,6 +2161,7 @@ pub fn live(m: &Model, id: Id) -> bool {
         Id::PickBackup(_) => !m.held(Hold::Player),
         Id::Restore => ready(m, Job::Restore) && m.can_start(Job::Restore),
         Id::Field(Field::Budget(_)) => !m.sync_running(),
+        Id::Field(Field::PlayerAddress) => !m.volumes_locked(),
         Id::PickPalettes => !m.held(Hold::Palettes),
         Id::Field(Field::CheckFilter) | Id::BrowsePalettes => true,
         Id::NewPalette => !m.draft.open,
@@ -2161,6 +2191,7 @@ pub fn live(m: &Model, id: Id) -> bool {
                     _ => !m.lb_token.trim().is_empty() || m.player.net.listenbrainz,
                 }
         }
+        Id::UseAddress => !m.player_address.trim().is_empty() && !m.volumes_locked(),
         Id::Field(_) | Id::LastfmChangeKey | Id::LastfmKeepKey => !m.held(Hold::Lastfm),
         Id::CopyReport => !m.player.report.is_empty(),
         other => job_of(other).is_some_and(|job| ready(m, job) && m.can_start(job)),
@@ -2246,6 +2277,14 @@ pub fn click(m: &mut Model, id: Id) -> Option<Job> {
                 }
             }
         }
+        Id::UseAddress => match flint_core::sync::player_shares(m.player_address.trim()) {
+            Ok(v) => {
+                m.volumes = [v.first().cloned(), v.get(1).cloned()];
+                m.invalidate_plan();
+                m.likes_plan = None;
+            }
+            Err(e) => m.status = e,
+        },
         Id::ClearVolume(i) => {
             m.volumes[i] = None;
             m.invalidate_plan();
@@ -2389,6 +2428,7 @@ pub fn key(m: &mut Model, k: Key) -> Option<Job> {
                 Field::WifiName | Field::WifiPassword => return click(m, Id::AddWifi),
                 Field::StationName | Field::StationUrl => return click(m, Id::AddStation),
                 Field::ListenBrainz => return click(m, Id::SaveListenBrainz),
+                Field::PlayerAddress => return click(m, Id::UseAddress),
                 _ => {}
             }
             m.focus = None;
@@ -3232,6 +3272,27 @@ mod tests {
     /// choice where the window means to give an instruction; none, at rest, would leave a window
     /// with nothing to look at. While a job runs there is deliberately no accent on any control —
     /// the only accented thing then is the progress bar.
+    /// The address a Cinder player shows fills both cards (Windows reaches the share by its UNC
+    /// name); elsewhere it says to connect first. Enter does the same as the button.
+    #[test]
+    fn a_players_wifi_address_fills_both_cards() {
+        let mut m = ready();
+        m.volumes = [None, None];
+        m.player_address = "http://192.168.0.225:8081/a8ktd7rh(-sd)".into();
+        assert!(live(&m, Id::UseAddress));
+        m.focus = Some(Field::PlayerAddress);
+        key(&mut m, Key::Enter);
+        if cfg!(windows) {
+            assert_eq!(m.volumes[0], Some(r"\\192.168.0.225@8081\a8ktd7rh".into()));
+            assert_eq!(m.volumes[1], Some(r"\\192.168.0.225@8081\a8ktd7rh-sd".into()));
+        } else {
+            assert_eq!(m.volumes, [None, None]);
+            assert!(m.status.contains("connect to the player's share first"), "{}", m.status);
+        }
+        m.player_address.clear();
+        assert!(!live(&m, Id::UseAddress));
+    }
+
     #[test]
     fn exactly_one_control_is_accented_and_it_is_the_next_step() {
         let accented = |m: &Model| -> Vec<Id> {

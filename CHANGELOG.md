@@ -11,7 +11,14 @@
   player with a 303-character path.*
 - **`--to` takes a Cinder player's Wi-Fi address** as its screen shows it,
   `http://192.168.0.225:8081/a8ktd7rh(-sd)`: Flint syncs to the player's memory and, for `(-sd)`,
-  its SD card, with no drive letters to map first (Windows). *Tested over Wi-Fi to a player.*
+  its SD card, with no drive letters to map first (Windows). In the window, paste it under
+  Onto the player and press Use address. *The command was tested over Wi-Fi to a player; the
+  window's field on the host.*
+
+- **A copy is checked where it landed.** After each file, Sync reads its size on the player; one
+  that is not what was written is reported as failed (and copied again next time) instead of
+  counted as done. Windows' Wi-Fi drive can lose an upload without saying so, and on 11-17 that
+  left songs empty on a player while Sync reported them copied.
 
 ### On the player
 

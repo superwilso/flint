@@ -123,6 +123,10 @@ pub struct DeviceScan {
     /// remove. They are hidden by their leading dot and hold the space they took, so the plan
     /// sweeps them.
     pub partials: Vec<String>,
+    /// Folders the volume would not list because a name in them makes a path too long — Windows'
+    /// Wi-Fi drive (WebDAV) stops at 260 characters where USB does not. Nothing in them is copied
+    /// or removed.
+    pub unlisted: Vec<String>,
 }
 
 /// The suffix of the temporary name every copy is written under before its rename.
@@ -555,49 +559,83 @@ pub fn scan_library(root: &Path) -> io::Result<Vec<SourceFile>> {
     scan_tree(root, None)
 }
 
-/// [`scan_library`], also collecting Flint's leftover temporary files into `partials` when asked —
-/// one walk over the volume either way, because over USB the walk is the slow part.
-fn scan_tree(root: &Path, mut partials: Option<&mut Vec<String>>) -> io::Result<Vec<SourceFile>> {
+/// Is `e` a path too long for this volume? (Windows' `ERROR_FILENAME_EXCED_RANGE`, `ENAMETOOLONG`.)
+fn too_long(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::InvalidFilename || (cfg!(windows) && e.raw_os_error() == Some(206))
+}
+
+/// [`scan_library`], for a volume when `device` is given: Flint's leftover temporary files go into
+/// its `partials` (one walk either way, because over USB the walk is the slow part), and a folder
+/// whose path is too long to list goes into its `unlisted` instead of failing the scan. A library
+/// folder is never skipped: its songs would then look removed and their copies be deleted.
+fn scan_tree(root: &Path, mut device: Option<&mut DeviceScan>) -> io::Result<Vec<SourceFile>> {
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), String::new())];
+    let mut partials = Vec::new();
     while let Some((dir, prefix)) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
-            if name.starts_with('.') {
-                if let Some(partials) = partials.as_deref_mut() {
-                    if name.ends_with(PARTIAL_SUFFIX) && entry.file_type()?.is_file() {
-                        partials.push(rel);
-                    }
-                }
-                continue;
+        // A folder is read whole or not at all: on Windows a file's size is read by opening it,
+        // so a long name fails there, after the folder itself listed fine.
+        let mark = (out.len(), stack.len(), partials.len());
+        match read_folder(&dir, &prefix, device.is_some(), &mut out, &mut stack, &mut partials) {
+            Err(e) if !prefix.is_empty() && too_long(&e) && device.is_some() => {
+                out.truncate(mark.0);
+                stack.truncate(mark.1);
+                partials.truncate(mark.2);
+                device.as_deref_mut().unwrap().unlisted.push(prefix);
             }
-            let ft = entry.file_type()?;
-            if ft.is_dir() {
-                stack.push((entry.path(), rel));
-            } else if ft.is_file() && (has_ext(&rel, &AUDIO_EXT) || has_ext(&rel, &SIDECAR_EXT)) {
-                let meta = entry.metadata()?;
-                let mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_secs() as i64);
-                out.push(SourceFile { rel, size: meta.len(), mtime });
-            }
+            r => r?,
         }
+    }
+    if let Some(d) = device {
+        d.partials.extend(partials);
     }
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(out)
 }
 
+/// One folder of [`scan_tree`]: its music into `out`, its folders onto `stack`.
+fn read_folder(
+    dir: &Path,
+    prefix: &str,
+    device: bool,
+    out: &mut Vec<SourceFile>,
+    stack: &mut Vec<(PathBuf, String)>,
+    partials: &mut Vec<String>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        if name.starts_with('.') {
+            if device && name.ends_with(PARTIAL_SUFFIX) && entry.file_type()?.is_file() {
+                partials.push(rel);
+            }
+            continue;
+        }
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            stack.push((entry.path(), rel));
+        } else if ft.is_file() && (has_ext(&rel, &AUDIO_EXT) || has_ext(&rel, &SIDECAR_EXT)) {
+            let meta = entry.metadata()?;
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            out.push(SourceFile { rel, size: meta.len(), mtime });
+        }
+    }
+    Ok(())
+}
+
 /// What is on a volume: its audio files, and the playlists at its root.
 pub fn scan_volume(root: &Path) -> io::Result<DeviceScan> {
     let mut scan = DeviceScan::default();
-    for f in scan_tree(root, Some(&mut scan.partials))? {
+    for f in scan_tree(root, Some(&mut scan))? {
         scan.files.insert(f.rel, (f.size, f.mtime));
     }
     scan.partials.sort();
+    scan.unlisted.sort();
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -797,6 +835,8 @@ pub enum Note<'a> {
         budget: u64,
     },
     Playlists(usize),
+    /// A folder a volume would not list (see [`DeviceScan::unlisted`]); left as it is.
+    Unlisted(&'a str),
 }
 
 /// Read the library and the volumes and make the plan. The one copy of this for the command line
@@ -886,6 +926,14 @@ pub fn prepare(
         scans.push(scan);
         on_device.push(held);
     }
+
+    // A folder the player would not list is left exactly as it is: its songs are not planned at
+    // all, so nothing is copied into it or removed from it.
+    let unlisted: Vec<String> = scans.iter().flat_map(|s| s.unlisted.iter().map(|d| format!("{d}/"))).collect();
+    for d in &unlisted {
+        note(Note::Unlisted(d.trim_end_matches('/')));
+    }
+    source.retain(|f| !unlisted.iter().any(|d| f.rel.starts_with(d.as_str())));
 
     let as_read = match req.playlists {
         Some(dir) => read_playlists(dir, lib).map_err(|e| format!("{}: {e}", dir.display()))?,

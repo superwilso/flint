@@ -722,6 +722,7 @@ fn sync_job(s: &Settings, write: bool, cancel: &AtomicBool, emit: &mut dyn FnMut
             )));
         }
         sync::Note::Playlists(n) => emit(Update::Log(format!("{n} playlists"))),
+        sync::Note::Unlisted(d) => emit(Update::Log(format!("left alone, its names are too long to read here: {d}"))),
     })?;
     let key = p.key();
     if write && s.expect_plan.is_some_and(|k| k != key) {

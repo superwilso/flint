@@ -9,6 +9,9 @@
   listed and the whole sync stopped. Now that folder is left as it is (nothing copied into it or
   removed from it) and Sync names it. Over USB nothing changes. *Tested over Wi-Fi to a Cinder
   player with a 303-character path.*
+- **`--to` takes a Cinder player's Wi-Fi address** as its screen shows it,
+  `http://192.168.0.225:8081/a8ktd7rh(-sd)`: Flint syncs to the player's memory and, for `(-sd)`,
+  its SD card, with no drive letters to map first (Windows). *Tested over Wi-Fi to a player.*
 
 ### On the player
 

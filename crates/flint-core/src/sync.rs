@@ -1038,8 +1038,43 @@ fn cp1252(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| if (0x80..0xa0).contains(&b) { HIGH[usize::from(b - 0x80)] } else { char::from(b) }).collect()
 }
 
+/// The address a Cinder player shows under Wi-Fi ▸ Options ▸ Share the drive,
+/// `http://192.168.0.225:8081/a8ktd7rh(-sd)`, as the folders Windows reaches it at with no drive
+/// letter mapped: `\\192.168.0.225@8081\a8ktd7rh`, and for `(-sd)` the SD card's `…-sd` too.
+/// Anything that is not an `http://` address is one folder, as given.
+pub fn player_shares(arg: &str) -> Result<Vec<PathBuf>, String> {
+    let Some(unc) = share_folders(arg) else { return Ok(vec![arg.into()]) };
+    if !cfg!(windows) {
+        return Err(format!(
+            "{arg}: connect to the player's share first (davfs2 on Linux, Finder ▸ Connect to Server \
+             on macOS) and give the folder it appears at"
+        ));
+    }
+    Ok(unc.into_iter().map(PathBuf::from).collect())
+}
+
+fn share_folders(arg: &str) -> Option<Vec<String>> {
+    let rest = arg.strip_prefix("http://")?;
+    let (rest, sd) = rest.strip_suffix("(-sd)").map_or((rest, false), |r| (r, true));
+    let (host, code) = rest.trim_end_matches('/').split_once('/')?;
+    let unc = format!(r"\\{}\{}", host.replace(':', "@"), code.replace('/', r"\"));
+    Some(if sd { vec![unc.clone(), format!("{unc}-sd")] } else { vec![unc] })
+}
+
 #[cfg(test)]
 mod tests {
+    /// The address as the player's screen shows it, with and without the card; a folder is left be.
+    #[test]
+    fn a_players_wifi_address_is_its_share_folders() {
+        assert_eq!(
+            super::share_folders("http://192.168.0.225:8081/a8ktd7rh(-sd)").unwrap(),
+            [r"\\192.168.0.225@8081\a8ktd7rh", r"\\192.168.0.225@8081\a8ktd7rh-sd"]
+        );
+        assert_eq!(super::share_folders("http://10.0.0.5:8081/abc/").unwrap(), [r"\\10.0.0.5@8081\abc"]);
+        assert_eq!(super::share_folders("E:/"), None);
+        assert_eq!(super::player_shares("E:/").unwrap(), [PathBuf::from("E:/")]);
+    }
+
     use super::*;
 
     fn src(rel: &str, size: u64) -> SourceFile {

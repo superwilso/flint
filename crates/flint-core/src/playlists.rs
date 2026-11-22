@@ -277,7 +277,7 @@ mod tests {
     /// The example in Cinder's `docs/PLAYLISTS.md`.
     const SAMPLE: &str = "#EXTM3U\n#PLAYLIST:Late Night On The Bus\n#CINDER-EDITED:1790000000\n\
         #EXTIMG:/contents/Art/late-night.jpg\n#EXTINF:-1,Wunderhorse - Teal\n\
-        /contents/MUSIC/Wunderhorse - Cub/06 - Wunderhorse - Teal.flac\n\
+        /contents/MUSIC/Wunderhorse - Cub/06 - Wunderhorse - Teal.flac\n#CINDER-GLUE\n\
         /contents_ext/MUSIC/Nick Drake/01 Pink Moon.flac\n";
 
     struct Dir(PathBuf);
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(
             pc.body,
             format!(
-                "#EXTM3U\n#PLAYLIST:Late Night On The Bus\n#EXTINF:-1,Wunderhorse - Teal\n{}\nNick Drake/01 Pink Moon.flac\nD:\\elsewhere\\x.flac\n",
+                "#EXTM3U\n#PLAYLIST:Late Night On The Bus\n#EXTINF:-1,Wunderhorse - Teal\n{}\n#CINDER-GLUE\nNick Drake/01 Pink Moon.flac\nD:\\elsewhere\\x.flac\n",
                 teal.display()
             )
         );
@@ -377,7 +377,10 @@ mod tests {
         // --playlists` reads.
         let pc = for_pc(SAMPLE, None);
         assert!(
-            pc.body.ends_with("Wunderhorse - Cub/06 - Wunderhorse - Teal.flac\nNick Drake/01 Pink Moon.flac\n"),
+            // The glue line ("play this song straight after the one above") goes across as it is.
+            pc.body.ends_with(
+                "Wunderhorse - Cub/06 - Wunderhorse - Teal.flac\n#CINDER-GLUE\nNick Drake/01 Pink Moon.flac\n"
+            ),
             "{}",
             pc.body
         );

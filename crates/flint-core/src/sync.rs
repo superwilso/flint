@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn a_musicbee_playlist_is_read_in_order_and_an_m3u8_of_the_same_name_wins() {
         const HEADER: &[u8] =
-            b"\x05\x00\x00\x00\x24\x00\x00C:\\Users\\ABDPa\\Music\\\x000\x00False\x00\x00-2\x00\x04\x01\
+            b"\x05\x00\x00\x00\x24\x00\x00C:\\Users\\Owner\\Music\\\x000\x00False\x00\x00-2\x00\x04\x01\
             \xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff\xff";
         let d = std::env::temp_dir().join(format!("flint-sync-mbp-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);

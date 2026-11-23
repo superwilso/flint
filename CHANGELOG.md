@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.4 — 2026-10-28
+
 ### Sync
 
 - **A folder with very long names no longer stops a sync over Wi-Fi.** Windows reads a player's
@@ -19,20 +21,6 @@
   that is not what was written is reported as failed (and copied again next time) instead of
   counted as done. Windows' Wi-Fi drive can lose an upload without saying so, and on 11-17 that
   left songs empty on a player while Sync reported them copied.
-
-### On the player
-
-- **Wi-Fi and radio for a Cinder player.** On the player ▸ Wi-Fi and radio (and `flint player`)
-  writes what a Cinder player with Wi-Fi reads from its internal memory: a network for it to join
-  (taken in the next time Wi-Fi turns on), internet radio stations to add or remove, and the
-  ListenBrainz token. It opens with what is already there. The page on Linux and macOS has it on
-  its player tab, and shows the password and token as dots in its log. *A station added by
-  `flint player` was read by Cinder 0.4.1 on a player; adding a network was tested on a folder only.*
-
-## 0.2.4 — 2026-10-28
-
-### Sync
-
 - **32-bit FLACs are copied as 24-bit.** The player's decoder stops on a 32-bit frame (the track
   opens, then playback hangs), and `flint check` already listed such files. Now, when FFmpeg is
   installed, Sync re-encodes them at 24 bits on the way, with their tags and cover; the file in your
@@ -67,6 +55,15 @@
   Flint only knew how to ask Windows. It now reads `df`.
 - **`--gb auto`** gives one drive its free space while another has a limit (`--to E:\MUSIC --to
   F:\MUSIC --gb auto --gb 100`); until now the first `--gb` always went to the first drive.
+
+### On the player
+
+- **Wi-Fi and radio for a Cinder player.** On the player ▸ Wi-Fi and radio (and `flint player`)
+  writes what a Cinder player with Wi-Fi reads from its internal memory: a network for it to join
+  (taken in the next time Wi-Fi turns on), internet radio stations to add or remove, and the
+  ListenBrainz token. It opens with what is already there. The page on Linux and macOS has it on
+  its player tab, and shows the password and token as dots in its log. *A station added by
+  `flint player` was read by Cinder 0.4.1 on a player; adding a network was tested on a folder only.*
 
 ## 0.2.3 — 2026-10-24
 
